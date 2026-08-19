@@ -4,7 +4,7 @@
   "runs/rowfix"
  ],
  "games": 200,
- "schedule_seed": [7, 101228],
+ "schedule_seed": 7,
  "draft_mode": "random",
  "players": [
   {
@@ -31,9 +31,9 @@
     "cfr": "linear",
     "warm": 0.0
    },
-   "elo": 717.2,
-   "se": 26.0,
-   "score": 0.702
+   "elo": 819.3,
+   "se": 97.9,
+   "score": 0.925
   },
   {
    "name": "rowfix.final",
@@ -45,9 +45,9 @@
     "cfr": "linear",
     "warm": 0.0
    },
-   "elo": 593.6,
-   "se": 26.0,
-   "score": 0.389
+   "elo": 557.8,
+   "se": 90.1,
+   "score": 0.575
   }
  ],
  "pairs": [
@@ -72,11 +72,11 @@
   {
    "a": "traverser.final",
    "b": "rowfix.final",
-   "w": 128,
-   "l": 59,
-   "d": 13,
-   "n": 200,
-   "score": 0.6725
+   "w": 17,
+   "l": 3,
+   "d": 0,
+   "n": 20,
+   "score": 0.85
   }
  ]
 }
