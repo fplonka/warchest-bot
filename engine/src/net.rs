@@ -27,6 +27,7 @@ pub const D: usize = 256;
 pub const ATTN: usize = 128;
 pub const HEADS: usize = 4;
 pub const HEAD: usize = ATTN / HEADS;
+pub const BINS: usize = 16;
 
 #[inline]
 fn gelu(x: f32) -> f32 {
@@ -168,7 +169,7 @@ impl NetLayout {
             attn_v: c.lin(ATTN, ATTN, false),
             attn_out: c.lin(ATTN, ATTN, false),
             value_hidden: c.lin(3 * ATTN + D, ATTN, true),
-            value_out: c.lin(ATTN, 1, true),
+            value_out: c.lin(ATTN, BINS, true),
             cfg_policy: c.lin(3 * ATTN, D, true),
             head_policy: c.lin(2 * ATTN + D, D, true),
             act_kind: c.embed(N_KINDS * C),

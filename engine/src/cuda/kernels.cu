@@ -737,7 +737,7 @@ __global__ void k_belief(const Tree* trees, const int* part_of_row,
 __global__ void k_value(const Tree* trees, const int* part_of_row,
                         const int* local_row, const float* belief_projection,
                         const float* hidden_b, const float* out_w,
-                        const float* out_b, int rows, int q0, int attn) {
+                        const float* out_b, int rows, int q0) {
     int k = blockIdx.x, lane = threadIdx.x;
     if (k >= rows) return;
     int r = q0 + (k >> 1);
@@ -747,17 +747,34 @@ __global__ void k_value(const Tree* trees, const int* part_of_row,
     unsigned int count = t.nc[2 * node + player];
     unsigned int cs = t.coff[2 * row + player];
     unsigned int board = t.board_of[row];
-    const float* bp = t.value_board + (size_t)board * attn;
-    const float* rp = belief_projection + (size_t)k * attn;
+    const float* bp = t.value_board + (size_t)board * ATTN;
+    const float* rp = belief_projection + (size_t)k * ATTN;
     float* opinion = t.opinion + player * t.nvals + t.voff[node];
     for (unsigned int c = threadIdx.y; c < count; c += blockDim.y) {
         unsigned int pair = t.aidx[cs + c];
-        const float* pp = t.value_cfg + (size_t)pair * attn;
-        float acc = 0.0f;
-        for (int j = lane; j < attn; j += 32)
-            acc += gelu1(pp[j] + bp[j] + rp[j] + hidden_b[j]) * out_w[j];
-        acc = warp_sum(acc);
-        if (lane == 0) opinion[c] = acc + *out_b;
+        const float* pp = t.value_cfg + (size_t)pair * ATTN;
+        float hidden[ATTN / 32];
+        for (int q = 0; q < ATTN / 32; ++q) {
+            int j = lane + 32 * q;
+            hidden[q] = gelu1(pp[j] + bp[j] + rp[j] + hidden_b[j]);
+        }
+        float logit[BINS], top = -1e30f;
+        for (int b = 0; b < BINS; ++b) {
+            float acc = 0.0f;
+            for (int q = 0; q < ATTN / 32; ++q) {
+                int j = lane + 32 * q;
+                acc += hidden[q] * out_w[j * BINS + b];
+            }
+            logit[b] = warp_sum(acc) + out_b[b];
+            top = fmaxf(top, logit[b]);
+        }
+        float norm = 0.0f, mean = 0.0f;
+        for (int b = 0; b < BINS; ++b) {
+            float e = __expf(logit[b] - top);
+            norm += e;
+            mean += e * ((b + 0.5f) * (2.0f / BINS) - 1.0f);
+        }
+        if (lane == 0) opinion[c] = mean / norm;
     }
 }
 

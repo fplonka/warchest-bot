@@ -24,6 +24,7 @@ D = 256
 ATTN = 128
 HEADS = 4
 HEAD = ATTN // HEADS
+BINS = 16
 N_KINDS = warchest.N_KINDS
 
 
@@ -68,7 +69,9 @@ class Net(nn.Module):
 
         context = 3 * ATTN + D
         self.value_hidden = nn.Linear(context, ATTN)
-        self.value_out = nn.Linear(ATTN, 1)
+        self.value_out = nn.Linear(ATTN, BINS)
+        nn.init.zeros_(self.value_out.weight)
+        nn.init.zeros_(self.value_out.bias)
         self.cfg_policy = nn.Linear(3 * ATTN, D)
         self.head_policy = nn.Linear(2 * ATTN + D, D)
 
@@ -84,6 +87,8 @@ class Net(nn.Module):
         nb = torch.as_tensor(warchest.hex_neighbours(), dtype=torch.long)
         self.register_buffer("nb", nb.view(N_HEXES, 6), persistent=False)
         self.register_buffer("seat_of", torch.arange(NTYPE) // NSLOT,
+                             persistent=False)
+        self.register_buffer("centres", (torch.arange(BINS) + 0.5) / (BINS / 2) - 1,
                              persistent=False)
 
     def cards(self, xpub):
@@ -174,14 +179,17 @@ class Net(nn.Module):
         conditioned = self.attend(query, public, seg // 2, attention)
         belief = self.belief_context(conditioned, weight, seg, nseg)
         context = torch.cat([conditioned, board[seg // 2], belief[seg]], -1)
-        value = self.value_out(gelu(self.value_hidden(context))).squeeze(1)
+        logits = self.value_out(gelu(self.value_hidden(context)))
         fp = self.cfg_policy(torch.cat([conditioned, belief[seg]], -1))
         head = self.head_policy(torch.cat([
             board.repeat_interleave(2, 0), belief], -1))
-        return value, (cards, board, projected, spatial, fp, head)
+        return logits, (cards, board, projected, spatial, fp, head)
+
+    def value(self, logits):
+        return logits.softmax(-1) @ self.centres
 
     def forward(self, xpub, phi, weight, seg, nseg, attention):
-        return self.evaluate(xpub, phi, weight, seg, nseg, attention)[0]
+        return self.value(self.evaluate(xpub, phi, weight, seg, nseg, attention)[0])
 
     def flat(self):
         blocks = [m for i in range(BLOCKS)

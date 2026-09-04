@@ -13,8 +13,8 @@ use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 use crate::board::{board, NONE, N_HEXES};
 use crate::contract::{Call, Prime, Reply};
 use crate::net::{
-    ln_block, Net, NetLayout, NormSpan, Span, ATTN, BLOCKS, C, D, HEADS, LN_ACT, LN_ATTN, LN_CFG,
-    LN_TRUNK, TYPE,
+    ln_block, Net, NetLayout, NormSpan, Span, ATTN, BINS, BLOCKS, C, D, HEADS, LN_ACT, LN_ATTN,
+    LN_CFG, LN_TRUNK, TYPE,
 };
 use crate::pbs::{
     CFEAT, HEX_BLOCK, HEX_CH, HEX_FACTS, LOOSE, MAX_COINS, NSLOT, NTYPE, OFF_CARDS, OFF_LOOSE,
@@ -698,6 +698,8 @@ fn compile_options(major: i32, minor: i32, trunk_blocks: usize) -> CompileOption
         PENDING_KINDS,
         CONT_CAP,
         TRUNK_ROWS,
+        ATTN,
+        BINS,
     ];
     options.extend([
         format!("--gpu-architecture=compute_{major}{minor}"),
@@ -2070,8 +2072,8 @@ impl Card {
             o: ATTN,
         };
         let hidden_b = self.b.slice(l.value_hidden.b..l.value_hidden.b + ATTN);
-        let out_w = self.w.slice(l.value_out.w..l.value_out.w + ATTN);
-        let out_b = self.b.slice(l.value_out.b..l.value_out.b + 1);
+        let out_w = self.w.slice(l.value_out.w..l.value_out.w + ATTN * BINS);
+        let out_b = self.b.slice(l.value_out.b..l.value_out.b + BINS);
         let mut q0 = 0usize;
         while q0 < stride {
             let n = tile.min(stride - q0);
@@ -2098,7 +2100,7 @@ impl Card {
                 self.stream.launch_builder(&self.k.value)
                     .arg(trees).arg(part).arg(local).arg(&*h)
                     .arg(&hidden_b).arg(&out_w).arg(&out_b)
-                    .arg(&rows_i).arg(&q0_i).arg(&(ATTN as i32))
+                    .arg(&rows_i).arg(&q0_i)
                     .launch_unit(LaunchConfig {
                         grid_dim: (rows as u32, 1, 1),
                         block_dim: (32, 4, 1),

@@ -26,6 +26,7 @@ def load_buffer_module():
     torch.nn = types.ModuleType("torch.nn")
     torch.nn.functional = types.ModuleType("torch.nn.functional")
     value_net = types.ModuleType("value_net")
+    value_net.BINS = 16
     value_net.Net = object
     config = types.ModuleType("config")
     export_weights = types.ModuleType("export_weights")
