@@ -78,6 +78,7 @@ class Buffer:
         self.pci = np.zeros(self.pcap, np.uint16)
         self.pact = np.zeros(self.pcap, np.uint16)
         self.pp = np.zeros(self.pcap, np.float16)
+        self.pq = np.zeros(self.pcap, np.float16)
         self.written_at = np.zeros(cap, np.float64)
         self.created_at = np.zeros(cap, np.float64)
         self.source = np.zeros(cap, np.uint8)
@@ -96,7 +97,7 @@ class Buffer:
     _ARENAS = (
         ("cstart", "clen", ("cc", "cw", "cy"), "cfgs", "ccap"),
         ("pastart", "palen", ("pa",), "acts", "acap"),
-        ("pcstart", "pclen", ("pci", "pact", "pp"), "cells", "pcap"))
+        ("pcstart", "pclen", ("pci", "pact", "pp", "pq"), "cells", "pcap"))
 
     def state_dict(self):
         ids = np.arange(self.lo, self.rows, dtype=np.int64)
@@ -150,7 +151,7 @@ class Buffer:
         if pol is None:
             na = nc = 0
         else:
-            pa, paoff, pcoff, pci, pact, pprob = pol
+            pa, paoff, pcoff, pci, pact, pprob, pq = pol
             na, nc = len(pa), len(pci)
         while self.lo < self.rows:
             r = self.lo % self.cap
@@ -190,7 +191,7 @@ class Buffer:
                 self.pclen[sl] = clen[i:j]
             self.pa[(np.arange(na) + self.acts) % self.acap] = pa
             at = (np.arange(nc) + self.cells) % self.pcap
-            self.pci[at], self.pact[at], self.pp[at] = pci, pact, pprob
+            self.pci[at], self.pact[at], self.pp[at], self.pq[at] = pci, pact, pprob, pq
             self.acts += na
             self.cells += nc
         self.rows += n
@@ -238,7 +239,8 @@ class Buffer:
         pol = (self.pa[ai % self.acap],
                np.repeat(abase, clen) + self.pact[ci % self.pcap],
                cellrow, pcfg, pp,
-               np.repeat(np.arange(len(ids), dtype=np.int64), alen))
+               np.repeat(np.arange(len(ids), dtype=np.int64), alen),
+               self.pq[ci % self.pcap].astype(np.float32))
         cw = self.cw[at].copy()
         mass = np.bincount(seg, weights=cw, minlength=2 * len(ids)).astype(np.float32)
         cw /= mass[seg]
@@ -305,7 +307,7 @@ def bins(y):
     return cdf.diff(dim=1) / (cdf[:, -1:] - cdf[:, :1])
 
 
-def losses(net, xpub, phi, w, seg, y, nseg, attention, policy=None, wp=1.0):
+def losses(net, xpub, phi, w, seg, y, nseg, attention, policy=None, wp=1.0, wq=0.0):
     logits, pieces = net.evaluate(xpub, phi, w, seg, nseg, attention)
     v = net.value(logits).detach()
     expected = torch.zeros(nseg, dtype=v.dtype, device=v.device)
@@ -320,19 +322,19 @@ def losses(net, xpub, phi, w, seg, y, nseg, attention, policy=None, wp=1.0):
     stats = {"value_loss": loss.detach(),
              "zero_sum_max": residual.abs().max(),
              "zero_sum_square_sum": residual.square().sum()}
-    if policy is not None and wp > 0.0:
-        pl, policy_stats = policy_loss(net, pieces, seg, policy)
+    if policy is not None and (wp > 0.0 or wq > 0.0):
+        pl, ql, policy_stats = policy_loss(net, pieces, seg, policy)
         if pl is not None:
-            loss = loss + wp * pl
+            loss = loss + wp * pl + wq * ql
             stats.update(policy_stats)
     return loss, stats
 
 
 def policy_loss(net, pieces, seg, policy):
-    desc, parow, pact, _pcrow, pcfg, target, inv, groups = policy
+    desc, parow, pact, _pcrow, pcfg, target, qt, inv, groups = policy
     if desc.shape[0] == 0 or pact.shape[0] == 0:
-        return None, {}
-    cards, board, projected, spatial, fp, h = pieces
+        return None, None, {}
+    cards, board, projected, spatial, fp, fq, h = pieces
     action_query = torch.zeros(desc.shape[0], dtype=torch.long, device=desc.device)
     action_query.scatter_(0, pact, seg[pcfg])
     e = net.actions(desc, board, h, projected, spatial, parow, action_query)
@@ -354,10 +356,16 @@ def policy_loss(net, pieces, seg, policy):
     prior_entropy = torch.zeros(groups, device=target.device).index_add_(
         0, inv, -(logp.exp() * logp))
     search_ce = torch.zeros(groups, device=target.device).index_add_(0, inv, -(q * logp))
-    return loss, {"policy_loss_sum": loss.detach(),
-                  "policy_target_entropy_sum": target_entropy.mean(),
-                  "policy_prior_entropy_sum": prior_entropy.mean(),
-                  "policy_search_kl_sum": (search_ce - target_entropy).mean()}
+    known = torch.isfinite(qt)
+    q = (fq[pcfg] * e[pact]).sum(1)
+    q_loss = (F.smooth_l1_loss(q, qt.nan_to_num(), reduction="none", beta=0.5)
+              * known).sum() / known.sum().clamp(min=1)
+    return loss, q_loss, {"policy_loss_sum": loss.detach(),
+                          "q_loss_sum": q_loss.detach(),
+                          "q_steps": known.any().float(),
+                          "policy_target_entropy_sum": target_entropy.mean(),
+                          "policy_prior_entropy_sum": prior_entropy.mean(),
+                          "policy_search_kl_sum": (search_ce - target_entropy).mean()}
 
 
 @torch.no_grad()
@@ -410,7 +418,7 @@ def accumulate(acc, stats):
 
 def train_steps(net, opt, buf, steps, batch, rng, device,
                 recent_mix=0.0, recent_frac=0.2, profile_cuda=False,
-                batch_fn=None, policy_w=0.0, deadline=None):
+                batch_fn=None, policy_w=0.0, q_w=0.0, deadline=None):
     stat = collections.Counter()
     stat["sample_ages"] = []
     stat["sample_delays"] = []
@@ -445,7 +453,7 @@ def train_steps(net, opt, buf, steps, batch, rng, device,
             f1 = torch.cuda.Event(enable_timing=True)
             b1 = torch.cuda.Event(enable_timing=True)
             f0.record(stream)
-        loss, step_stat = losses(net, *parts, wp=policy_w)
+        loss, step_stat = losses(net, *parts, wp=policy_w, wq=q_w)
         stat["steps"] += 1
         stat["zero_sum_n"] += parts[5] // 2
         stat["policy_steps"] += "policy_loss_sum" in step_stat
@@ -497,7 +505,8 @@ def ingest(buf, data, warm=False):
            np.asarray(data["pcoff"], np.int64),
            np.asarray(data["pci"], np.uint16),
            np.asarray(data["pcell"], np.uint16),
-           np.asarray(data["pprob"], np.float16))
+           np.asarray(data["pprob"], np.float16),
+           np.asarray(data["pq"], np.float16))
     buf.add(x, cc, cw, cy.astype(np.float16), coff, soff,
             source, truth, outcome, created, td1, pol)
     return len(x)
@@ -793,7 +802,7 @@ def main():
             value, opt, buf, nsteps, args.batch, rng, dev,
             recent_mix=args.recent_mix, recent_frac=args.recent_frac,
             profile_cuda=os.environ.get("WARCHEST_TRAIN_PROFILE") == "1",
-            batch_fn=batcher, policy_w=args.policy_w, deadline=deadline)
+            batch_fn=batcher, policy_w=args.policy_w, q_w=args.q_w, deadline=deadline)
         return lv, time.time() - tt, st
 
     def run_search_pipeline():
@@ -936,6 +945,7 @@ def main():
                            + window["sample_query"], 1)
             policy_steps = max(int(window["policy_steps"]), 1)
             policy = {key: window[f"{key}_sum"] / policy_steps for key in POLICY_METRICS}
+            q_loss = window["q_loss_sum"] / max(int(window["q_steps"]), 1)
             weight_norm = float(torch.sqrt(sum(
                 p.detach().float().square().sum() for p in value.parameters())))
             dec = max(int(window["decisions"]), 1)
@@ -985,7 +995,8 @@ def main():
                     "games", "white_wins", "black_wins", "draws", "decisions",
                     "rows", "solves", "query_rows", "dropped")},
                 "loss": round(lv, 5),
-                "total_loss": round(lv + args.policy_w * policy["policy_loss"], 5),
+                "total_loss": round(lv + args.policy_w * policy["policy_loss"]
+                                    + args.q_w * q_loss, 5),
                 **{key: round(diag[key], 5) for key in ("loss_old", "loss_new")},
                 "zero_sum_max": round(window["zero_sum_max"], 5),
                 "zero_sum_rms": round((window["zero_sum_square_sum"]
@@ -1057,6 +1068,7 @@ def main():
                 "solves_per_s": round(raw_sps, 1),
                 **{key: round(value, 5) for key, value in policy.items()},
                 "policy_weighted_loss": round(args.policy_w * policy["policy_loss"], 5),
+                "q_loss": round(q_loss, 5),
                 "budget_hits": int(hits),
                 "entity_hits": {names[i]: ent_hits[i] for i in range(8)},
                 "slots": int(data.get("slots", 0)),
@@ -1076,7 +1088,7 @@ def main():
                 f"W{rec['white_wins']}/B{rec['black_wins']}/D{rec['draws']}/T{int(window['timeouts'])} "
                 f"qrows={rec['query_rows']} "
                 f"L={lv:.5f} L/var={lv / max(target_var, 1e-9):.2f} "
-                f"Lp={rec['policy_loss']:.3f} "
+                f"Lp={rec['policy_loss']:.3f} Lq={rec['q_loss']:.4f} "
                 f"tgt={target_mean:+.3f}/{target_var ** 0.5:.3f} "
                 f"gen={gen_s:.2f}s train={train_s:.2f}s "
                 f"gpu={window['gpu_forward_s'] + window['gpu_backward_s']:.2f}s "

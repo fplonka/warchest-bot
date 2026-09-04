@@ -73,8 +73,8 @@ class Net(nn.Module):
         nn.init.zeros_(self.value_out.weight)
         nn.init.zeros_(self.value_out.bias)
         self.cfg_policy = nn.Linear(3 * ATTN, D)
+        self.cfg_q = nn.Linear(3 * ATTN, D)
         self.head_policy = nn.Linear(2 * ATTN + D, D)
-
         self.act_kind = nn.Embedding(N_KINDS, C)
         self.act_role = nn.Embedding(5, C)
         self.act_board = nn.Linear(D, C, bias=False)
@@ -178,12 +178,14 @@ class Net(nn.Module):
         public = self.token_in(torch.cat([spatial, projected], 1))
         conditioned = self.attend(query, public, seg // 2, attention)
         belief = self.belief_context(conditioned, weight, seg, nseg)
+        config = torch.cat([conditioned, belief[seg]], -1)
         context = torch.cat([conditioned, board[seg // 2], belief[seg]], -1)
         logits = self.value_out(gelu(self.value_hidden(context)))
-        fp = self.cfg_policy(torch.cat([conditioned, belief[seg]], -1))
+        fp = self.cfg_policy(config)
+        fq = self.cfg_q(config)
         head = self.head_policy(torch.cat([
             board.repeat_interleave(2, 0), belief], -1))
-        return logits, (cards, board, projected, spatial, fp, head)
+        return logits, (cards, board, projected, spatial, fp, fq, head)
 
     def value(self, logits):
         return logits.softmax(-1) @ self.centres
