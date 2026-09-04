@@ -19,7 +19,7 @@ LOOSE = warchest.LOOSE
 
 TYPE = 64
 C = 96
-BLOCKS = 8
+BLOCKS = 12
 D = 256
 ATTN = 128
 HEADS = 4
