@@ -1,0 +1,434 @@
+{
+"c4-rb16_s1.0001-s1": [
+30.0,
+"runs/c4-rb16_s1/bots/0001-s1"
+],
+"c4-rb16_s1.0002-s2": [
+60.002,
+"runs/c4-rb16_s1/bots/0002-s2"
+],
+"c4-rb16_s1.final": [
+120.048,
+"runs/c4-rb16_s1/bots/final"
+],
+"c4-rb16_s2.0001-s1": [
+30.002,
+"runs/c4-rb16_s2/bots/0001-s1"
+],
+"c4-rb16_s2.0002-s2": [
+60.003,
+"runs/c4-rb16_s2/bots/0002-s2"
+],
+"c4-rb16_s2.final": [
+120.048,
+"runs/c4-rb16_s2/bots/final"
+],
+"categorical_s1.0001-s1": [
+30.002,
+"runs/categorical_s1/bots/0001-s1"
+],
+"categorical_s1.0002-s2": [
+60.003,
+"runs/categorical_s1/bots/0002-s2"
+],
+"categorical_s1.final": [
+120.048,
+"runs/categorical_s1/bots/final"
+],
+"categorical_s2.0001-s1": [
+30.0,
+"runs/categorical_s2/bots/0001-s1"
+],
+"categorical_s2.0002-s2": [
+60.0,
+"runs/categorical_s2/bots/0002-s2"
+],
+"categorical_s2.final": [
+120.055,
+"runs/categorical_s2/bots/final"
+],
+"cheap-play_s1.0001-s1": [
+30.0,
+"runs/cheap-play_s1/bots/0001-s1"
+],
+"cheap-play_s1.0002-s2": [
+60.0,
+"runs/cheap-play_s1/bots/0002-s2"
+],
+"cheap-play_s1.final": [
+120.043,
+"runs/cheap-play_s1/bots/final"
+],
+"cheap-play_s2.0001-s1": [
+30.0,
+"runs/cheap-play_s2/bots/0001-s1"
+],
+"cheap-play_s2.0002-s2": [
+60.0,
+"runs/cheap-play_s2/bots/0002-s2"
+],
+"cheap-play_s2.final": [
+120.043,
+"runs/cheap-play_s2/bots/final"
+],
+"config-attn_s1.0001-s1": [
+30.0,
+"runs/config-attn_s1/bots/0001-s1"
+],
+"config-attn_s1.0002-s2": [
+60.002,
+"runs/config-attn_s1/bots/0002-s2"
+],
+"config-attn_s1.final": [
+120.035,
+"runs/config-attn_s1/bots/final"
+],
+"config-attn_s2.0001-s1": [
+30.0,
+"runs/config-attn_s2/bots/0001-s1"
+],
+"config-attn_s2.0002-s2": [
+60.002,
+"runs/config-attn_s2/bots/0002-s2"
+],
+"config-attn_s2.final": [
+120.037,
+"runs/config-attn_s2/bots/final"
+],
+"deep-12_s1.0001-s1": [
+30.0,
+"runs/deep-12_s1/bots/0001-s1"
+],
+"deep-12_s1.0002-s2": [
+60.003,
+"runs/deep-12_s1/bots/0002-s2"
+],
+"deep-12_s1.final": [
+120.048,
+"runs/deep-12_s1/bots/final"
+],
+"deep-12_s2.0001-s1": [
+30.002,
+"runs/deep-12_s2/bots/0001-s1"
+],
+"deep-12_s2.0002-s2": [
+60.002,
+"runs/deep-12_s2/bots/0002-s2"
+],
+"deep-12_s2.final": [
+120.048,
+"runs/deep-12_s2/bots/final"
+],
+"directional_s1.0001-s1": [
+30.002,
+"runs/directional_s1/bots/0001-s1"
+],
+"directional_s1.0002-s2": [
+60.002,
+"runs/directional_s1/bots/0002-s2"
+],
+"directional_s1.final": [
+120.045,
+"runs/directional_s1/bots/final"
+],
+"directional_s2.0001-s1": [
+30.0,
+"runs/directional_s2/bots/0001-s1"
+],
+"directional_s2.0002-s2": [
+60.002,
+"runs/directional_s2/bots/0002-s2"
+],
+"directional_s2.final": [
+120.047,
+"runs/directional_s2/bots/final"
+],
+"ema_s1.0001-s1": [
+30.002,
+"runs/ema_s1/bots/0001-s1"
+],
+"ema_s1.0002-s2": [
+60.002,
+"runs/ema_s1/bots/0002-s2"
+],
+"ema_s1.final": [
+120.05,
+"runs/ema_s1/bots/final"
+],
+"ema_s2.0001-s1": [
+30.0,
+"runs/ema_s2/bots/0001-s1"
+],
+"ema_s2.0002-s2": [
+60.003,
+"runs/ema_s2/bots/0002-s2"
+],
+"ema_s2.final": [
+120.047,
+"runs/ema_s2/bots/final"
+],
+"harvest_s1.0001-s1": [
+30.002,
+"runs/harvest_s1/bots/0001-s1"
+],
+"harvest_s1.0002-s2": [
+60.002,
+"runs/harvest_s1/bots/0002-s2"
+],
+"harvest_s1.final": [
+120.048,
+"runs/harvest_s1/bots/final"
+],
+"harvest_s2.0001-s1": [
+30.005,
+"runs/harvest_s2/bots/0001-s1"
+],
+"harvest_s2.0002-s2": [
+60.007,
+"runs/harvest_s2/bots/0002-s2"
+],
+"harvest_s2.final": [
+120.045,
+"runs/harvest_s2/bots/final"
+],
+"master_s1.0001-s1": [
+30.0,
+"runs/master_s1/bots/0001-s1"
+],
+"master_s1.0002-s2": [
+60.002,
+"runs/master_s1/bots/0002-s2"
+],
+"master_s1.final": [
+120.047,
+"runs/master_s1/bots/final"
+],
+"master_s2.0001-s1": [
+30.0,
+"runs/master_s2/bots/0001-s1"
+],
+"master_s2.0002-s2": [
+60.002,
+"runs/master_s2/bots/0002-s2"
+],
+"master_s2.final": [
+120.045,
+"runs/master_s2/bots/final"
+],
+"muon_s1.0001-s1": [
+30.135,
+"runs/muon_s1/bots/0001-s1"
+],
+"muon_s1.0002-s2": [
+60.138,
+"runs/muon_s1/bots/0002-s2"
+],
+"muon_s1.final": [
+120.047,
+"runs/muon_s1/bots/final"
+],
+"muon_s2.0001-s1": [
+30.002,
+"runs/muon_s2/bots/0001-s1"
+],
+"muon_s2.0002-s2": [
+60.002,
+"runs/muon_s2/bots/0002-s2"
+],
+"muon_s2.final": [
+120.048,
+"runs/muon_s2/bots/final"
+],
+"ownership_s1.0001-s1": [
+30.0,
+"runs/ownership_s1/bots/0001-s1"
+],
+"ownership_s1.0002-s2": [
+60.0,
+"runs/ownership_s1/bots/0002-s2"
+],
+"ownership_s1.final": [
+120.108,
+"runs/ownership_s1/bots/final"
+],
+"ownership_s2.0001-s1": [
+30.0,
+"runs/ownership_s2/bots/0001-s1"
+],
+"ownership_s2.0002-s2": [
+60.002,
+"runs/ownership_s2/bots/0002-s2"
+],
+"ownership_s2.final": [
+120.048,
+"runs/ownership_s2/bots/final"
+],
+"policy-005_s1.0001-s1": [
+30.0,
+"runs/policy-005_s1/bots/0001-s1"
+],
+"policy-005_s1.0002-s2": [
+60.002,
+"runs/policy-005_s1/bots/0002-s2"
+],
+"policy-005_s1.final": [
+120.045,
+"runs/policy-005_s1/bots/final"
+],
+"policy-005_s2.0001-s1": [
+30.0,
+"runs/policy-005_s2/bots/0001-s1"
+],
+"policy-005_s2.0002-s2": [
+60.0,
+"runs/policy-005_s2/bots/0002-s2"
+],
+"policy-005_s2.final": [
+120.048,
+"runs/policy-005_s2/bots/final"
+],
+"pre-changes_s1.0001-s1": [
+30.0,
+"runs/pre-changes_s1/bots/0001-s1"
+],
+"pre-changes_s1.0002-s2": [
+60.003,
+"runs/pre-changes_s1/bots/0002-s2"
+],
+"pre-changes_s1.0004-final": [
+120.045,
+"runs/pre-changes_s1/bots/0004-final"
+],
+"pre-changes_s2.0001-s1": [
+30.002,
+"runs/pre-changes_s2/bots/0001-s1"
+],
+"pre-changes_s2.0002-s2": [
+60.005,
+"runs/pre-changes_s2/bots/0002-s2"
+],
+"pre-changes_s2.0004-final": [
+120.048,
+"runs/pre-changes_s2/bots/0004-final"
+],
+"q-005_s1.0001-s1": [
+30.002,
+"runs/q-005_s1/bots/0001-s1"
+],
+"q-005_s1.0002-s2": [
+60.003,
+"runs/q-005_s1/bots/0002-s2"
+],
+"q-005_s1.final": [
+120.047,
+"runs/q-005_s1/bots/final"
+],
+"q-005_s2.0001-s1": [
+30.002,
+"runs/q-005_s2/bots/0001-s1"
+],
+"q-005_s2.0002-s2": [
+60.002,
+"runs/q-005_s2/bots/0002-s2"
+],
+"q-005_s2.final": [
+120.047,
+"runs/q-005_s2/bots/final"
+],
+"reservoir_s1.0001-s1": [
+30.0,
+"runs/reservoir_s1/bots/0001-s1"
+],
+"reservoir_s1.0002-s2": [
+60.0,
+"runs/reservoir_s1/bots/0002-s2"
+],
+"reservoir_s1.final": [
+120.053,
+"runs/reservoir_s1/bots/final"
+],
+"reservoir_s2.0001-s1": [
+30.002,
+"runs/reservoir_s2/bots/0001-s1"
+],
+"reservoir_s2.0002-s2": [
+60.003,
+"runs/reservoir_s2/bots/0002-s2"
+],
+"reservoir_s2.final": [
+120.05,
+"runs/reservoir_s2/bots/final"
+],
+"spatial-readout_s1.0001-s1": [
+30.002,
+"runs/spatial-readout_s1/bots/0001-s1"
+],
+"spatial-readout_s1.0002-s2": [
+60.002,
+"runs/spatial-readout_s1/bots/0002-s2"
+],
+"spatial-readout_s1.0004-final": [
+120.048,
+"runs/spatial-readout_s1/bots/0004-final"
+],
+"spatial-readout_s2.0001-s1": [
+30.002,
+"runs/spatial-readout_s2/bots/0001-s1"
+],
+"spatial-readout_s2.0002-s2": [
+60.003,
+"runs/spatial-readout_s2/bots/0002-s2"
+],
+"spatial-readout_s2.final": [
+120.047,
+"runs/spatial-readout_s2/bots/final"
+],
+"terminal_s1.0001-s1": [
+30.002,
+"runs/terminal_s1/bots/0001-s1"
+],
+"terminal_s1.0002-s2": [
+60.005,
+"runs/terminal_s1/bots/0002-s2"
+],
+"terminal_s1.final": [
+120.05,
+"runs/terminal_s1/bots/final"
+],
+"terminal_s2.0001-s1": [
+30.002,
+"runs/terminal_s2/bots/0001-s1"
+],
+"terminal_s2.0002-s2": [
+60.003,
+"runs/terminal_s2/bots/0002-s2"
+],
+"terminal_s2.final": [
+120.05,
+"runs/terminal_s2/bots/final"
+],
+"wide-128_s1.0001-s1": [
+30.0,
+"runs/wide-128_s1/bots/0001-s1"
+],
+"wide-128_s1.0002-s2": [
+60.0,
+"runs/wide-128_s1/bots/0002-s2"
+],
+"wide-128_s1.final": [
+120.045,
+"runs/wide-128_s1/bots/final"
+],
+"wide-128_s2.0001-s1": [
+30.0,
+"runs/wide-128_s2/bots/0001-s1"
+],
+"wide-128_s2.0002-s2": [
+60.0,
+"runs/wide-128_s2/bots/0002-s2"
+],
+"wide-128_s2.final": [
+120.045,
+"runs/wide-128_s2/bots/final"
+]
+}

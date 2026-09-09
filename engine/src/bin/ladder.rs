@@ -1,11 +1,10 @@
-use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde::Serialize;
 use warchest::arena::{Draft, Hello, Reply, Request, Table, PROTOCOL};
-use warchest::packed::{Manifest, Packed};
+use warchest::packed::Packed;
 use warchest::pbs::rules_table_hash;
 use warchest::rng::Rng;
 use warchest::selfplay::DRAFT_POOL;
@@ -86,32 +85,17 @@ impl Drop for BotProcess {
 }
 
 #[derive(Serialize)]
-struct PairResult {
+struct Match {
     a: String,
     b: String,
     a_minutes: f64,
     b_minutes: f64,
-    wins: usize,
-    losses: usize,
-    draws: usize,
-    games: usize,
-    score: f64,
-    elo: f64,
-    elo_low: f64,
-    elo_high: f64,
-    color_pairs: Vec<[f32; 2]>,
-}
-
-#[derive(Serialize)]
-struct Report {
-    format: u32,
-    complete: bool,
+    a_sha: String,
+    b_sha: String,
+    draft_seed: u64,
     protocol: u32,
     rules: u64,
-    games_per_pair: usize,
-    seed: u64,
-    bots: Vec<Manifest>,
-    pairs: Vec<PairResult>,
+    outcomes: Vec<[f32; 2]>,
 }
 
 fn drafts(seed: u64, count: usize) -> Vec<Draft> {
@@ -131,61 +115,26 @@ fn drafts(seed: u64, count: usize) -> Vec<Draft> {
         .collect()
 }
 
-fn play_pair(
-    a: &Packed,
-    b: &Packed,
-    games: usize,
-    seed: u64,
-    concurrent: usize,
-    devices: &str,
-) -> Result<PairResult, String> {
-    let mut bots = [BotProcess::launch(a, devices)?, BotProcess::launch(b, devices)?];
+const DEVICES: &str = "0,1";
+const CONCURRENT: usize = 256;
+
+fn play(a: &Packed, b: &Packed, games: usize, seed: u64) -> Result<Vec<[f32; 2]>, String> {
+    let mut bots = [BotProcess::launch(a, DEVICES)?, BotProcess::launch(b, DEVICES)?];
     let mut table = Table::new();
-    let mut color_pairs = vec![[0.0; 2]; games / 2];
+    let mut outcomes = vec![[0.0; 2]; games / 2];
     for (pair, draft) in drafts(seed, games / 2).into_iter().enumerate() {
         for (color, seats) in [[0, 1], [1, 0]].into_iter().enumerate() {
             let id = (2 * pair + color) as u32;
             table.start(id, &draft, seats, seed ^ id as u64)?;
         }
-        while table.live() >= concurrent {
-            step(&mut table, &mut bots, &mut color_pairs)?;
+        while table.live() >= CONCURRENT {
+            step(&mut table, &mut bots, &mut outcomes)?;
         }
     }
     while table.live() > 0 {
-        step(&mut table, &mut bots, &mut color_pairs)?;
+        step(&mut table, &mut bots, &mut outcomes)?;
     }
-    let wins = color_pairs.iter().flatten().filter(|&&x| x > 0.0).count();
-    let losses = color_pairs.iter().flatten().filter(|&&x| x < 0.0).count();
-    let draws = games - wins - losses;
-    let score = (wins as f64 + 0.5 * draws as f64) / games as f64;
-    let (elo, elo_low, elo_high) = paired_elo(&color_pairs);
-    Ok(PairResult {
-        a: a.manifest.name.clone(),
-        b: b.manifest.name.clone(),
-        a_minutes: a.manifest.minutes,
-        b_minutes: b.manifest.minutes,
-        wins,
-        losses,
-        draws,
-        games,
-        score,
-        elo,
-        elo_low,
-        elo_high,
-        color_pairs,
-    })
-}
-
-fn paired_elo(outcomes: &[[f32; 2]]) -> (f64, f64, f64) {
-    let point = |x: f32| f64::from(x > 0.0) + 0.5 * f64::from(x == 0.0);
-    let pairs = outcomes.iter().map(|x| (point(x[0]) + point(x[1])) / 2.0);
-    let n = outcomes.len() as f64;
-    let p = (pairs.clone().sum::<f64>() + 0.5) / (n + 1.0);
-    let variance = (pairs.map(|x| (x - p).powi(2)).sum::<f64>() + (0.5 - p).powi(2)) / n;
-    let error = 1.96 * (variance / (n + 1.0)).sqrt();
-    let elo =
-        |x: f64| 400.0 * (x.clamp(1e-9, 1.0 - 1e-9) / (1.0 - x.clamp(1e-9, 1.0 - 1e-9))).log10();
-    (elo(p), elo(p - error), elo(p + error))
+    Ok(outcomes)
 }
 
 fn step(
@@ -205,55 +154,6 @@ fn step(
     Ok(())
 }
 
-fn series(path: &Path) -> Result<Vec<Packed>, String> {
-    let root = path.join("bots");
-    let mut bots = Vec::new();
-    for entry in fs::read_dir(&root).map_err(|e| format!("{}: {e}", root.display()))? {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        if path.join("bot.json").is_file() {
-            bots.push(Packed::load(&path)?);
-        }
-    }
-    bots.sort_by(|x, y| {
-        x.manifest
-            .minutes
-            .total_cmp(&y.manifest.minutes)
-            .then_with(|| x.dir.ends_with("final").cmp(&y.dir.ends_with("final")))
-    });
-    if bots.is_empty() {
-        return Err(format!("{} contains no packed bots", path.display()));
-    }
-    Ok(bots)
-}
-
-fn pairings<'a>(a: &'a [Packed], b: Option<&'a [Packed]>) -> Vec<(&'a Packed, &'a Packed)> {
-    match b {
-        None => a.windows(2).map(|pair| (&pair[0], &pair[1])).collect(),
-        Some(b) => a
-            .iter()
-            .map(|a| {
-                let b = b
-                    .iter()
-                    .min_by(|x, y| {
-                        (x.manifest.minutes - a.manifest.minutes)
-                            .abs()
-                            .total_cmp(&(y.manifest.minutes - a.manifest.minutes).abs())
-                    })
-                    .unwrap();
-                (a, b)
-            })
-            .collect(),
-    }
-}
-
-fn write_report(path: &Path, report: &Report) -> Result<(), String> {
-    let tmp = path.with_extension("json.tmp");
-    let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
-    serde_json::to_writer_pretty(&mut file, report).map_err(|e| e.to_string())?;
-    writeln!(file).map_err(|e| e.to_string())?;
-    fs::rename(tmp, path).map_err(|e| e.to_string())
-}
-
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -262,58 +162,30 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let paths: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
-    if !(1..=2).contains(&paths.len()) {
-        return Err("usage: ladder <run> [other-run]".into());
-    }
-    let a = series(&paths[0])?;
-    let b = paths.get(1).map(|path| series(path)).transpose()?;
-    let pairs = pairings(&a, b.as_deref());
-    if pairs.is_empty() {
-        return Err("evaluation needs at least two bots".into());
-    }
-    let bots = pairs.iter().flat_map(|(a, b)| [&a.manifest, &b.manifest]);
-    let mut manifests = bots.cloned().collect::<Vec<_>>();
-    manifests.sort_by(|x, y| x.name.cmp(&y.name));
-    manifests.dedup_by(|x, y| x.name == y.name);
-    let games = 400;
-    let seed = 83;
-    let devices = "0,1";
-    let output = if paths.len() == 1 {
-        paths[0].join("ladder.json")
-    } else {
-        let dir = paths[1].join("comparisons");
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let baseline = paths[0].file_name().ok_or("baseline run needs a name")?;
-        dir.join(format!("{}.json", baseline.to_string_lossy()))
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let [a, b, games, seed] = args.as_slice() else {
+        return Err("usage: ladder <bot-dir> <bot-dir> <games> <draft-seed>".into());
     };
-    let mut report = Report {
-        format: 1,
-        complete: false,
+    let a = Packed::load(Path::new(a))?;
+    let b = Packed::load(Path::new(b))?;
+    let games: usize = games.parse().map_err(|e| format!("games: {e}"))?;
+    let seed: u64 = seed.parse().map_err(|e| format!("draft-seed: {e}"))?;
+    if games < 2 || games % 2 != 0 {
+        return Err("games must be even and at least two".into());
+    }
+    let outcomes = play(&a, &b, games, seed)?;
+    let record = Match {
+        a: a.manifest.name,
+        b: b.manifest.name,
+        a_minutes: a.manifest.minutes,
+        b_minutes: b.manifest.minutes,
+        a_sha: a.manifest.weights_sha,
+        b_sha: b.manifest.weights_sha,
+        draft_seed: seed,
         protocol: PROTOCOL,
         rules: rules_table_hash(),
-        games_per_pair: games,
-        seed,
-        bots: manifests,
-        pairs: Vec::new(),
+        outcomes,
     };
-    for (a, b) in pairs.iter() {
-        let result = play_pair(a, b, games, seed, 256, devices)?;
-        println!(
-            "{} vs {}: W{} L{} D{} score {:.3}, Elo {:+.0} [{:+.0}, {:+.0}]",
-            result.a,
-            result.b,
-            result.wins,
-            result.losses,
-            result.draws,
-            result.score,
-            result.elo,
-            result.elo_low,
-            result.elo_high
-        );
-        report.pairs.push(result);
-        write_report(&output, &report)?;
-    }
-    report.complete = true;
-    write_report(&output, &report)
+    println!("{}", serde_json::to_string(&record).map_err(|e| e.to_string())?);
+    Ok(())
 }

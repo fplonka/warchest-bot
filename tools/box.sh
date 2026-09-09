@@ -126,18 +126,6 @@ go)
     "$0" start "$out" bash -c "($build_script) && python train/test_parity.py && exec bash tools/resume_train.sh $(printf '%q ' "$@")"
     "$0" follow "$out" "$out"
     ;;
-compare)
-    baseline=${2:?usage: compare BASELINE CANDIDATE}
-    candidate=${3:?usage: compare BASELINE CANDIDATE}
-    [ "$#" -eq 3 ] || { echo "usage: compare BASELINE CANDIDATE" >&2; exit 2; }
-    baseline=${baseline#runs/}
-    candidate=${candidate#runs/}
-    case "$baseline$candidate" in *[!A-Za-z0-9._-]*) echo "run names must not contain paths" >&2; exit 2;; esac
-    tag="compare-$baseline-$candidate"
-    "$0" start "$tag" engine/target/release/ladder "runs/$baseline" "runs/$candidate"
-    "$0" follow "$tag" "$candidate"
-    echo "comparison -> runs/$candidate/comparisons/$baseline.json"
-    ;;
 "")  sed -n '2,9p' "$0" ;;
 *)   run_remote "$*" ;;
 esac
