@@ -12,7 +12,8 @@ NAME = re.compile(r"^([a-z0-9-]+)_s([12])\.(\S+)$")
 AGES = (30.0, 60.0, 120.0)
 SCALE = math.log(10.0) / 400.0
 SCALES = (20.0, 11.0, 23.0, 10.5)
-RUNG, TAILS, SIZE, GAMES, SURVEY, SAMPLES, QUADRATURE, AUDIT = 1.0, 4.0, 4, 400, 300, 512, 9, 5
+RUNG, TAILS, SIZE, GAMES, SURVEY, SAMPLES, QUADRATURE, AUDIT = 3.0, 4.0, 4, 400, 300, 512, 9, 5
+SHAPE = 15.0
 DISPERSION = 1.19
 
 
@@ -152,11 +153,18 @@ def regret(value, spread, noise, size):
     return (draws.max(2).values - best).mean(1)
 
 
+def target(model, mean, covariance):
+    """Strength at the rung. Extrapolating the line past the measured 120
+    minutes carries a per-branch error no ladder game can reduce."""
+    load = model.load(RUNG)
+    drift = (SHAPE * (RUNG - 1.0)) ** 2 * torch.eye(model.n)
+    return load @ mean, load @ covariance @ load.T + drift, load
+
+
 def value_of(model, mean, covariance, pairs):
     """Expected reduction in shortlist regret for each candidate match."""
     size, games, survey, samples, quadrature = SIZE, GAMES, SURVEY, SAMPLES, QUADRATURE
-    load = model.load(RUNG)
-    value, spread = load @ mean, load @ covariance @ load.T
+    value, spread, load = target(model, mean, covariance)
     contrasts = torch.stack([model.contrast(a, b) for a, b in pairs])
     shift = contrasts @ covariance @ load.T
     denominator = ((contrasts @ covariance * contrasts).sum(1)
@@ -212,7 +220,7 @@ def check(model, mean, covariance, matches):
     fresh = torch.tensor([seed != 83 for *_, seed in matches])
     print(f"calibration  standardised residual sd {residual.std():.2f} "
           f"(1.00 = the stated uncertainty is right)")
-    if fresh.any():
+    if fresh.sum() > 1:
         print(f"             seed 83 {residual[~fresh].std():.2f} over {(~fresh).sum()},"
               f" fresh openings {residual[fresh].std():.2f} over {fresh.sum()}")
     print(f"draws        predicted {chance[..., 2].mean():.3f}   "
@@ -232,8 +240,8 @@ def main():
         model = Model([bot for name, (minutes, _) in bots.items()
                        if (bot := parse(name, minutes))])
         mean, covariance, scales = fit(model, matches)
-        load_ = model.load(RUNG)
-        value, spread = load_ @ mean, (load_ @ covariance @ load_.T).diagonal().sqrt()
+        value, covar, _ = target(model, mean, covariance)
+        spread = covar.diagonal().sqrt()
         print(f"{len(matches)} matches   scales {[round(float(x), 1) for x in scales]}   "
               f"seat {mean[-2]:+.1f}   draws {mean[-1].exp():.3f}")
         for i in torch.argsort(value, descending=True):
