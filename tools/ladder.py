@@ -13,6 +13,7 @@ AGES = (30.0, 60.0, 120.0)
 SCALE = math.log(10.0) / 400.0
 SCALES = (20.0, 11.0, 23.0, 10.5)
 RUNG, TAILS, SIZE, GAMES, SURVEY, SAMPLES, QUADRATURE, AUDIT = 1.0, 4.0, 4, 400, 300, 512, 9, 5
+DISPERSION = 1.19
 
 
 def parse(name, minutes):
@@ -32,7 +33,7 @@ def load():
         row = json.loads(line)
         a, b = parse(row["a"], row["a_minutes"]), parse(row["b"], row["b_minutes"])
         if a and b and a[2] == b[2]:
-            matches.append((a, b, tally(row["outcomes"])))
+            matches.append((a, b, tally(row["outcomes"]), row["draft_seed"]))
     return matches
 
 
@@ -43,7 +44,7 @@ class Model:
         self.branches = sorted({bot[0] for bot in bots} - {"master"})
         self.runs = sorted({bot[1] for bot in bots})
         self.n, self.r = len(self.branches), len(self.runs)
-        self.size = 2 * self.n + 2 * self.r + 2
+        self.size = 2 * self.n + 2 * self.r + 3
 
     def contrast(self, a, b):
         d = torch.zeros(self.size)
@@ -53,6 +54,7 @@ class Model:
                 c = self.branches.index(branch)
                 d[c] += sign
                 d[self.n + c] += sign * x
+                d[-3] += sign * (x * x - 2.0 / 3.0)
             i = self.runs.index(run)
             d[2 * self.n + i] += sign
             d[2 * self.n + self.r + i] += sign * x
@@ -79,19 +81,20 @@ def logprobs(delta, log_nu):
 
 
 def objective(theta, model, contrasts, counts, precisions):
-    seat, log_nu = theta[-2], theta[-1]
+    curve, seat, log_nu = theta[-3], theta[-2], theta[-1]
     delta = (contrasts @ theta) * SCALE
     both = torch.stack([delta + seat * SCALE, delta - seat * SCALE], 1)
-    penalty = 0.5 * (precisions * theta[:-2] ** 2).sum()
-    return -(counts * logprobs(both, log_nu)).sum() + penalty + 0.5 * (seat / 100.0) ** 2
+    penalty = 0.5 * (precisions * theta[:-3] ** 2).sum()
+    return (-(counts * logprobs(both, log_nu)).sum() / DISPERSION + penalty
+            + 0.5 * (seat / 100.0) ** 2 + 0.5 * (curve / 100.0) ** 2)
 
 
 def fit(model, matches, rounds=12):
     """Empirical Bayes: Laplace fit inside, EM update of the prior scales outside."""
-    contrasts = torch.stack([model.contrast(a, b) for a, b, _ in matches])
-    counts = torch.stack([c for _, _, c in matches])
+    contrasts = torch.stack([model.contrast(a, b) for a, b, _, _ in matches])
+    counts = torch.stack([c for _, _, c, _ in matches])
     scales = torch.tensor(SCALES)
-    weights = torch.ones(model.size - 2)
+    weights = torch.ones(model.size - 3)
     mean, covariance = torch.zeros(model.size), None
     for _ in range(rounds):
         precisions = weights / torch.cat([
@@ -111,7 +114,7 @@ def fit(model, matches, rounds=12):
         hessian = torch.autograd.functional.hessian(
             lambda t: objective(t, model, contrasts, counts, precisions), mean)
         covariance = torch.linalg.inv(hessian)
-        energy = mean[:-2] ** 2 + covariance.diagonal()[:-2]
+        energy = mean[:-3] ** 2 + covariance.diagonal()[:-3]
         scales = torch.stack([(weights[slice(*span)] * energy[slice(*span)]).sum().sqrt()
                               / weights[slice(*span)].sum().sqrt() for span in model.spans()])
         spread = torch.cat([scales[i].expand(end - start)
@@ -130,8 +133,8 @@ def information(delta, nu):
 def precision(mean, contrasts, games):
     seat, nu = mean[-2] * SCALE, mean[-1].exp()
     delta = (contrasts @ mean) * SCALE
-    return (games / 2) * SCALE ** 2 * (information(delta + seat, nu)
-                                       + information(delta - seat, nu))
+    return (games / 2) * SCALE ** 2 / DISPERSION * (information(delta + seat, nu)
+                                                   + information(delta - seat, nu))
 
 
 def regret(value, spread, noise, size):
@@ -192,6 +195,36 @@ def pending(matches, bots):
     return names[a], names[b], "value", float(gain.max())
 
 
+def check(model, mean, covariance, matches):
+    """Posterior-predictive diagnostics: calibration, draws, fresh openings."""
+    contrasts = torch.stack([model.contrast(a, b) for a, b, _, _ in matches])
+    counts = torch.stack([c for _, _, c, _ in matches])
+    seat, nu = mean[-2] * SCALE, mean[-1].exp()
+    delta = (contrasts @ mean) * SCALE
+    both = torch.stack([delta + seat, delta - seat], 1)
+    chance = logprobs(both, mean[-1]).exp()
+    games = counts.sum((1, 2))
+    expected = (chance[..., 0] + 0.5 * chance[..., 2]).mul(counts.sum(2)).sum(1)
+    seen = (counts[..., 0] + 0.5 * counts[..., 2]).sum(1)
+    spread = (games * (chance[..., 0] + 0.25 * chance[..., 2]
+                       - (chance[..., 0] + 0.5 * chance[..., 2]) ** 2).mean(1)).sqrt()
+    residual = (seen - expected) / spread
+    fresh = torch.tensor([seed != 83 for *_, seed in matches])
+    print(f"calibration  standardised residual sd {residual.std():.2f} "
+          f"(1.00 = the stated uncertainty is right)")
+    if fresh.any():
+        print(f"             seed 83 {residual[~fresh].std():.2f} over {(~fresh).sum()},"
+              f" fresh openings {residual[fresh].std():.2f} over {fresh.sum()}")
+    print(f"draws        predicted {chance[..., 2].mean():.3f}   "
+          f"seen {(counts[..., 2].sum() / games.sum()):.3f}")
+    residual_by_age = {}
+    for (a, _, _, _), r in zip(matches, residual):
+        residual_by_age.setdefault(AGES[a[2]], []).append(float(r))
+    print("age linearity" + "".join(
+        f"   {age:.0f}min {torch.tensor(v).mean():+.2f}"
+        for age, v in sorted(residual_by_age.items())))
+
+
 def main():
     bots = json.loads((ROOT / "ladder/bots.json").read_text())
     matches = load()
@@ -205,6 +238,7 @@ def main():
               f"seat {mean[-2]:+.1f}   draws {mean[-1].exp():.3f}")
         for i in torch.argsort(value, descending=True):
             print(f"  {model.branches[i]:16s} {value[i]:+7.1f} +- {spread[i]:.1f}")
+        check(model, mean, covariance, matches)
         return
     a, b, kind, gain = pending(matches, bots)
     seed = 1000 + len(MATCHES.read_text().splitlines())
