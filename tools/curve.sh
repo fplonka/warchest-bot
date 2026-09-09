@@ -46,11 +46,6 @@ while :; do
         continue
     fi
     echo "[$(date +%FT%T)] $branch"
-    candidate "$branch" || {
-        echo "| $branch | failed |" >> "$results"
-        echo "[$(date +%FT%T)] $branch failed, holding the queue"
-        sleep 120
-        continue
-    }
+    candidate "$branch" || echo "| $branch | failed |" >> "$results"
     tail -n +2 "$queue" > "$queue.tmp" && mv "$queue.tmp" "$queue"
 done
