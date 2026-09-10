@@ -84,18 +84,66 @@ def sharpening(mean, covariance, size):
     return pairs, (shift * shift).sum(1) / ((shift * contrasts).sum(1) + 1.0 / precision)
 
 
+RAMP = (196, 202, 208, 214, 220, 226, 190, 154, 118, 82, 46)
+
+
+def paint(text, value, low, high, dim):
+    if not sys.stdout.isatty():
+        return text
+    if dim:
+        return f"\033[38;5;244m{text}\033[0m"
+    step = 0.0 if high <= low else (float(value) - low) / (high - low)
+    return f"\033[38;5;{RAMP[round(min(max(step, 0.0), 1.0) * (len(RAMP) - 1))]}m{text}\033[0m"
+
+
+def average(members, ages, size):
+    """Contrasts for a branch's mean Elo at each age, and its mean improvement."""
+    rows = {}
+    for age in sorted({a for at in members for a in at}):
+        column = torch.zeros(size + 2)
+        for at in members:
+            column[at[age]] = 1.0 / len(members)
+        rows[age] = column
+    gain = rows[max(rows)] - rows[min(rows)]
+    return rows, gain
+
+
 def report(names, ages, mean, covariance, played):
     runs = {}
     for i, name in enumerate(names):
         runs.setdefault(name.split(".")[0], {})[ages[i]] = i
-    print(f"{'run':22s} {'30min':>8s} {'60min':>8s} {'120min':>8s} {'30->120':>15s}")
-    for run in sorted(runs, key=lambda r: -mean[runs[r][max(runs[r])]]):
-        at = runs[run]
-        early, late = at[min(at)], at[max(at)]
-        spread = (covariance[early, early] + covariance[late, late]
-                  - 2 * covariance[early, late]).sqrt()
-        cells = "".join(f" {mean[at[a]]:+8.0f}" for a in sorted(at))
-        print(f"{run:22s}{cells}   {mean[late] - mean[early]:+7.0f} +- {spread:.0f}")
+    branches = {}
+    for run, at in runs.items():
+        branches.setdefault(run.rsplit("_s", 1)[0], []).append((run, at))
+    size = len(names)
+
+    lines = []
+    for branch, members in branches.items():
+        columns, gain = average([at for _, at in members], ages, size)
+        elo = {age: float(column @ mean) for age, column in columns.items()}
+        spread = float((gain @ covariance @ gain).sqrt())
+        lines.append((elo[max(elo)], branch, elo, float(gain @ mean), spread, False))
+        for run, at in sorted(members):
+            early, late = at[min(at)], at[max(at)]
+            lines.append((elo[max(elo)], "  " + run, {a: float(mean[at[a]]) for a in at},
+                          float(mean[late] - mean[early]),
+                          float((covariance[early, early] + covariance[late, late]
+                                 - 2 * covariance[early, late]).sqrt()), True))
+    lines.sort(key=lambda row: -row[0])
+
+    ranges = {}
+    for age in sorted({a for _, _, elo, _, _, _ in lines for a in elo}):
+        values = [elo[age] for _, _, elo, _, _, dim in lines if not dim]
+        ranges[age] = (min(values), max(values))
+    gains = [g for _, _, _, g, _, dim in lines if not dim]
+    ranges["gain"] = (min(gains), max(gains))
+
+    print(f"{'branch':24s} {'30min':>8s} {'60min':>8s} {'120min':>8s} {'30->120':>15s}")
+    for _, label, elo, gain, spread, dim in lines:
+        cells = "".join(paint(f" {elo[a]:+8.0f}", elo[a], *ranges[a], dim)
+                        for a in sorted(elo))
+        tail = paint(f"{gain:+7.0f} +- {spread:<4.0f}", gain, *ranges["gain"], dim)
+        print(paint(f"{label:24s}", elo[max(elo)], *ranges[max(elo)], dim) + cells + "   " + tail)
     fresh = sum(1 for *_, seed in played if seed != 83)
     print(f"\n{len(played)} matches ({fresh} on fresh openings), {len(names)} bots, "
           f"seat {mean[-2]:+.1f} Elo, draws {mean[-1].exp():.3f}")
