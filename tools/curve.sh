@@ -17,15 +17,17 @@ run() {
 }
 
 candidate() {
-    local branch=$1
+    local branch=$1 minutes=$2
     "$here/tools/box.sh" "rm -rf runs/smoke_$branch" &&
-        run "$branch" "out=smoke_$branch" minutes=2 warm_minutes=1 snapshot_every=1 seed=1 &&
-        run "$branch" "out=${branch}_s1" minutes=120 snapshot_every=30 seed=1 &&
-        run "$branch" "out=${branch}_s2" minutes=120 snapshot_every=30 seed=2
+        for seed in 1 2; do
+            run "$branch" "out=${branch}-${minutes}m_s$seed" minutes="$minutes" \
+                snapshot_every=$((minutes / 4)) seed="$seed" || return 1
+        done
 }
 
 while :; do
-    branch=$(head -1 "$queue" 2>/dev/null)
+    read -r branch minutes < <(head -1 "$queue" 2>/dev/null)
+    minutes=${minutes:-120}
     if [ -z "$branch" ]; then
         sleep 60
         continue
@@ -35,7 +37,7 @@ while :; do
         sleep 120
         continue
     fi
-    echo "[$(date +%FT%T)] $branch"
-    candidate "$branch" || echo "[$(date +%FT%T)] $branch failed"
+    echo "[$(date +%FT%T)] $branch ${minutes}min"
+    candidate "$branch" "$minutes" || echo "[$(date +%FT%T)] $branch failed"
     tail -n +2 "$queue" > "$queue.tmp" && mv "$queue.tmp" "$queue"
 done
