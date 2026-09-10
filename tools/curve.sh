@@ -20,7 +20,7 @@ candidate() {
     local branch=$1 minutes=$2
     "$here/tools/box.sh" "rm -rf runs/smoke_$branch" &&
         run "$branch" "out=${branch}-${minutes}m_s101" minutes="$minutes" \
-            snapshot_every=$((minutes / 4)) seed=101
+            snapshot_every=$((minutes / 4)) seed=101 lr_final=0.001
 }
 
 while :; do
