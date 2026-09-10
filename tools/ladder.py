@@ -1,3 +1,4 @@
+import bisect
 import json
 import math
 import sys
@@ -87,13 +88,13 @@ def sharpening(mean, covariance, size):
 RAMP = (196, 202, 208, 214, 220, 226, 190, 154, 118, 82, 46)
 
 
-def paint(text, value, low, high, dim):
+def paint(text, value, ordered, dim):
     if not sys.stdout.isatty():
         return text
     if dim:
         return f"\033[38;5;244m{text}\033[0m"
-    step = 0.0 if high <= low else (float(value) - low) / (high - low)
-    return f"\033[38;5;{RAMP[round(min(max(step, 0.0), 1.0) * (len(RAMP) - 1))]}m{text}\033[0m"
+    step = bisect.bisect_left(ordered, value) / max(len(ordered) - 1, 1)
+    return f"\033[38;5;{RAMP[round(step * (len(RAMP) - 1))]}m{text}\033[0m"
 
 
 def average(members, ages, size):
@@ -131,19 +132,17 @@ def report(names, ages, mean, covariance, played):
                                  - 2 * covariance[early, late]).sqrt()), True))
     lines.sort(key=lambda row: -row[0])
 
-    ranges = {}
-    for age in sorted({a for _, _, elo, _, _, _ in lines for a in elo}):
-        values = [elo[age] for _, _, elo, _, _, dim in lines if not dim]
-        ranges[age] = (min(values), max(values))
-    gains = [g for _, _, _, g, _, dim in lines if not dim]
-    ranges["gain"] = (min(gains), max(gains))
+    ordered = {age: sorted(elo[age] for _, _, elo, _, _, dim in lines if not dim)
+               for age in {a for _, _, elo, _, _, _ in lines for a in elo}}
+    ordered["gain"] = sorted(g for _, _, _, g, _, dim in lines if not dim)
 
     print(f"{'branch':24s} {'30min':>8s} {'60min':>8s} {'120min':>8s} {'30->120':>15s}")
     for _, label, elo, gain, spread, dim in lines:
-        cells = "".join(paint(f" {elo[a]:+8.0f}", elo[a], *ranges[a], dim)
+        cells = "".join(paint(f" {elo[a]:+8.0f}", elo[a], ordered[a], dim)
                         for a in sorted(elo))
-        tail = paint(f"{gain:+7.0f} +- {spread:<4.0f}", gain, *ranges["gain"], dim)
-        print(paint(f"{label:24s}", elo[max(elo)], *ranges[max(elo)], dim) + cells + "   " + tail)
+        tail = paint(f"{gain:+7.0f} +- {spread:<4.0f}", gain, ordered["gain"], dim)
+        print(paint(f"{label:24s}", elo[max(elo)], ordered[max(elo)], dim)
+              + cells + "   " + tail)
     fresh = sum(1 for *_, seed in played if seed != 83)
     print(f"\n{len(played)} matches ({fresh} on fresh openings), {len(names)} bots, "
           f"seat {mean[-2]:+.1f} Elo, draws {mean[-1].exp():.3f}")
