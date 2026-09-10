@@ -91,7 +91,7 @@ RAMP = (196, 202, 208, 214, 220, 226, 190, 154, 118, 82, 46)
 def paint(text, value, ordered, dim):
     if not sys.stdout.isatty():
         return text
-    if dim:
+    if dim or ordered is None:
         return f"\033[38;5;244m{text}\033[0m"
     step = bisect.bisect_left(ordered, value) / max(len(ordered) - 1, 1)
     return f"\033[38;5;{RAMP[round(step * (len(RAMP) - 1))]}m{text}\033[0m"
@@ -123,10 +123,10 @@ def report(names, ages, mean, covariance, played):
         columns, gain = average([at for _, at in members], ages, size)
         elo = {age: float(column @ mean) for age, column in columns.items()}
         spread = float((gain @ covariance @ gain).sqrt())
-        lines.append((elo[max(elo)], branch, elo, float(gain @ mean), spread, False))
+        lines.append((float(gain @ mean), branch, elo, float(gain @ mean), spread, False))
         for run, at in sorted(members):
             early, late = at[min(at)], at[max(at)]
-            lines.append((elo[max(elo)], "  " + run, {a: float(mean[at[a]]) for a in at},
+            lines.append((float(gain @ mean), "  " + run, {a: float(mean[at[a]]) for a in at},
                           float(mean[late] - mean[early]),
                           float((covariance[early, early] + covariance[late, late]
                                  - 2 * covariance[early, late]).sqrt()), True))
@@ -138,11 +138,12 @@ def report(names, ages, mean, covariance, played):
 
     print(f"{'branch':24s} {'30min':>8s} {'60min':>8s} {'120min':>8s} {'30->120':>15s}")
     for _, label, elo, gain, spread, dim in lines:
-        cells = "".join(paint(f" {elo[a]:+8.0f}", elo[a], ordered[a], dim)
-                        for a in sorted(elo))
+        ages = sorted(elo)
+        cells = "".join(paint(f" {elo[a]:+8.0f}", elo[a],
+                              None if a == ages[0] else ordered[a], dim)
+                        for a in ages)
         tail = paint(f"{gain:+7.0f} +- {spread:<4.0f}", gain, ordered["gain"], dim)
-        print(paint(f"{label:24s}", elo[max(elo)], ordered[max(elo)], dim)
-              + cells + "   " + tail)
+        print(paint(f"{label:24s}", gain, ordered["gain"], dim) + cells + "   " + tail)
     fresh = sum(1 for *_, seed in played if seed != 83)
     print(f"\n{len(played)} matches ({fresh} on fresh openings), {len(names)} bots, "
           f"seat {mean[-2]:+.1f} Elo, draws {mean[-1].exp():.3f}")
