@@ -148,8 +148,8 @@ class Net(nn.Module):
     def belief_context(self, conditioned, weight, seg, nseg):
         pooled = conditioned.new_zeros(nseg, ATTN)
         pooled.index_add_(0, seg, conditioned * weight.unsqueeze(1))
-        other = torch.arange(nseg, device=seg.device) ^ 1
-        return torch.cat([pooled, pooled[other]], -1)
+        other = pooled.reshape(nseg // 2, 2, ATTN).flip(1).reshape_as(pooled)
+        return torch.cat([pooled, other], -1)
 
     def actions(self, desc, boards, heads, cards, spatial, board_of, head_of):
         row = board_of
