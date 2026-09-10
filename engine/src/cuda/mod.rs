@@ -190,7 +190,8 @@ const _: () = {
 };
 
 const TILE: usize = 16384;
-const ATTN_TILE: usize = 1024;
+const BOARD_TILE: usize = 1024;
+const PAIR_TILE: usize = 16384;
 
 struct Shard {
     call: usize,
@@ -1316,15 +1317,20 @@ impl Card {
         }
         pairs.sort_unstable_by_key(|p| (p.0, p.2));
         let mut boards = Vec::new();
-        let mut offsets = vec![0];
-        for group in pairs.chunk_by(|a, b| (a.0, a.2) == (b.0, b.2)) {
-            boards.push((group[0].0, group[0].2));
-            offsets.push(offsets.last().unwrap() + group.len());
+        let mut offsets = Vec::new();
+        for (i, pair) in pairs.iter_mut().enumerate() {
+            let board = (pair.0, pair.2);
+            if boards.last() != Some(&board) {
+                offsets.push(i);
+                boards.push(board);
+            }
+            pair.2 = (boards.len() - 1) as u32;
         }
+        offsets.push(pairs.len());
         self.lay(&solves)?;
-        for at in (0..boards.len()).step_by(ATTN_TILE) {
-            let end = (at + ATTN_TILE).min(boards.len());
-            self.attention_boards(&boards[at..end], &pairs[offsets[at]..offsets[end]])?;
+        for at in (0..boards.len()).step_by(BOARD_TILE) {
+            let end = (at + BOARD_TILE).min(boards.len());
+            self.attention_boards(at as u32, &boards[at..end], &pairs[offsets[at]..offsets[end]])?;
         }
         Ok(())
     }
@@ -1369,7 +1375,7 @@ impl Card {
         Ok(())
     }
 
-    fn attention_boards(&self, boards: &[(u32, u32)], pairs: &[(u32, usize, u32, u32)]) -> Res<()> {
+    fn attention_boards(&self, board_at: u32, boards: &[(u32, u32)], pairs: &[(u32, usize, u32, u32)]) -> Res<()> {
         {
             let stream = &self.stream;
             let mut stage = self.host.lock();
@@ -1397,13 +1403,13 @@ impl Card {
             }.map_err(err)?;
             self.run(self.layout.attention_kv(), public, boards.len() * ntokens, kv)?;
         }
-        for tile in pairs.chunks(ATTN_TILE) {
-            self.attention_pairs(boards, tile)?;
+        for tile in pairs.chunks(PAIR_TILE) {
+            self.attention_pairs(board_at, tile)?;
         }
         Ok(())
     }
 
-    fn attention_pairs(&self, boards: &[(u32, u32)], pairs: &[(u32, usize, u32, u32)]) -> Res<()> {
+    fn attention_pairs(&self, board_at: u32, pairs: &[(u32, usize, u32, u32)]) -> Res<()> {
         let stream = &self.stream;
         let mut stage = self.host.lock();
         stage.pair_part.put(stream, pairs.len(), |dst| {
@@ -1415,9 +1421,7 @@ impl Card {
             pairs.len()
         })?;
         stage.pair_board.put(stream, pairs.len(), |dst| {
-            for (out, pair) in dst.iter_mut().zip(pairs) {
-                *out = boards.binary_search(&(pair.0, pair.2)).expect("grouped board") as u32;
-            }
+            for (out, pair) in dst.iter_mut().zip(pairs) { *out = pair.2 - board_at; }
             pairs.len()
         })?;
         stage.pair_config.put(stream, pairs.len(), |dst| {
@@ -2267,9 +2271,9 @@ impl Plan {
             z: self.arr(TILE * D)?,
             input: self.arr(TILE * (D + 2 * ATTN))?,
             leaves: self.arr(n * cfg.s.max(1) as usize)?,
-            queries: self.arr(ATTN_TILE * (N_HEXES + NTYPE) * ATTN)?,
-            public: self.arr(ATTN_TILE * (N_HEXES + NTYPE) * C)?,
-            kv: self.arr(ATTN_TILE * (N_HEXES + NTYPE) * 2 * ATTN)?,
+            queries: self.arr(BOARD_TILE * (N_HEXES + NTYPE) * ATTN)?,
+            public: self.arr(BOARD_TILE * (N_HEXES + NTYPE) * C)?,
+            kv: self.arr(BOARD_TILE * (N_HEXES + NTYPE) * 2 * ATTN)?,
             piles: self.arr(TILE * NTYPE * PILE_COUNTS)?,
             tokens: self.arr(TILE * NTYPE * TYPE)?,
             projected: self.arr(TILE * NTYPE * C)?,
@@ -2288,12 +2292,12 @@ impl Plan {
             card_of_row: self.wire(TILE)?,
             phi: self.wire(configs * CFEAT)?,
             owner: self.wire(configs)?,
-            pair_part: self.wire(ATTN_TILE)?,
-            pair_at: self.wire(ATTN_TILE)?,
-            pair_board: self.wire(ATTN_TILE)?,
-            pair_config: self.wire(ATTN_TILE)?,
-            board_part: self.wire(ATTN_TILE)?,
-            board_local: self.wire(ATTN_TILE)?,
+            pair_part: self.wire(PAIR_TILE)?,
+            pair_at: self.wire(PAIR_TILE)?,
+            pair_board: self.wire(PAIR_TILE)?,
+            pair_config: self.wire(PAIR_TILE)?,
+            board_part: self.wire(BOARD_TILE)?,
+            board_local: self.wire(BOARD_TILE)?,
             cfg_cards: self.wire(cards)?,
             blob: self.wire(n * (resident + rows + cidx + 2 * rows + 1))?,
             dst: self.wire(TILE)?,
