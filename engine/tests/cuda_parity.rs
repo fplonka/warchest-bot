@@ -286,7 +286,7 @@ fn linear(net: &Net, span: Span, input: &[f32]) -> Vec<f32> {
 }
 
 #[test]
-fn configuration_projections_match_the_device() {
+fn configuration_attention_matches_across_pair_tiles() {
     let net = Arc::new(Net::random(0x9E37));
     let cfg = Cfg { s: 1, c: 0.0, ..Default::default() };
     let mut data = Data::default();
@@ -312,7 +312,7 @@ fn configuration_projections_match_the_device() {
     }
     let Some(Call::Configs { cards, pair_board, pair_config, .. }) = calls.iter()
         .find(|c| matches!(c, Call::Configs { .. })) else { panic!("configuration call") };
-    let sources: Vec<usize> = (0..2051).map(|i| (pairs.len() - 1) - i % pairs.len()).collect();
+    let sources: Vec<usize> = (0..16_385).map(|i| (pairs.len() - 1) - i % pairs.len()).collect();
     device.run(&[Call::Configs {
         solve: 27, at: resident.query.len() / ATTN, n: 0,
         phi: Vec::new(), owner: Vec::new(), cards: cards.clone(), pair_at: pairs.len(),
