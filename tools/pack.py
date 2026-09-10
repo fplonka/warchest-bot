@@ -16,7 +16,7 @@ def selected(snapshots):
     if not snapshots:
         return []
     end = snapshots[-1]["t"]
-    picks = [min(snapshots, key=lambda s: abs(s["t"] - end / k)) for k in (4, 2, 1)]
+    picks = [min(snapshots, key=lambda s: abs(s["t"] - end / k)) for k in (8, 4, 2, 1)]
     return [s for s in snapshots if s in picks]
 
 
