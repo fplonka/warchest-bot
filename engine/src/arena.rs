@@ -113,7 +113,7 @@ struct Bout {
 #[derive(Default)]
 pub struct Table {
     bouts: BTreeMap<u32, Bout>,
-    done: Vec<(u32, [usize; 2], f32)>,
+    done: Vec<(u32, [usize; 2], i8)>,
     dropped: BTreeMap<usize, Vec<u32>>,
 }
 
@@ -176,7 +176,7 @@ impl Table {
             }
             if crate::finished(&b.s, b.main_plays) {
                 b.over = true;
-                let z = if b.s.is_terminal() { b.s.utility(WHITE as usize) } else { 0.0 };
+                let z = b.s.winner().map_or(0, |w| if w == WHITE { 1 } else { -1 });
                 ended.push((id, b.bots, z));
             }
         }
@@ -220,7 +220,7 @@ impl Table {
         Ok(())
     }
 
-    pub fn reap(&mut self) -> Vec<(u32, [usize; 2], f32)> {
+    pub fn reap(&mut self) -> Vec<(u32, [usize; 2], i8)> {
         std::mem::take(&mut self.done)
     }
 

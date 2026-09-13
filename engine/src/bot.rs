@@ -192,7 +192,7 @@ mod tests {
         }
     }
 
-    fn play(seed: u64, mut inspect: impl FnMut(&Session)) -> f32 {
+    fn play(seed: u64, mut inspect: impl FnMut(&Session)) -> i8 {
         let brain = brain();
         let mut table = Table::new();
         table.start(1, &draft(), [0, 1], seed).unwrap();

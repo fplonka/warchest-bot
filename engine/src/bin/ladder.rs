@@ -97,7 +97,7 @@ struct Match {
     draft_seed: u64,
     protocol: u32,
     rules: u64,
-    outcomes: Vec<[f32; 2]>,
+    outcomes: Vec<[i8; 2]>,
 }
 
 fn drafts(seed: u64, count: usize) -> Vec<Draft> {
@@ -116,10 +116,10 @@ fn drafts(seed: u64, count: usize) -> Vec<Draft> {
 
 const CONCURRENT: usize = 256;
 
-fn play(a: &Packed, b: &Packed, games: usize, seed: u64) -> Result<Vec<[f32; 2]>, String> {
+fn play(a: &Packed, b: &Packed, games: usize, seed: u64) -> Result<Vec<[i8; 2]>, String> {
     let mut bots = [BotProcess::launch(a, "0")?, BotProcess::launch(b, "1")?];
     let mut table = Table::new();
-    let mut outcomes = vec![[0.0; 2]; games / 2];
+    let mut outcomes = vec![[0; 2]; games / 2];
     for (pair, draft) in drafts(seed, games / 2).into_iter().enumerate() {
         for (color, seats) in [[0, 1], [1, 0]].into_iter().enumerate() {
             let id = (2 * pair + color) as u32;
@@ -138,7 +138,7 @@ fn play(a: &Packed, b: &Packed, games: usize, seed: u64) -> Result<Vec<[f32; 2]>
 fn step(
     table: &mut Table,
     bots: &mut [BotProcess; 2],
-    outcomes: &mut [[f32; 2]],
+    outcomes: &mut [[i8; 2]],
 ) -> Result<(), String> {
     table.settle();
     for (id, seats, utility) in table.reap() {
