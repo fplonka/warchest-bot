@@ -866,7 +866,7 @@ impl Card {
                 ]
                 .map(|x| x as i32),
             );
-            plan.extend([lanes[2 * i], lanes[2 * i + 1], blk.dir].map(|x| x as i32));
+            plan.extend([lanes[2 * i], lanes[2 * i + 1]].map(|x| x as i32));
         }
         let t = layout.norms[LN_TRUNK];
         plan.extend([t.g as i32, t.b as i32]);
