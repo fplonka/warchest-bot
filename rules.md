@@ -9,8 +9,11 @@ server behavior, the server wins.
 
 2-player ranked configuration: base set, random draft, `royalGuardType: true`.
 Implement 19 unit types + the Royal Coin. All are official AEG cards (the V2s
-are AEG's revised cards; the site's random draft deals V1 and V2 versions as
-distinct units in one pool, so both appear in ranked games).
+are AEG's revised cards). The random draft has 16 slots, one per unit; the
+Berserker, Footman and Warrior Priest slots hold either version, chosen per
+game. Eight slots are dealt, four per player, so a unit appears in half of
+games and its two versions never appear together (checked over 753 ranked
+random-draft games).
 
 unitTypeId map (from the site; the engine must key units by these ids):
 1 Archer, 2 Berserker, 3 Cavalry, 4 Crossbowman, 5 Ensign, 6 Footman,

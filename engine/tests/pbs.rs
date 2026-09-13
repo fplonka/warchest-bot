@@ -350,13 +350,7 @@ fn config_features_separate_every_config() {
 #[test]
 fn card_features_separate_every_draftable_unit() {
     let mut seen: HashMap<Vec<u32>, u8> = HashMap::new();
-    let units: Vec<u8> = warchest::selfplay::DRAFT_POOL
-        .iter()
-        .filter_map(|&id| warchest::units::index_of_id(id))
-        .chain([warchest::units::ROYAL_COIN])
-        .collect();
-    assert_eq!(units.len(), 20, "the draft pool did not resolve to unit indices");
-    for u in units {
+    for u in 0..warchest::units::N_UNITS as u8 {
         let mut f = vec![0.0f32; CARD_FEATS];
         write_card_features(u, &mut f);
         let key: Vec<u32> = f.iter().map(|x| x.to_bits()).collect();

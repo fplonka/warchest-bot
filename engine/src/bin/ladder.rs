@@ -7,7 +7,7 @@ use warchest::arena::{Done, Draft, Hello, Reply, Request, Table, PROTOCOL};
 use warchest::packed::Packed;
 use warchest::pbs::rules_table_hash;
 use warchest::rng::Rng;
-use warchest::selfplay::DRAFT_POOL;
+use warchest::selfplay::deal;
 
 struct BotProcess {
     child: Child,
@@ -104,10 +104,7 @@ fn drafts(seed: u64, count: usize) -> Vec<Draft> {
     let mut rng = Rng::new(seed);
     (0..count)
         .map(|_| {
-            let mut pool: Vec<u16> = DRAFT_POOL.to_vec();
-            for i in (1..pool.len()).rev() {
-                pool.swap(i, rng.below(i + 1));
-            }
+            let pool = deal(&mut rng);
             Draft {
                 white: pool[..4].to_vec(),
                 black: pool[4..8].to_vec(),

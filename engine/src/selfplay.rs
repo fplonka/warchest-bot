@@ -14,17 +14,25 @@ use std::sync::Arc;
 const STARTER_WHITE: [u16; 4] = [17, 12, 4, 9];
 const STARTER_BLACK: [u16; 4] = [1, 3, 8, 16];
 
-pub const DRAFT_POOL: [u16; 19] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 52, 53, 54];
+pub const DRAFT_POOL: [[u16; 2]; 16] = [
+    [1, 1], [2, 52], [3, 3], [4, 4], [5, 5], [6, 53], [7, 7], [8, 8],
+    [9, 9], [10, 10], [11, 11], [12, 12], [16, 16], [17, 17], [18, 54], [19, 19],
+];
+
+pub fn deal(rng: &mut Rng) -> [u16; 16] {
+    let mut pool = DRAFT_POOL.map(|slot| slot[(rng.next_u64() & 1) as usize]);
+    for i in (1..pool.len()).rev() {
+        pool.swap(i, rng.below(i + 1));
+    }
+    pool
+}
 
 pub fn make_game(rng: &mut Rng, random: bool) -> State {
     let first = if rng.next_u64() & 1 == 0 { WHITE } else { BLACK };
     if !random {
         return State::from_draft(&STARTER_WHITE, &STARTER_BLACK, first);
     }
-    let mut pool = DRAFT_POOL;
-    for i in (1..pool.len()).rev() {
-        pool.swap(i, rng.below(i + 1));
-    }
+    let pool = deal(rng);
     State::from_draft(&pool[..4], &pool[4..8], first)
 }
 

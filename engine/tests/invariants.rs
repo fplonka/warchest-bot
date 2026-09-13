@@ -1,36 +1,11 @@
 use warchest::board::{board, NONE, N_HEXES, N_LOCATIONS};
 use warchest::rng::Rng;
-use warchest::selfplay::make_game;
+use warchest::selfplay::{make_game, DRAFT_POOL};
 use warchest::state::{Cont, State, BLACK, WHITE, Z_INFLIGHT};
 use warchest::units::{def, N_UNITS, ROYAL_COIN};
 
-const POOL: [u16; 19] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 52, 53, 54];
-
-fn random_draft(rng: &mut Rng) -> (Vec<u16>, Vec<u16>, u8) {
-    let pick4 = |rng: &mut Rng| -> Vec<u16> {
-        let mut chosen: Vec<u16> = Vec::new();
-        while chosen.len() < 4 {
-            let id = POOL[rng.below(POOL.len())];
-            if !chosen.contains(&id) {
-                chosen.push(id);
-            }
-        }
-        chosen
-    };
-    let w = pick4(rng);
-    let b = pick4(rng);
-    let first = if rng.next_u64() & 1 == 0 { WHITE } else { BLACK };
-    (w, b, first)
-}
-
-fn initial_totals(units: &[u16]) -> [u16; N_UNITS] {
-    let mut t = [0u16; N_UNITS];
-    for &id in units {
-        let u = warchest::units::index_of_id(id).unwrap();
-        t[u as usize] += def(u).coins as u16;
-    }
-    t[warchest::units::ROYAL_COIN as usize] += 1;
-    t
+fn totals(s: &State, p: u8) -> [u16; N_UNITS] {
+    std::array::from_fn(|u| s.total_coins(p, u) as u16)
 }
 
 fn check_invariants(s: &State, init: &[[u16; N_UNITS]; 2]) {
@@ -103,9 +78,8 @@ fn invariants_random_playouts() {
     let mut winners = [0u32; 3];
 
     for _ in 0..n_games {
-        let (w, b, first) = random_draft(&mut rng);
-        let init = [initial_totals(&w), initial_totals(&b)];
-        let mut s = State::from_draft(&w, &b, first);
+        let mut s = make_game(&mut rng, true);
+        let init = [totals(&s, 0), totals(&s, 1)];
         check_invariants(&s, &init);
 
         let mut applies = 0u32;
@@ -165,6 +139,16 @@ fn random_drafts_never_duplicate_a_unit_card() {
                 "game {g}: unit {u} has {} coins in play, the card has {}",
                 w + b,
                 def(u as u8).coins
+            );
+        }
+        let dealt = |id: u16| {
+            let u = warchest::units::index_of_id(id).unwrap() as usize;
+            s.total_coins(0, u) + s.total_coins(1, u) > 0
+        };
+        for [base, revised] in DRAFT_POOL.into_iter().filter(|slot| slot[0] != slot[1]) {
+            assert!(
+                !(dealt(base) && dealt(revised)),
+                "game {g}: units {base} and {revised} are two versions of one card"
             );
         }
     }
