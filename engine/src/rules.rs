@@ -225,7 +225,7 @@ impl State {
         if !d.warrior_priest {
             return false;
         }
-        if d.warrior_priest_v2 && self.wp_v2_triggered {
+        if self.wp_v2_triggered {
             return false;
         }
         true
@@ -875,10 +875,8 @@ impl State {
             TacFootman { coin } => {
                 self.zmove(p, pay, Z_FACEUP, coin);
                 let mut hexes = crate::state::HexSet::default();
-                for u in [FOOTMAN, FOOTMAN_V2] {
-                    for &h in self.hexes_of(p, u).iter() {
-                        hexes.insert(h as u8);
-                    }
+                for h in self.hexes_of(p, coin) {
+                    hexes.insert(h as u8);
                 }
                 if !hexes.is_empty() {
                     self.push_cont(Cont::FootmanManeuver { hexes });

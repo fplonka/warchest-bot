@@ -389,24 +389,6 @@ fn warrior_priest_v2_once_per_turn() {
 }
 
 #[test]
-fn warrior_priest_v1_does_not_block_v2() {
-    let mut s = State::blank(WHITE);
-    s.set_unit(LOC_11, WHITE, WARRIOR_PRIEST, 1);
-    s.set_unit(CENTER, WHITE, WARRIOR_PRIEST_V2, 1);
-    s.set_unit(E1, BLACK, FOOTMAN, 3);
-    s.add_zone(WHITE, Z_HAND, WARRIOR_PRIEST, 1);
-    s.add_zone(WHITE, Z_BAG, WARRIOR_PRIEST_V2, 1);
-    let s2 = s.apply(Action::Attack { from: LOC_11, target: E1, });
-    assert!(matches!(s2.pending(), Cont::WarriorPriestDraw { .. }));
-    let s3 = s2.apply(Action::DrawCoin { unit: WARRIOR_PRIEST_V2, });
-    let s4 = s3.apply(Action::Attack { from: CENTER, target: E1, });
-    assert!(
-        matches!(s4.pending(), Cont::WarriorPriestDraw { .. }),
-        "V1's trigger must not block V2's"
-    );
-}
-
-#[test]
 fn warrior_priest_forced_play_of_rg_coin_cannot_use_rg_tactic() {
     let mut s = State::blank(WHITE);
     s.set_unit(W1, WHITE, WARRIOR_PRIEST, 1);
@@ -583,33 +565,6 @@ fn footman_v2_recruit_coin_stays_in_discard_until_deployed() {
     assert_eq!(s3.zones[WHITE as usize][Z_FACEUP][FOOTMAN_V2 as usize], 0);
     let s4 = s2.apply(Action::FootmanInstantDecline);
     assert_eq!(s4.zones[WHITE as usize][Z_FACEUP][FOOTMAN_V2 as usize], 1);
-}
-
-#[test]
-fn footman_tactic_covers_both_versions_in_any_order() {
-    let mut s = State::blank(WHITE);
-    s.set_unit(CENTER, WHITE, FOOTMAN, 1);
-    s.set_unit(W1, WHITE, FOOTMAN_V2, 1);
-    s.add_zone(WHITE, Z_HAND, FOOTMAN, 1);
-    let s2 = s.apply(Action::TacFootman { coin: FOOTMAN });
-    match s2.pending() {
-        Cont::FootmanManeuver { hexes } => {
-            assert_eq!(
-                hexes.to_vec().as_slice(),
-                &[W1, CENTER],
-                "both footman versions owe a maneuver"
-            );
-        }
-        other => panic!("expected FootmanManeuver, got {:?}", other),
-    }
-    let acts = s2.legal_actions();
-    assert!(has(&acts, Action::FootMove { from: CENTER, to: E1 }));
-    assert!(has(&acts, Action::FootMove { from: W1, to: 16 }));
-    let s3 = s2.apply(Action::FootMove { from: W1, to: 16 });
-    match s3.pending() {
-        Cont::FootmanManeuver { hexes } => assert_eq!(hexes.to_vec().as_slice(), &[CENTER]),
-        other => panic!("expected FootmanManeuver for the remaining footman, got {:?}", other),
-    }
 }
 
 #[test]

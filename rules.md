@@ -160,8 +160,7 @@ ATTRIBUTES (free/triggered effects):
   (adjudication, 2026; the census never separated this case). The drawn coin
   never joins the hand: it is the coin the forced play pays with, and the
   engine holds it in its own zone until then, so the hand cap is untouched.
-- Warrior Priest V2: same, at most once per turn. Only V2's own trigger
-  counts against the cap: a V1 trigger earlier in the turn does not block V2.
+- Warrior Priest V2: same, at most once per turn.
 - Footman V2 extra attribute: after you RECRUIT a Footman coin while you
   already have a Footman unit deployed, you may immediately deploy the
   recruited coin (normal deploy legality) instead of putting it in discard.
