@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde::Serialize;
-use warchest::arena::{Draft, Hello, Reply, Request, Table, PROTOCOL};
+use warchest::arena::{Done, Draft, Hello, Reply, Request, Table, PROTOCOL};
 use warchest::packed::Packed;
 use warchest::pbs::rules_table_hash;
 use warchest::rng::Rng;
@@ -52,11 +52,13 @@ impl BotProcess {
         })
     }
 
-    fn exchange(&mut self, request: &Request) -> Result<Reply, String> {
+    fn send(&mut self, request: &Request) -> Result<(), String> {
         serde_json::to_writer(&mut self.input, request).map_err(|e| e.to_string())?;
         writeln!(self.input).map_err(|e| e.to_string())?;
-        self.input.flush().map_err(|e| e.to_string())?;
-        let expected = request.go.len() + request.watch.len();
+        self.input.flush().map_err(|e| e.to_string())
+    }
+
+    fn receive(&mut self, expected: usize) -> Result<Vec<Done>, String> {
         let mut done = Vec::with_capacity(expected);
         while done.len() < expected {
             let mut line = String::new();
@@ -73,7 +75,7 @@ impl BotProcess {
             }
             done.extend(reply.done);
         }
-        Ok(Reply { done, error: None })
+        Ok(done)
     }
 }
 
@@ -115,11 +117,10 @@ fn drafts(seed: u64, count: usize) -> Vec<Draft> {
         .collect()
 }
 
-const DEVICES: &str = "0,1";
 const CONCURRENT: usize = 256;
 
 fn play(a: &Packed, b: &Packed, games: usize, seed: u64) -> Result<Vec<[f32; 2]>, String> {
-    let mut bots = [BotProcess::launch(a, DEVICES)?, BotProcess::launch(b, DEVICES)?];
+    let mut bots = [BotProcess::launch(a, "0")?, BotProcess::launch(b, "1")?];
     let mut table = Table::new();
     let mut outcomes = vec![[0.0; 2]; games / 2];
     for (pair, draft) in drafts(seed, games / 2).into_iter().enumerate() {
@@ -146,10 +147,12 @@ fn step(
     for (id, seats, utility) in table.reap() {
         outcomes[id as usize / 2][id as usize % 2] = if seats[0] == 0 { utility } else { -utility };
     }
-    for (index, bot) in bots.iter_mut().enumerate() {
-        let request = table.request(index);
-        let reply = bot.exchange(&request)?;
-        table.accept(index, reply)?;
+    let requests = [table.request(0), table.request(1)];
+    for (bot, request) in bots.iter_mut().zip(&requests) {
+        bot.send(request)?;
+    }
+    for (index, (bot, request)) in bots.iter_mut().zip(&requests).enumerate() {
+        table.accept(index, bot.receive(request.go.len() + request.watch.len())?)?;
     }
     Ok(())
 }

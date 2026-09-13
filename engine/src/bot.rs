@@ -174,7 +174,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::arena::{Done, Reply, Table};
+    use crate::arena::{Done, Table};
 
     fn draft() -> Draft {
         Draft {
@@ -242,7 +242,7 @@ mod tests {
                 for entry in &done {
                     waiting[bot].remove(&entry.id);
                 }
-                table.accept(bot, Reply { done, error: None }).unwrap();
+                table.accept(bot, done).unwrap();
             }
         }
     }
@@ -315,7 +315,7 @@ mod tests {
                         });
                     }
                 }
-                table.accept(bot, Reply { done, error: None }).unwrap();
+                table.accept(bot, done).unwrap();
             }
         }
         assert!(checked > 20, "the game was too short to have tested anything");

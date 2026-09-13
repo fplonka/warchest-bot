@@ -102,7 +102,6 @@ struct Bout {
     s: State,
     rng: Rng,
     bots: [usize; 2],
-    draft: Draft,
     pending: [Vec<Obs>; 2],
     start: [Option<Start>; 2],
     asked: [bool; 2],
@@ -114,7 +113,6 @@ struct Bout {
 #[derive(Default)]
 pub struct Table {
     bouts: BTreeMap<u32, Bout>,
-    queued: Vec<(u32, State, Draft)>,
     done: Vec<(u32, [usize; 2], f32)>,
     dropped: BTreeMap<usize, Vec<u32>>,
 }
@@ -149,7 +147,6 @@ impl Table {
                 s,
                 rng: Rng::new(seed),
                 bots,
-                draft: draft.clone(),
                 pending: [Vec::new(), Vec::new()],
                 start: [start(WHITE), start(BLACK)],
                 asked: [false, false],
@@ -163,14 +160,11 @@ impl Table {
 
     pub fn settle(&mut self) {
         let mut ended = Vec::new();
-        let mut fresh = Vec::new();
         for (&id, b) in self.bouts.iter_mut() {
             if b.over {
                 continue;
             }
-            let mut drew = false;
             while !b.s.is_terminal() && b.s.is_chance() {
-                drew = true;
                 let player = b.s.to_act();
                 let drawn = resolve_chance(&mut b.s, player, &mut b.rng);
                 b.watched = [false, false];
@@ -184,11 +178,8 @@ impl Table {
                 b.over = true;
                 let z = if b.s.is_terminal() { b.s.utility(WHITE as usize) } else { 0.0 };
                 ended.push((id, b.bots, z));
-            } else if drew {
-                fresh.push((id, b.s, b.draft.clone()));
             }
         }
-        self.queued.append(&mut fresh);
         self.done.append(&mut ended);
         self.retire();
     }
@@ -222,13 +213,10 @@ impl Table {
         b.main_plays += matches!(b.s.pending(), Cont::MainPlay) as u16;
         b.s.apply_inplace(action);
         b.watched = [false, false];
-        let live = !crate::finished(&b.s, b.main_plays) && !b.s.is_chance();
-        let reached = live.then_some((id, b.s, b.draft.clone()));
         b.pending[1 - player as usize].push(Obs::Act {
             player,
             key: crate::pbs::obs_key(&action),
         });
-        self.queued.extend(reached);
         Ok(())
     }
 
@@ -269,11 +257,8 @@ impl Table {
         }
     }
 
-    pub fn accept(&mut self, bot: usize, reply: Reply) -> Result<(), String> {
-        if let Some(error) = reply.error {
-            return Err(error);
-        }
-        for done in reply.done {
+    pub fn accept(&mut self, bot: usize, done: Vec<Done>) -> Result<(), String> {
+        for done in done {
             if let Some(b) = self.bouts.get_mut(&done.id) {
                 if let Some(seat) = b.bots.iter().position(|&x| x == bot) {
                     b.asked[seat] = false;
