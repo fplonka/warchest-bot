@@ -710,8 +710,7 @@ __global__ void k_backprop_sweep(const Tree* trees, const unsigned int* work, in
 }
 
 __global__ void k_belief(const Tree* trees, const int* part_of_row,
-                         const int* local_row, float* out, int rows, int q0,
-                         int attn) {
+                         const int* local_row, float* out, int rows, int q0) {
     int k = blockIdx.x, role = blockIdx.y, lane = threadIdx.x;
     if (k >= rows || role >= 2) return;
     int r = q0 + (k >> 1);
@@ -725,23 +724,25 @@ __global__ void k_belief(const Tree* trees, const int* part_of_row,
     total = warp_sum(total);
     float inv = total > SMOOTH ? 1.0f / total : 1.0f / (float)max(count, 1u);
     unsigned int cs = t.coff[2 * row + player];
-    for (int j = lane; j < attn; j += 32) {
-        float acc = 0.0f;
-        for (unsigned int c = 0; c < count; ++c) {
-            float weight = total > SMOOTH ? t.reach[ra + c] * inv : inv;
-            unsigned int pair = t.aidx[cs + c];
-            acc += weight * t.conditioned[(size_t)pair * attn + j];
-        }
-        out[((size_t)k * 2 + role) * attn + j] = acc;
+    float acc[ATTN / 32] = {0.0f};
+    for (unsigned int c = 0; c < count; ++c) {
+        float weight = total > SMOOTH ? t.reach[ra + c] * inv : inv;
+        const float* pp = t.conditioned + (size_t)t.aidx[cs + c] * ATTN;
+        for (int q = 0; q < ATTN / 32; ++q) acc[q] += weight * pp[lane + 32 * q];
     }
+    float* dst = out + ((size_t)k * 2 + role) * ATTN;
+    for (int q = 0; q < ATTN / 32; ++q) dst[lane + 32 * q] = acc[q];
 }
 
 __global__ void k_value(const Tree* trees, const int* part_of_row,
                         const int* local_row, const float* belief_projection,
-                        const float* hidden_b, const float* out_w,
+                        const float* __restrict__ hidden_b, const float* out_w,
                         const float* out_b, int rows, int q0) {
     int k = blockIdx.x, lane = threadIdx.x;
-    if (k >= rows) return;
+    __shared__ float weight[BINS * ATTN];
+    for (int i = threadIdx.y * 32 + lane; i < BINS * ATTN; i += blockDim.y * 32)
+        weight[(i % BINS) * ATTN + i / BINS] = out_w[i];
+    __syncthreads();
     int r = q0 + (k >> 1);
     unsigned int player = k & 1;
     const Tree& t = trees[part_of_row[r]];
@@ -749,24 +750,19 @@ __global__ void k_value(const Tree* trees, const int* part_of_row,
     unsigned int count = t.nc[2 * node + player];
     unsigned int cs = t.coff[2 * row + player];
     unsigned int board = t.board_of[row];
-    const float* bp = t.value_board + (size_t)board * ATTN;
-    const float* rp = belief_projection + (size_t)k * ATTN;
+    const float* __restrict__ bp = t.value_board + (size_t)board * ATTN;
+    const float* __restrict__ rp = belief_projection + (size_t)k * ATTN;
     float* opinion = t.opinion + player * t.nvals + t.voff[node];
     for (unsigned int c = threadIdx.y; c < count; c += blockDim.y) {
-        unsigned int pair = t.aidx[cs + c];
-        const float* pp = t.value_cfg + (size_t)pair * ATTN;
+        const float* __restrict__ pp = t.value_cfg + (size_t)t.aidx[cs + c] * ATTN;
         float hidden[ATTN / 32];
-        for (int q = 0; q < ATTN / 32; ++q) {
-            int j = lane + 32 * q;
+        for (int q = 0, j = lane; q < ATTN / 32; ++q, j += 32)
             hidden[q] = gelu1(pp[j] + bp[j] + rp[j] + hidden_b[j]);
-        }
         float logit[BINS], top = -1e30f;
         for (int b = 0; b < BINS; ++b) {
             float acc = 0.0f;
-            for (int q = 0; q < ATTN / 32; ++q) {
-                int j = lane + 32 * q;
-                acc += hidden[q] * out_w[j * BINS + b];
-            }
+            for (int q = 0; q < ATTN / 32; ++q)
+                acc += hidden[q] * weight[b * ATTN + lane + 32 * q];
             logit[b] = warp_sum(acc) + out_b[b];
             top = fmaxf(top, logit[b]);
         }

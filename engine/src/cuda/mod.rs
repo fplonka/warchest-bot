@@ -2089,7 +2089,7 @@ impl Card {
             unsafe {
                 self.stream.launch_builder(&self.k.belief)
                     .arg(trees).arg(part).arg(local).arg(&mut *input)
-                    .arg(&rows_i).arg(&q0_i).arg(&(ATTN as i32))
+                    .arg(&rows_i).arg(&q0_i)
                     .launch_unit(LaunchConfig {
                         grid_dim: (rows as u32, 2, 1),
                         block_dim: (32, 1, 1),
