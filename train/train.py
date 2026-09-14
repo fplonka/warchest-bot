@@ -49,6 +49,14 @@ def fold(window, lists, stat):
             window[key] += value
 
 
+def adam(net, lr, wd):
+    wide = [p for p in net.parameters() if p.dim() >= 2]
+    thin = [p for p in net.parameters() if p.dim() < 2]
+    return torch.optim.AdamW(
+        [{"params": wide, "weight_decay": wd}, {"params": thin, "weight_decay": 0.0}],
+        lr=lr, fused=True)
+
+
 def scheduled_lr(initial, final, elapsed, duration, stable_frac):
     stable = stable_frac * duration
     if stable_frac >= 1.0 or elapsed <= stable:
@@ -684,7 +692,7 @@ def main():
     y = torch.zeros(k, device=dev)
     parts = (x, phi, w, seg, y, 2 * n, attention, None)
     scratch = Net().to(dev)
-    scratch_opt = torch.optim.Adam(scratch.parameters(), lr=args.lr, fused=True)
+    scratch_opt = adam(scratch, args.lr, args.wd)
     losses(scratch, *parts, wp=0.0)[0].backward()
     scratch_opt.step()
     forward_values(scratch, parts)
@@ -694,7 +702,7 @@ def main():
     torch.manual_seed(args.seed)
     value = Net().to(dev)
     acting = copy.deepcopy(value).requires_grad_(False)
-    opt = torch.optim.Adam(value.parameters(), lr=args.lr, fused=True)
+    opt = adam(value, args.lr, args.wd)
     buf = Buffer(args.cap, args.cap * args.cfgs_per_row)
     if checkpoint:
         value.load_state_dict(checkpoint["value"])
@@ -798,9 +806,9 @@ def main():
 
     def fit(nsteps, deadline=None):
         if sog_t0 is not None:
-            opt.param_groups[0]["lr"] = scheduled_lr(
-                args.lr, args.lr_final, time.time() - sog_t0,
-                progress["lr_duration"], args.lr_stable_frac)
+            for group in opt.param_groups:
+                group["lr"] = scheduled_lr(args.lr, args.lr_final, time.time() - sog_t0,
+                                           progress["lr_duration"], args.lr_stable_frac)
         if nsteps < 1 or len(buf) < args.batch:
             return float("nan"), 0.0, {}
         tt = time.time()

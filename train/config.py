@@ -15,6 +15,7 @@ class Cfg:
 
     batch: int = 256
     lr: float = 1e-3
+    wd: float = 0.01
     lr_final: float = 1e-4
     lr_stable_frac: float = 0.75
     replay_ratio: float = 6.0
