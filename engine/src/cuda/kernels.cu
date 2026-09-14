@@ -159,14 +159,14 @@ __global__ void k_type_pool(const float* projected, float* out, int rows,
 }
 
 __global__ void k_stem(float* x, const float* projected, const int* occupant,
-                       const float* pos, const float* glob,
+                       const float* bias, const float* pos, const float* glob,
                        const float* type_pool, int cells, int nhex, int ntype,
                        int c) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= cells * c) return;
     int cell = i / c, j = i % c;
     int r = cell / nhex, h = cell % nhex;
-    float acc = pos[(size_t)h * c + j] + glob[(size_t)r * c + j]
+    float acc = bias[j] + pos[(size_t)h * c + j] + glob[(size_t)r * c + j]
               + type_pool[(size_t)r * c + j];
     int t = occupant[cell];
     if (t >= 0) acc += projected[((size_t)r * ntype + t) * c + j];
@@ -246,7 +246,7 @@ __device__ __forceinline__ void pool_rows(const float* v, int nhex, int c, float
 }
 
 __global__ __launch_bounds__(32 * TRUNK_SPAN, TRUNK_MIN_BLOCKS)
-void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
+void k_trunk(float* x0, const int* __restrict__ near, const float* __restrict__ w,
              const unsigned* __restrict__ wt, const float* __restrict__ bias,
              const float* __restrict__ ln,
              const int* __restrict__ off, const float* xpub, float* out,
@@ -356,16 +356,14 @@ void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
         __syncthreads();
 #pragma unroll
         for (int t = 0; t < TRUNK_MAXH; ++t) {
-            for (int q = 0; q < TRUNK_Q; ++q) {
-                int j = lane + 32 * q;
-                float v = __half2float(a[hex[t] * TRUNK_HLDS + j]);
-                if (live[t])
-                    for (int k = 0; k < 6; ++k) {
-                        int n = nb[hex[t] * 6 + k];
-                        if (n >= 0) v += u[n * TRUNK_LDS + j];
-                    }
-                cur[q] = v;
-            }
+            for (int q = 0; q < TRUNK_Q; ++q)
+                cur[q] = __half2float(a[hex[t] * TRUNK_HLDS + lane + 32 * q]);
+            if (live[t])
+                for (int k = 0; k < 6; ++k) {
+                    int n = near[hex[t] * 6 + k];
+                    if (n >= 0)
+                        for (int q = 0; q < TRUNK_Q; ++q) cur[q] += u[n + lane + 32 * q];
+                }
             float mean, inv;
             row_stats(cur, c, &mean, &inv);
             for (int q = 0; q < TRUNK_Q; ++q) {

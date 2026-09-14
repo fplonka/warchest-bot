@@ -428,7 +428,7 @@ struct Card {
     wt: CudaSlice<u32>,
     b: CudaSlice<f32>,
     ln: CudaSlice<f32>,
-    nb: CudaSlice<i32>,
+    near: CudaSlice<i32>,
     card_facts: CudaSlice<f32>,
     locations: CudaSlice<u8>,
     plan: CudaSlice<i32>,
@@ -842,11 +842,11 @@ impl Card {
         let stream = gpu.ctx.new_stream().map_err(err)?;
         let blas = CudaBlas::new(stream.clone()).map_err(err)?;
         let flat = net.inference_flat();
-        let nb: Vec<i32> = board()
+        let near: Vec<i32> = board()
             .neighbors
             .iter()
             .flatten()
-            .map(|&n| if n == NONE { -1 } else { n as i32 })
+            .map(|&n| if n == NONE { -1 } else { n as i32 * TRUNK_LDS as i32 })
             .collect();
         let mut card_facts = vec![0.0; N_UNITS * CARD_FEATS];
         for u in 0..N_UNITS {
@@ -878,7 +878,7 @@ impl Card {
             wt: stream.memcpy_stod(&fragwise).map_err(err)?,
             b: stream.memcpy_stod(&flat.b).map_err(err)?,
             ln: stream.memcpy_stod(&flat.ln).map_err(err)?,
-            nb: stream.memcpy_stod(&nb).map_err(err)?,
+            near: stream.memcpy_stod(&near).map_err(err)?,
             card_facts: stream.memcpy_stod(&card_facts).map_err(err)?,
             locations: stream.memcpy_stod(&locations).map_err(err)?,
             stream,
@@ -1168,15 +1168,16 @@ impl Card {
         self.run(l.glob_stem, loose, n, &mut *glob)?;
         let (hex_ch, hex_facts) = (HEX_CH as i32, HEX_FACTS as i32);
         launch!(self, hex_facts, cells * HEX_FACTS, xpub, &mut *facts, &mut *occupant, &rows_i, &stride, &nhex, &hex_ch, &hex_facts, &ntype)?;
-        self.run(l.hex_stem, facts, cells, &mut *x)?;
+        self.lin(l.hex_stem, facts, cells, 0.0, &mut *x)?;
+        let hex_b = self.b.slice(l.hex_stem.b..l.hex_stem.b + C);
         let pos = self.w.slice(l.pos..l.pos + N_HEXES * C);
-        launch!(self, stem, cells * C, &mut *x, &*projected, &*occupant, &pos, &*glob, &*type_pool, &cells_i, &nhex, &ntype, &chan)?;
+        launch!(self, stem, cells * C, &mut *x, &*projected, &*occupant, &hex_b, &pos, &*glob, &*type_pool, &cells_i, &nhex, &ntype, &chan)?;
         let (off, loose_i, blocks_i) = (OFF_LOOSE as i32, LOOSE as i32, BLOCKS as i32);
         const SLOTS: u32 = (C / 8) as u32;
         unsafe {
             self.stream
                 .launch_builder(&self.k.trunk)
-                .arg(&*x).arg(&self.nb).arg(&self.w).arg(&self.wt)
+                .arg(&*x).arg(&self.near).arg(&self.w).arg(&self.wt)
                 .arg(&self.b).arg(&self.ln)
                 .arg(&self.plan).arg(xpub).arg(&mut *input)
                 .arg(&rows_i).arg(&nhex).arg(&chan).arg(&blocks_i)
