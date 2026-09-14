@@ -368,15 +368,16 @@ def puller(dest, every=30):
 def main():
     ap = argparse.ArgumentParser(description="Live view of runs/, read from disk on every request.")
     ap.add_argument("--runs", default=os.path.join(HERE, "runs"))
+    ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8420)
     ap.add_argument("--pull", action="store_true",
                     help="pull runs from the box every 30s")
     args = ap.parse_args()
     if args.pull:
         threading.Thread(target=puller, args=(args.runs,), daemon=True).start()
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    srv = ThreadingHTTPServer((args.host, args.port), Handler)
     srv.runs = os.path.abspath(args.runs)
-    print(f"[monitor] http://127.0.0.1:{args.port} · {srv.runs}", flush=True)
+    print(f"[monitor] http://{args.host}:{args.port} · {srv.runs}", flush=True)
     srv.serve_forever()
 
 
