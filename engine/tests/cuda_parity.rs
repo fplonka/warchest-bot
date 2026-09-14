@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use warchest::contract::NO_ROW;
 use warchest::cuda::Device;
 use warchest::contract::{Call, Reply};
-use warchest::net::Net;
+use warchest::net::{Net, NetLayout, Span, ATTN};
 use warchest::pbs::{expand_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
 use warchest::rng::Rng;
 use warchest::search::{Budget, Cfg, Cfr, Solved, Solver, Step};
@@ -276,6 +276,56 @@ fn worst(a: &[f32], b: &[f32], what: &str) -> f32 {
         .zip(b)
         .map(|(&x, &y)| (x - y).abs() / (x.abs().max(y.abs()).max(1e-2)))
         .fold(0.0, f32::max)
+}
+
+fn linear(net: &Net, span: Span, input: &[f32]) -> Vec<f32> {
+    let flat = net.flat();
+    (0..span.o).map(|j| input.iter().enumerate().fold(0.0, |v, (i, &x)| {
+        x.mul_add(flat.w[span.w + i * span.o + j], v)
+    })).collect()
+}
+
+#[test]
+fn configuration_attention_matches_across_pair_tiles() {
+    let net = Arc::new(Net::random(0x9E37));
+    let cfg = Cfg { s: 1, c: 0.0, ..Default::default() };
+    let mut data = Data::default();
+    let mut solver = GameStream::new(0xA771, game_cfg_of(cfg)).next_solve(&net, &mut data);
+    solver.pin(27);
+    let Step::Calls(calls) = solver.advance(&[]) else { panic!("a fresh solve asks for work") };
+    let pairs: Vec<usize> = calls.iter().filter_map(|call| {
+        let Call::Configs { pair_at, pair_board, .. } = call else { return None };
+        Some((0..pair_board.len()).map(|i| *pair_at + i).collect::<Vec<_>>())
+    }).flatten().collect();
+    let device = gpu(0);
+    device.run(&calls, 0).expect("attention setup");
+    let resident = device.resident(0, 27).expect("resident attention");
+    assert!(!pairs.is_empty());
+    let layout = NetLayout::new();
+    for &pair in &pairs {
+        let conditioned = &resident.conditioned[pair * ATTN..(pair + 1) * ATTN];
+        let want_value = linear(&net, Span {
+            w: layout.value_hidden.w, b: usize::MAX, i: ATTN, o: ATTN,
+        }, conditioned);
+        let got_value = &resident.value_cfg[pair * ATTN..(pair + 1) * ATTN];
+        assert!(worst_scaled(&want_value, got_value, "value configuration") < 2.0 * TF32);
+    }
+    let Some(Call::Configs { cards, pair_board, pair_config, .. }) = calls.iter()
+        .find(|c| matches!(c, Call::Configs { .. })) else { panic!("configuration call") };
+    let sources: Vec<usize> = (0..16_385).map(|i| (pairs.len() - 1) - i % pairs.len()).collect();
+    device.run(&[Call::Configs {
+        solve: 27, at: resident.query.len() / ATTN, n: 0,
+        phi: Vec::new(), owner: Vec::new(), cards: cards.clone(), pair_at: pairs.len(),
+        pair_board: sources.iter().map(|&i| pair_board[i]).collect(),
+        pair_config: sources.iter().map(|&i| pair_config[i]).collect(),
+    }], 0).expect("attention spanning query tiles with cached configurations");
+    let extended = device.resident(0, 27).expect("extended attention");
+    for (i, &source) in sources.iter().enumerate() {
+        let at = (pairs.len() + i) * ATTN;
+        let want = &resident.conditioned[source * ATTN..(source + 1) * ATTN];
+        let got = &extended.conditioned[at..at + ATTN];
+        assert!(worst_scaled(want, got, "tiled attention") < 2.0 * TF32);
+    }
 }
 
 fn worst_scaled(a: &[f32], b: &[f32], what: &str) -> f32 {

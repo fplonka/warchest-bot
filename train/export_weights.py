@@ -12,7 +12,7 @@ from value_net import Net
 def load(path):
     ck = torch.load(path, map_location="cpu", weights_only=False)
     net = Net()
-    net.load_state_dict(ck["value"])
+    net.load_state_dict(ck["acting"])
     return net
 
 

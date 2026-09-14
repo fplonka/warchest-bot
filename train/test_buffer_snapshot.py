@@ -26,6 +26,7 @@ def load_buffer_module():
     torch.nn = types.ModuleType("torch.nn")
     torch.nn.functional = types.ModuleType("torch.nn.functional")
     value_net = types.ModuleType("value_net")
+    value_net.BINS = 16
     value_net.Net = object
     config = types.ModuleType("config")
     export_weights = types.ModuleType("export_weights")
@@ -92,7 +93,8 @@ def chunk(train, start, n):
         np.full(nc, 1.0 / nc, np.float32)
         for nc in nc_row if nc
     ])
-    policy = (pa, paoff, pcoff, pci, pact, pprob)
+    pq = (np.arange(len(pprob)) % 5 / 4.0 - 0.5).astype(np.float16)
+    policy = (pa, paoff, pcoff, pci, pact, pprob, pq)
     return (rows, cc, cw, cy, coff, boundaries, source, truth, outcome,
             created, td1, policy)
 
