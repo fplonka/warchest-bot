@@ -319,6 +319,7 @@ impl<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Default +
 
 const SWEEP_WARPS: u32 = 4;
 const VALUE_WARPS: usize = 4;
+const ATTN_WARPS: usize = 8;
 const WORK_BITS: u32 = 20;
 
 struct Batch {
@@ -702,7 +703,9 @@ fn compile_options(major: i32, minor: i32, trunk_blocks: usize) -> CompileOption
         TRUNK_ROWS,
         ATTN,
         BINS,
+        HEADS,
         VALUE_WARPS,
+        ATTN_WARPS,
     ];
     options.extend([
         format!("--gpu-architecture=compute_{major}{minor}"),
@@ -1448,21 +1451,16 @@ impl Card {
         carved!(kv, facts, h, z);
         let part = stage.pair_part.buf();
         let config = stage.pair_config.buf();
-        const WARPS: usize = 8;
-        let (ntok, wide) = (N_HEXES + NTYPE, ATTN / HEADS);
-        let (n, attn, tokens, width) = (
-            pairs.len() as i32, ATTN as i32, ntok as i32, wide as i32);
-        let shared = (ntok * (2 * wide + 2) + WARPS * (wide + ntok)) * 4;
+        let (n, attn) = (pairs.len() as i32, ATTN as i32);
         unsafe {
             stream.launch_builder(&self.k.attention)
                 .arg(batch.trees.buf()).arg(&*kv)
                 .arg(part).arg(stage.pair_board.buf()).arg(config).arg(&mut *facts)
                 .arg(stage.pair_start.buf())
-                .arg(&tokens).arg(&attn).arg(&width)
                 .launch_unit(LaunchConfig {
                     grid_dim: (runs as u32, HEADS as u32, 1),
-                    block_dim: (32, WARPS as u32, 1),
-                    shared_mem_bytes: shared as u32,
+                    block_dim: (32, ATTN_WARPS as u32, 1),
+                    shared_mem_bytes: 0,
                 })
         }.map_err(err)?;
         self.run(self.layout.attn_out, facts, pairs.len(), h)?;

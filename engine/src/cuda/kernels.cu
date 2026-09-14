@@ -432,53 +432,54 @@ __global__ void k_public_cache(const Tree* trees, const unsigned int* part,
         : tree.tokens[((size_t)board[r] * NTYPE + t - N_HEXES) * c + j];
 }
 
+#define ATTN_TOK (N_HEXES + NTYPE)
+#define ATTN_W (ATTN / HEADS)
+#define ATTN_PITCH (ATTN_W + 1)
+
 __global__ void k_attention(const Tree* trees, const float* kv,
                             const unsigned int* part,
                             const unsigned int* board,
                             const unsigned int* config, float* out,
-                            const unsigned int* starts,
-                            int tokens, int attn, int width) {
-    extern __shared__ float sm[];
+                            const unsigned int* starts) {
+    __shared__ float keys[ATTN_TOK * ATTN_PITCH];
+    __shared__ float values[ATTN_TOK * ATTN_PITCH];
+    __shared__ float query[ATTN_WARPS * ATTN_W];
+    __shared__ float score[ATTN_WARPS * ATTN_TOK];
     const int head = blockIdx.y, lane = threadIdx.x, warp = threadIdx.y;
-    const int pitch = width + 1, warps = blockDim.y;
-    float* keys = sm;
-    float* values = keys + tokens * pitch;
-    float* query = values + tokens * pitch;
-    float* score = query + warps * width;
     const unsigned int begin = starts[blockIdx.x], end = starts[blockIdx.x + 1];
     const float* board_kv =
-        kv + (size_t)board[begin] * tokens * 2 * attn + head * width;
-    for (int t = warp; t < tokens; t += warps) {
-        keys[t * pitch + lane] = board_kv[(size_t)t * 2 * attn + lane];
-        values[t * pitch + lane] = board_kv[(size_t)t * 2 * attn + attn + lane];
+        kv + (size_t)board[begin] * ATTN_TOK * 2 * ATTN + head * ATTN_W;
+    for (int t = warp; t < ATTN_TOK; t += ATTN_WARPS) {
+        keys[t * ATTN_PITCH + lane] = board_kv[(size_t)t * 2 * ATTN + lane];
+        values[t * ATTN_PITCH + lane] = board_kv[(size_t)t * 2 * ATTN + ATTN + lane];
     }
     __syncthreads();
-    query += warp * width;
-    score += warp * tokens;
-    for (unsigned int pair = begin + warp; pair < end; pair += warps) {
+    float* mine = query + warp * ATTN_W;
+    float* sc = score + warp * ATTN_TOK;
+    for (unsigned int pair = begin + warp; pair < end; pair += ATTN_WARPS) {
         const Tree& tree = trees[part[pair]];
-        query[lane] = tree.attn_query[(size_t)config[pair] * attn + head * width + lane];
+        mine[lane] = tree.attn_query[(size_t)config[pair] * ATTN + head * ATTN_W + lane];
         __syncwarp();
         float top = neg_inf();
-        for (int t = lane; t < tokens; t += 32) {
+        for (int t = lane; t < ATTN_TOK; t += 32) {
             float v = 0.0f;
-            for (int e = 0; e < width; ++e) v += query[e] * keys[t * pitch + e];
-            v *= rsqrtf((float)width);
-            score[t] = v;
+            for (int e = 0; e < ATTN_W; ++e) v += mine[e] * keys[t * ATTN_PITCH + e];
+            v *= rsqrtf((float)ATTN_W);
+            sc[t] = v;
             top = fmaxf(top, v);
         }
         for (int s = 16; s > 0; s >>= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffff, top, s));
         float total = 0.0f;
-        for (int t = lane; t < tokens; t += 32) {
-            float v = expf(score[t] - top);
-            score[t] = v;
+        for (int t = lane; t < ATTN_TOK; t += 32) {
+            float v = __expf(sc[t] - top);
+            sc[t] = v;
             total += v;
         }
         total = warp_sum(total);
         __syncwarp();
         float mixed = 0.0f;
-        for (int t = 0; t < tokens; ++t) mixed += score[t] * values[t * pitch + lane];
-        out[(size_t)pair * attn + head * width + lane] = mixed / total;
+        for (int t = 0; t < ATTN_TOK; ++t) mixed += sc[t] * values[t * ATTN_PITCH + lane];
+        out[(size_t)pair * ATTN + head * ATTN_W + lane] = mixed / total;
         __syncwarp();
     }
 }
