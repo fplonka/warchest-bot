@@ -523,8 +523,8 @@ __global__ void k_attention_store(const Tree* trees, const unsigned int* part,
     int r = i / width, j = i % width;
     const Tree& tree = trees[part[r]];
     size_t to = (size_t)at[r] * width + j;
-    tree.conditioned[to] = conditioned[i];
-    tree.value_cfg[to] = projected[i];
+    tree.conditioned[to] = __float2half(conditioned[i]);
+    tree.value_cfg[to] = __float2half(projected[i]);
 }
 
 __global__ void k_cfg_slots(const float* phi, const unsigned int* owner,
@@ -757,8 +757,8 @@ __global__ void k_belief(const Tree* trees, const int* part_of_row,
     float acc[ATTN / 32] = {0.0f};
     for (unsigned int c = 0; c < count; ++c) {
         float weight = total > SMOOTH ? t.reach[ra + c] * inv : inv;
-        const float* pp = t.conditioned + (size_t)t.aidx[cs + c] * ATTN;
-        for (int q = 0; q < ATTN / 32; ++q) acc[q] += weight * pp[lane + 32 * q];
+        const __half* pp = t.conditioned + (size_t)t.aidx[cs + c] * ATTN;
+        for (int q = 0; q < ATTN / 32; ++q) acc[q] += weight * __half2float(pp[lane + 32 * q]);
     }
     float* dst = out + ((size_t)k * 2 + role) * ATTN;
     for (int q = 0; q < ATTN / 32; ++q) dst[lane + 32 * q] = acc[q];
@@ -784,10 +784,10 @@ __global__ void k_value(const Tree* trees, const int* part_of_row,
     const float* __restrict__ rp = belief_projection + (size_t)k * ATTN;
     float* opinion = t.opinion + player * t.nvals + t.voff[node];
     for (unsigned int c = threadIdx.y; c < count; c += blockDim.y) {
-        const float* __restrict__ pp = t.value_cfg + (size_t)t.aidx[cs + c] * ATTN;
+        const __half* __restrict__ pp = t.value_cfg + (size_t)t.aidx[cs + c] * ATTN;
         float hidden[ATTN / 32];
         for (int q = 0, j = lane; q < ATTN / 32; ++q, j += 32)
-            hidden[q] = gelu1(pp[j] + bp[j] + rp[j] + hidden_b[j]);
+            hidden[q] = gelu1(__half2float(pp[j]) + bp[j] + rp[j] + hidden_b[j]);
         float logit[BINS], top = -1e30f;
         for (int b = 0; b < BINS; ++b) {
             float acc = 0.0f;
@@ -970,7 +970,7 @@ __global__ void k_policy_inputs(const Tree* trees, const unsigned int* part,
             for (unsigned int c = 0; c < n; ++c) {
                 float belief = total > SMOOTH ? t.reach[ra + c] * inv : inv;
                 unsigned int pair = t.aidx[cs + c];
-                acc += belief * t.conditioned[(size_t)pair * attn + j];
+                acc += belief * __half2float(t.conditioned[(size_t)pair * attn + j]);
             }
             input[(size_t)k * (d + 2 * attn) + d + role * attn + j] = acc;
             belief_out[((size_t)k * 2 + role) * attn + j] = acc;
@@ -1022,12 +1022,9 @@ __global__ void k_prior(const Tree* trees, const unsigned int* part,
     int lane = threadIdx.x;
     unsigned int cs = t.coff[2 * row_of[k] + me];
     unsigned int pair = t.aidx[cs + t.cell_row[so + a]];
-    const float* pp = t.conditioned + (size_t)pair * d;
+    const __half* pp = t.conditioned + (size_t)pair * d;
     float fp[4];
-    for (int q = 0; q < d / 32; ++q) {
-        int j = lane + 32 * q;
-        fp[q] = pp[j];
-    }
+    for (int q = 0; q < d / 32; ++q) fp[q] = __half2float(pp[lane + 32 * q]);
     for (unsigned int cell = a; cell < b; ++cell) {
         unsigned int action = act_at[k] + cells[cell_at[k] + cell];
         const float* ea = e + (size_t)action * d;

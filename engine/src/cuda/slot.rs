@@ -2,6 +2,7 @@
 use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream, DevicePtr};
+use half::f16;
 
 use crate::board::N_HEXES;
 use crate::contract::Dst;
@@ -28,7 +29,7 @@ pub fn tree_source() -> String {
     for c in &TABLE {
         out += &format!("    {} {};\n", c.ty, c.name);
     }
-    for tail in ["float* conditioned", "float* value_cfg",
+    for tail in ["__half* conditioned", "__half* value_cfg",
                  "unsigned long long* seed",
                  "unsigned long long nterm", "unsigned long long nvals",
                  "unsigned long long step", "unsigned long long todo",
@@ -348,8 +349,8 @@ pub struct Solve {
     pub ncells: usize,
     pub nreach: usize,
     pub level_start: Vec<u32>,
-    pub conditioned: Arr<f32>,
-    pub value_cfg: Arr<f32>,
+    pub conditioned: Arr<f16>,
+    pub value_cfg: Arr<f16>,
     pub seed: Arr<u64>,
     pub step: usize,
     pub todo: usize,
@@ -431,7 +432,7 @@ impl Solve {
 
     pub fn bytes(&self) -> usize {
         self.ent.iter().map(Entity::bytes).sum::<usize>()
-            + (self.conditioned.cap + self.value_cfg.cap) * 4
+            + (self.conditioned.cap + self.value_cfg.cap) * 2
             + self.seed.cap * 8
     }
 

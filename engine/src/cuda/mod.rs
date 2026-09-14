@@ -618,12 +618,8 @@ impl Device {
                 s.ent[Ent::Config as usize].len() * ATTN,
                 &mut h,
             )?,
-            conditioned: c.stream.memcpy_dtov(
-                &s.conditioned.buf.as_ref().expect("conditioned cache").slice(0..s.conditioned.len)
-            ).map_err(err)?,
-            value_cfg: c.stream.memcpy_dtov(
-                &s.value_cfg.buf.as_ref().expect("value cache").slice(0..s.value_cfg.len)
-            ).map_err(err)?,
+            conditioned: halves(&c.stream, &s.conditioned)?,
+            value_cfg: halves(&c.stream, &s.value_cfg)?,
             prior: s.ent[Ent::Cell as usize].get_f32(
                 &c.stream,
                 C_PRIOR,
@@ -638,6 +634,12 @@ impl Device {
             reach: s.ent[Ent::Reach as usize].get_f32(&c.stream, R_REACH, 0, s.nreach, &mut h)?,
         })
     }
+}
+
+fn halves(stream: &Arc<CudaStream>, a: &Arr<f16>) -> Res<Vec<f32>> {
+    let buf = a.buf.as_ref().expect("a capacity implies a buffer");
+    let host = stream.memcpy_dtov(&buf.slice(0..a.len)).map_err(err)?;
+    Ok(host.into_iter().map(f32::from).collect())
 }
 
 pub struct Resident {
