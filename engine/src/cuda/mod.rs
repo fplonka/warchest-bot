@@ -172,7 +172,7 @@ const TRUNK_LDS: usize = C + 4;
 const TRUNK_HLDS: usize = C + 8;
 
 const TRUNK_SHARED: usize =
-    2 * N_HEXES * TRUNK_LDS * 4 + TRUNK_ROWS * TRUNK_HLDS * 2 + 3 * C * 4;
+    2 * N_HEXES * TRUNK_LDS * 4 + TRUNK_ROWS * TRUNK_HLDS * 2 + 3 * C * 4 + N_HEXES * 6 * 4;
 const _: () = {
     assert!(C % 32 == 0, "k_trunk wants a whole number of warps a row");
     assert!(
@@ -701,6 +701,8 @@ fn compile_options(major: i32, minor: i32, trunk_blocks: usize) -> CompileOption
         PENDING_KINDS,
         CONT_CAP,
         TRUNK_ROWS,
+        BLOCKS,
+        LOOSE,
         ATTN,
         BINS,
         HEADS,
@@ -1175,7 +1177,6 @@ impl Card {
         let hex_b = self.b.slice(l.hex_stem.b..l.hex_stem.b + C);
         let pos = self.w.slice(l.pos..l.pos + N_HEXES * C);
         launch!(self, stem, cells * C, &mut *x, &*projected, &*occupant, &hex_b, &pos, &*glob, &*type_pool, &cells_i, &nhex, &ntype, &chan)?;
-        let (off, loose_i, blocks_i) = (OFF_LOOSE as i32, LOOSE as i32, BLOCKS as i32);
         const SLOTS: u32 = (C / 8) as u32;
         unsafe {
             self.stream
@@ -1183,8 +1184,7 @@ impl Card {
                 .arg(&*x).arg(&self.near).arg(&self.w).arg(&self.wt)
                 .arg(&self.b).arg(&self.ln)
                 .arg(&self.plan).arg(xpub).arg(&mut *input)
-                .arg(&rows_i).arg(&nhex).arg(&chan).arg(&blocks_i)
-                .arg(&stride).arg(&off).arg(&loose_i)
+                .arg(&rows_i)
                 .launch_unit(LaunchConfig {
                     grid_dim: (n as u32, 1, 1),
                     block_dim: (32, SLOTS, 1),
@@ -1456,8 +1456,8 @@ impl Card {
         let kv_b = self.b.slice(kvb..kvb + 2 * ATTN);
         unsafe {
             stream.launch_builder(&self.k.attention)
-                .arg(batch.trees.buf()).arg(&*kv)
-                .arg(part).arg(stage.pair_board.buf()).arg(&kv_b).arg(config).arg(&mut *facts)
+                .arg(batch.trees.buf()).arg(&*kv).arg(&kv_b)
+                .arg(part).arg(stage.pair_board.buf()).arg(config).arg(&mut *facts)
                 .arg(stage.pair_start.buf())
                 .launch_unit(LaunchConfig {
                     grid_dim: (runs as u32, HEADS as u32, 1),

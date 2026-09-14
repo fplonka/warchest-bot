@@ -214,86 +214,82 @@ __device__ __forceinline__ int frag_col(int i, int slot, int lane) {
     return 8 * slot + 2 * (lane & 3) + (i & 1);
 }
 
-__device__ __forceinline__ void row_stats(const float* v, int c, float* mean,
-                                          float* inv) {
+__device__ __forceinline__ void row_stats(const float* v, float* mean, float* inv) {
     float s = 0.0f;
     for (int q = 0; q < TRUNK_Q; ++q) s += v[q];
     s = warp_sum(s);
-    float m = s / c, t = 0.0f;
+    float m = s / TRUNK_C, t = 0.0f;
     for (int q = 0; q < TRUNK_Q; ++q) {
         float d = v[q] - m;
         t += d * d;
     }
     t = warp_sum(t);
     *mean = m;
-    *inv = rsqrtf(t / c + 1e-5f);
+    *inv = rsqrtf(t / TRUNK_C + 1e-5f);
 }
 
-__device__ __forceinline__ void pool_rows(const float* v, int nhex, int c, float* out) {
+__device__ __forceinline__ void pool_rows(const float* v, float* out) {
     const int lane = threadIdx.x, slot = threadIdx.y;
     for (int i = 0; i < 8; ++i) {
         int j = 8 * slot + i;
-        float lo = lane < nhex ? v[lane * TRUNK_LDS + j] : 0.0f;
-        float hi = lane + 32 < nhex ? v[(lane + 32) * TRUNK_LDS + j] : 0.0f;
+        float lo = lane < N_HEXES ? v[lane * TRUNK_LDS + j] : 0.0f;
+        float hi = lane + 32 < N_HEXES ? v[(lane + 32) * TRUNK_LDS + j] : 0.0f;
         float sum = warp_sum(lo + hi);
-        float mx = fmaxf(lane < nhex ? lo : neg_inf(), lane + 32 < nhex ? hi : neg_inf());
+        float mx = fmaxf(lane < N_HEXES ? lo : neg_inf(), lane + 32 < N_HEXES ? hi : neg_inf());
         for (int s = 16; s > 0; s >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, s));
         if (lane == 0) {
-            out[j] = sum / nhex;
-            out[c + j] = mx;
+            out[j] = sum / N_HEXES;
+            out[TRUNK_C + j] = mx;
         }
     }
 }
 
 __global__ __launch_bounds__(32 * TRUNK_SPAN, TRUNK_MIN_BLOCKS)
-void k_trunk(float* x0, const int* __restrict__ near, const float* __restrict__ w,
+void k_trunk(float* x0, const int* __restrict__ far, const float* __restrict__ w,
              const unsigned* __restrict__ wt, const float* __restrict__ bias,
              const float* __restrict__ ln,
              const int* __restrict__ off, const float* xpub, float* out,
-             int rows, int nhex, int c, int blocks, int stride, int off_loose,
-             int loose) {
+             int rows) {
     int row = blockIdx.x;
     if (row >= rows) return;
     extern __shared__ float sm[];
     float* x = sm;
-    __half* a = (__half*)(x + nhex * TRUNK_LDS);
+    __half* a = (__half*)(x + N_HEXES * TRUNK_LDS);
     float* u = (float*)(a + TRUNK_ROWS * TRUNK_HLDS);
-    float* pooled = u + nhex * TRUNK_LDS;
-    float* gb = pooled + 2 * c;
+    float* pooled = u + N_HEXES * TRUNK_LDS;
+    float* gb = pooled + 2 * TRUNK_C;
+    int* near = (int*)(gb + TRUNK_C);
 
     const int lane = threadIdx.x, slot = threadIdx.y;
     int hex[TRUNK_MAXH];
-    bool live[TRUNK_MAXH];
 #pragma unroll
-    for (int t = 0; t < TRUNK_MAXH; ++t) {
-        hex[t] = slot + t * TRUNK_SPAN;
-        live[t] = hex[t] < nhex;
-    }
+    for (int t = 0; t < TRUNK_MAXH; ++t) hex[t] = slot + t * TRUNK_SPAN;
     float cur[TRUNK_Q];
+    for (int i = lane + 32 * slot; i < N_HEXES * 6; i += 32 * TRUNK_SPAN) near[i] = far[i];
 
 #pragma unroll
     for (int t = 0; t < TRUNK_MAXH; ++t)
-        if (live[t])
+        if (hex[t] < N_HEXES)
             for (int q = 0; q < TRUNK_Q; ++q)
                 x[hex[t] * TRUNK_LDS + lane + 32 * q] =
-                    x0[((size_t)row * nhex + hex[t]) * TRUNK_C + lane + 32 * q];
+                    x0[((size_t)row * N_HEXES + hex[t]) * TRUNK_C + lane + 32 * q];
     __syncthreads();
 
-    for (int blk = 0; blk < blocks; ++blk) {
+    for (int blk = 0; blk < BLOCKS; ++blk) {
         const int* o = off + blk * TRUNK_OFF;
         float psum[TRUNK_Q] = {0.0f}, pmax[TRUNK_Q];
         for (int q = 0; q < TRUNK_Q; ++q) pmax[q] = neg_inf();
 #pragma unroll
         for (int t = 0; t < TRUNK_MAXH; ++t) {
             for (int q = 0; q < TRUNK_Q; ++q)
-                cur[q] = live[t] ? x[hex[t] * TRUNK_LDS + lane + 32 * q] : 0.0f;
+                cur[q] = hex[t] < N_HEXES ? x[hex[t] * TRUNK_LDS + lane + 32 * q] : 0.0f;
             float mean, inv;
-            row_stats(cur, c, &mean, &inv);
+            row_stats(cur, &mean, &inv);
             for (int q = 0; q < TRUNK_Q; ++q) {
                 int j = lane + 32 * q;
                 float v = gelu1((cur[q] - mean) * inv * ln[o[6] + j] + ln[o[7] + j]);
-                a[hex[t] * TRUNK_HLDS + j] = __float2half(live[t] ? v : 0.0f);
-                if (live[t]) {
+                a[hex[t] * TRUNK_HLDS + j] = __float2half(hex[t] < N_HEXES ? v : 0.0f);
+                if (hex[t] < N_HEXES) {
                     psum[q] += v;
                     pmax[q] = fmaxf(pmax[q], v);
                 }
@@ -305,26 +301,26 @@ void k_trunk(float* x0, const int* __restrict__ near, const float* __restrict__ 
             part[TRUNK_C + 32 * q] = pmax[q];
         }
         __syncthreads();
-        for (int j = lane + 32 * slot; j < c; j += 32 * TRUNK_SPAN) {
+        for (int j = lane + 32 * slot; j < TRUNK_C; j += 32 * TRUNK_SPAN) {
             float sv = 0.0f, mx = neg_inf();
             for (int s = 0; s < TRUNK_SPAN; ++s) {
                 sv += u[s * 2 * TRUNK_C + j];
                 mx = fmaxf(mx, u[s * 2 * TRUNK_C + TRUNK_C + j]);
             }
-            pooled[j] = sv / nhex;
-            pooled[c + j] = mx;
+            pooled[j] = sv / N_HEXES;
+            pooled[TRUNK_C + j] = mx;
         }
         __syncthreads();
         for (int q = 0; q < TRUNK_Q; ++q) {
             int j = lane + 32 * q;
             float sv = 0.0f;
-            for (int k = 16 * slot; k < 16 * slot + 16; ++k) sv += pooled[k] * w[o[2] + (size_t)k * c + j];
-            u[slot * c + j] = sv;
+            for (int k = 16 * slot; k < 16 * slot + 16; ++k) sv += pooled[k] * w[o[2] + (size_t)k * TRUNK_C + j];
+            u[slot * TRUNK_C + j] = sv;
         }
         __syncthreads();
-        for (int j = lane + 32 * slot; j < c; j += 32 * TRUNK_SPAN) {
+        for (int j = lane + 32 * slot; j < TRUNK_C; j += 32 * TRUNK_SPAN) {
             float sv = bias[o[3] + j];
-            for (int s = 0; s < TRUNK_SPAN; ++s) sv += u[s * c + j];
+            for (int s = 0; s < TRUNK_SPAN; ++s) sv += u[s * TRUNK_C + j];
             gb[j] = sv;
         }
         float an[TRUNK_MT][4], as[TRUNK_MT][4];
@@ -350,7 +346,7 @@ void k_trunk(float* x0, const int* __restrict__ near, const float* __restrict__ 
 #pragma unroll
             for (int i = 0; i < 4; ++i) {
                 int r = frag_row(m, i, lane), j = frag_col(i, slot, lane);
-                if (r < nhex) u[r * TRUNK_LDS + j] = an[m][i];
+                if (r < N_HEXES) u[r * TRUNK_LDS + j] = an[m][i];
                 a[r * TRUNK_HLDS + j] = __float2half(as[m][i] + bias[o[1] + j] + gb[j]);
             }
         __syncthreads();
@@ -358,18 +354,18 @@ void k_trunk(float* x0, const int* __restrict__ near, const float* __restrict__ 
         for (int t = 0; t < TRUNK_MAXH; ++t) {
             for (int q = 0; q < TRUNK_Q; ++q)
                 cur[q] = __half2float(a[hex[t] * TRUNK_HLDS + lane + 32 * q]);
-            if (live[t])
+            if (hex[t] < N_HEXES)
                 for (int k = 0; k < 6; ++k) {
                     int n = near[hex[t] * 6 + k];
                     if (n >= 0)
                         for (int q = 0; q < TRUNK_Q; ++q) cur[q] += u[n + lane + 32 * q];
                 }
             float mean, inv;
-            row_stats(cur, c, &mean, &inv);
+            row_stats(cur, &mean, &inv);
             for (int q = 0; q < TRUNK_Q; ++q) {
                 int j = lane + 32 * q;
                 a[hex[t] * TRUNK_HLDS + j] = __float2half(
-                    live[t] ? gelu1((cur[q] - mean) * inv * ln[o[8] + j] + ln[o[9] + j]) : 0.0f);
+                    hex[t] < N_HEXES ? gelu1((cur[q] - mean) * inv * ln[o[8] + j] + ln[o[9] + j]) : 0.0f);
             }
         }
         __syncthreads();
@@ -393,31 +389,31 @@ void k_trunk(float* x0, const int* __restrict__ near, const float* __restrict__ 
 #pragma unroll
             for (int i = 0; i < 4; ++i) {
                 int r = frag_row(m, i, lane), j = frag_col(i, slot, lane);
-                if (r < nhex) x[r * TRUNK_LDS + j] += ao[m][i] + bias[o[5] + j];
+                if (r < N_HEXES) x[r * TRUNK_LDS + j] += ao[m][i] + bias[o[5] + j];
             }
         __syncthreads();
     }
 
-    const int* tn = off + blocks * TRUNK_OFF;
+    const int* tn = off + BLOCKS * TRUNK_OFF;
 #pragma unroll
     for (int t = 0; t < TRUNK_MAXH; ++t) {
         for (int q = 0; q < TRUNK_Q; ++q)
-            cur[q] = live[t] ? x[hex[t] * TRUNK_LDS + lane + 32 * q] : 0.0f;
+            cur[q] = hex[t] < N_HEXES ? x[hex[t] * TRUNK_LDS + lane + 32 * q] : 0.0f;
         float mean, inv;
-        row_stats(cur, c, &mean, &inv);
-        if (live[t])
+        row_stats(cur, &mean, &inv);
+        if (hex[t] < N_HEXES)
             for (int q = 0; q < TRUNK_Q; ++q) {
                 int j = lane + 32 * q;
                 float v = gelu1((cur[q] - mean) * inv * ln[tn[0] + j] + ln[tn[1] + j]);
                 x[hex[t] * TRUNK_LDS + j] = v;
-                x0[((size_t)row * nhex + hex[t]) * c + j] = v;
+                x0[((size_t)row * N_HEXES + hex[t]) * TRUNK_C + j] = v;
             }
     }
     __syncthreads();
-    int width = 2 * c + loose;
-    pool_rows(x, nhex, c, out + (size_t)row * width);
-    for (int k = lane + 32 * slot; k < loose; k += 32 * TRUNK_SPAN)
-        out[(size_t)row * width + 2 * c + k] = xpub[(size_t)row * stride + off_loose + k];
+    const size_t width = 2 * TRUNK_C + LOOSE;
+    pool_rows(x, out + row * width);
+    for (int k = lane + 32 * slot; k < LOOSE; k += 32 * TRUNK_SPAN)
+        out[row * width + 2 * TRUNK_C + k] = xpub[(size_t)row * PUBFEAT + OFF_LOOSE + k];
 }
 
 __global__ void k_public_cache(const Tree* trees, const unsigned int* part,
@@ -437,9 +433,9 @@ __global__ void k_public_cache(const Tree* trees, const unsigned int* part,
 #define ATTN_PITCH (ATTN_W + 1)
 
 __global__ void k_attention(const Tree* trees, const float* kv,
+                            const float* __restrict__ kv_b,
                             const unsigned int* part,
                             const unsigned int* board,
-                            const float* __restrict__ kv_b,
                             const unsigned int* config, float* out,
                             const unsigned int* starts) {
     __shared__ float keys[ATTN_TOK * ATTN_PITCH];
@@ -617,13 +613,13 @@ __global__ void k_reach_sweep(const Tree* trees, const unsigned int* work, int a
     {
         unsigned int n = t.nc[2 * node + p];
         unsigned int dst = rbase(t, node, p), src = rbase(t, par, p);
+        unsigned int rb = t.rev_base[node];
         for (unsigned int c = threadIdx.x; c < n; c += 32) {
             if (p != me) {
                 t.reach[dst + c] = t.reach[src + c];
                 continue;
             }
             float v = 0.0f;
-            unsigned int rb = t.rev_base[node];
             if (rb != NO_ROW) {
                 unsigned int a = t.rev_start[rb + c], b = t.rev_start[rb + c + 1];
                 for (unsigned int k = a; k < b; ++k)
