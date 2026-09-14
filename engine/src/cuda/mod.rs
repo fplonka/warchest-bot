@@ -125,14 +125,6 @@ fn spread(n: usize) -> LaunchConfig {
     }
 }
 
-fn rows_of(rows: usize, width: usize) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: (rows.max(1) as u32, 1, 1),
-        block_dim: (width.next_power_of_two().clamp(32, 256) as u32, 1, 1),
-        shared_mem_bytes: 0,
-    }
-}
-
 fn warp_rows(rows: usize) -> LaunchConfig {
     const WARPS: u32 = 8;
     LaunchConfig {
@@ -1019,7 +1011,7 @@ impl Card {
             self.stream
                 .launch_builder(&self.k.bias)
                 .arg(out).arg(&bias).arg(&rows_i).arg(&width)
-                .launch_unit(rows_of(rows, s.o))
+                .launch_unit(warp_rows(rows))
         }
         .map_err(err)
     }
@@ -1173,7 +1165,7 @@ impl Card {
         launch!(self, window, n * LOOSE, xpub, &mut *loose, &rows_i, &stride, &off, &width)?;
         self.run(l.glob_stem, loose, n, &mut *glob)?;
         let (hex_ch, hex_facts) = (HEX_CH as i32, HEX_FACTS as i32);
-        launch!(self, hex_facts, cells, xpub, &mut *facts, &mut *occupant, &rows_i, &stride, &nhex, &hex_ch, &hex_facts, &ntype)?;
+        launch!(self, hex_facts, cells * HEX_FACTS, xpub, &mut *facts, &mut *occupant, &rows_i, &stride, &nhex, &hex_ch, &hex_facts, &ntype)?;
         self.run(l.hex_stem, facts, cells, &mut *x)?;
         let pos = self.w.slice(l.pos..l.pos + N_HEXES * C);
         launch!(self, stem, cells * C, &mut *x, &*projected, &*occupant, &pos, &*glob, &*type_pool, &cells_i, &nhex, &ntype, &chan)?;
@@ -2132,11 +2124,7 @@ impl Card {
                 self.stream.launch_builder(&self.k.belief)
                     .arg(trees).arg(part).arg(local).arg(&mut *input)
                     .arg(&rows_i).arg(&q0_i)
-                    .launch_unit(LaunchConfig {
-                        grid_dim: (rows as u32, 2, 1),
-                        block_dim: (32, 1, 1),
-                        shared_mem_bytes: 0,
-                    })
+                    .launch_unit(warp_rows(2 * rows))
             }.map_err(err)?;
             self.lin(belief_span, input, rows, 0.0, h)?;
             unsafe {

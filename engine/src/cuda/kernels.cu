@@ -108,10 +108,10 @@ __global__ void k_norm_ip(float* x, const float* gamma, const float* beta,
 }
 
 __global__ void k_bias(float* out, const float* b, int rows, int width) {
-    int r = blockIdx.x;
+    int r = blockIdx.x * blockDim.y + threadIdx.y;
     if (r >= rows) return;
     float* row = out + (size_t)r * width;
-    for (int j = threadIdx.x; j < width; j += blockDim.x) row[j] += b[j];
+    for (int j = threadIdx.x; j < width; j += 32) row[j] += b[j];
 }
 
 
@@ -135,11 +135,12 @@ __global__ void k_tokens(const float* cards, const int* card_of_row,
 __global__ void k_hex_facts(const float* xpub, float* facts, int* occupant,
                             int rows, int stride, int nhex, int hex_ch,
                             int hex_facts, int ntype) {
-    int cell = blockIdx.x * blockDim.x + threadIdx.x;
-    if (cell >= rows * nhex) return;
-    int r = cell / nhex, h = cell % nhex;
-    const float* hex = xpub + (size_t)r * stride + (size_t)h * hex_ch;
-    for (int j = 0; j < hex_facts; ++j) facts[(size_t)cell * hex_facts + j] = hex[j];
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= rows * nhex * hex_facts) return;
+    int cell = i / hex_facts, j = i % hex_facts;
+    const float* hex = xpub + (size_t)(cell / nhex) * stride + (size_t)(cell % nhex) * hex_ch;
+    facts[i] = hex[j];
+    if (j) return;
     int who = -1;
     for (int t = 0; t < ntype; ++t)
         if (hex[hex_facts + t] != 0.0f) { who = t; break; }
@@ -738,8 +739,9 @@ __global__ void k_backprop_sweep(const Tree* trees, const unsigned int* work, in
 
 __global__ void k_belief(const Tree* trees, const int* part_of_row,
                          const int* local_row, float* out, int rows, int q0) {
-    int k = blockIdx.x, role = blockIdx.y, lane = threadIdx.x;
-    if (k >= rows || role >= 2) return;
+    int seat = blockIdx.x * blockDim.y + threadIdx.y, lane = threadIdx.x;
+    int k = seat >> 1, role = seat & 1;
+    if (k >= rows) return;
     int r = q0 + (k >> 1);
     unsigned int player = (k & 1) ^ role;
     const Tree& t = trees[part_of_row[r]];
