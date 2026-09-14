@@ -155,10 +155,8 @@ fn pack_mma(w: &[f32], base: usize, k: usize, n: usize, out: &mut Vec<u32>) {
         for nt in 0..n / 8 {
             for lane in 0..32 {
                 let (g, t) = (lane / 4, lane % 4);
-                let at = |i: usize| f16::from_f32(w[base + (16 * kt + i) * n + 8 * nt + g]);
-                let pair = |i: usize| {
-                    at(i).to_bits() as u32 | ((at(i + 1).to_bits() as u32) << 16)
-                };
+                let at = |i: usize| f16::from_f32(w[base + (16 * kt + i) * n + 8 * nt + g]).to_bits();
+                let pair = |i: usize| at(i) as u32 | ((at(i + 1) as u32) << 16);
                 out.extend([pair(2 * t), pair(2 * t + 8)]);
             }
         }
@@ -1459,17 +1457,17 @@ impl Card {
         carved!(kv, facts, h, z);
         let part = stage.pair_part.buf();
         let config = stage.pair_config.buf();
-        let (n, attn, heads, tokens) = (
-            pairs.len() as i32, ATTN as i32, HEADS as i32, (N_HEXES + NTYPE) as i32);
         const WARPS: usize = 8;
-        let (width, ntok) = (ATTN / HEADS, N_HEXES + NTYPE);
-        let shared = (ntok * (2 * width + 2) + WARPS * (width + ntok)) * 4;
+        let (ntok, wide) = (N_HEXES + NTYPE, ATTN / HEADS);
+        let (n, attn, tokens, width) = (
+            pairs.len() as i32, ATTN as i32, ntok as i32, wide as i32);
+        let shared = (ntok * (2 * wide + 2) + WARPS * (wide + ntok)) * 4;
         unsafe {
             stream.launch_builder(&self.k.attention)
                 .arg(batch.trees.buf()).arg(&*kv)
                 .arg(part).arg(stage.pair_board.buf()).arg(config).arg(&mut *facts)
                 .arg(stage.pair_start.buf())
-                .arg(&tokens).arg(&attn).arg(&heads)
+                .arg(&tokens).arg(&attn).arg(&width)
                 .launch_unit(LaunchConfig {
                     grid_dim: (runs as u32, HEADS as u32, 1),
                     block_dim: (32, WARPS as u32, 1),

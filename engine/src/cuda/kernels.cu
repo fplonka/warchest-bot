@@ -280,11 +280,8 @@ void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
 
     for (int blk = 0; blk < blocks; ++blk) {
         const int* o = off + blk * TRUNK_OFF;
-        float psum[TRUNK_Q], pmax[TRUNK_Q];
-        for (int q = 0; q < TRUNK_Q; ++q) {
-            psum[q] = 0.0f;
-            pmax[q] = neg_inf();
-        }
+        float psum[TRUNK_Q] = {0.0f}, pmax[TRUNK_Q];
+        for (int q = 0; q < TRUNK_Q; ++q) pmax[q] = neg_inf();
 #pragma unroll
         for (int t = 0; t < TRUNK_MAXH; ++t) {
             for (int q = 0; q < TRUNK_Q; ++q)
@@ -301,9 +298,10 @@ void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
                 }
             }
         }
+        float* part = u + slot * 2 * TRUNK_C + lane;
         for (int q = 0; q < TRUNK_Q; ++q) {
-            u[slot * 2 * TRUNK_C + lane + 32 * q] = psum[q];
-            u[slot * 2 * TRUNK_C + TRUNK_C + lane + 32 * q] = pmax[q];
+            part[32 * q] = psum[q];
+            part[TRUNK_C + 32 * q] = pmax[q];
         }
         __syncthreads();
         for (int j = lane + 32 * slot; j < c; j += 32 * TRUNK_SPAN) {
@@ -440,10 +438,10 @@ __global__ void k_attention(const Tree* trees, const float* kv,
                             const unsigned int* board,
                             const unsigned int* config, float* out,
                             const unsigned int* starts,
-                            int tokens, int attn, int heads) {
+                            int tokens, int attn, int width) {
     extern __shared__ float sm[];
     const int head = blockIdx.y, lane = threadIdx.x, warp = threadIdx.y;
-    const int width = attn / heads, pitch = width + 1, warps = blockDim.y;
+    const int pitch = width + 1, warps = blockDim.y;
     float* keys = sm;
     float* values = keys + tokens * pitch;
     float* query = values + tokens * pitch;
