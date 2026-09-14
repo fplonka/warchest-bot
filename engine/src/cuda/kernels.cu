@@ -765,12 +765,11 @@ __global__ void k_belief(const Tree* trees, const int* part_of_row,
 
 __global__ void k_value(const Tree* trees, const int* part_of_row,
                         const int* local_row, const float* belief_projection,
-                        const float* __restrict__ hidden_b, const float* out_w,
-                        const float* out_b, int rows, int q0) {
-    int k = blockIdx.x, lane = threadIdx.x;
-    __shared__ float weight[BINS * ATTN];
-    for (int i = threadIdx.y * 32 + lane; i < BINS * ATTN; i += blockDim.y * 32)
-        weight[(i % BINS) * ATTN + i / BINS] = out_w[i];
+                        const float* out_w, const float* out_b, int rows, int q0) {
+    int k = blockIdx.x, lane = threadIdx.x, warp = threadIdx.y;
+    __shared__ float weight[ATTN * BINS];
+    __shared__ float hid[VALUE_WARPS][ATTN];
+    for (int i = warp * 32 + lane; i < ATTN * BINS; i += VALUE_WARPS * 32) weight[i] = out_w[i];
     __syncthreads();
     int r = q0 + (k >> 1);
     unsigned int player = k & 1;
@@ -778,30 +777,31 @@ __global__ void k_value(const Tree* trees, const int* part_of_row,
     unsigned int row = local_row[r], node = t.leaf_node[row];
     unsigned int count = t.nc[2 * node + player];
     unsigned int cs = t.coff[2 * row + player];
-    unsigned int board = t.board_of[row];
-    const float* __restrict__ bp = t.value_board + (size_t)board * ATTN;
+    const float* __restrict__ bp = t.value_board + (size_t)t.board_of[row] * ATTN;
     const float* __restrict__ rp = belief_projection + (size_t)k * ATTN;
     float* opinion = t.opinion + player * t.nvals + t.voff[node];
-    for (unsigned int c = threadIdx.y; c < count; c += blockDim.y) {
+    float base[ATTN / 32];
+    for (int q = 0, j = lane; q < ATTN / 32; ++q, j += 32)
+        base[q] = bp[j] + rp[j];
+    const int bin = lane % BINS, side = lane / BINS;
+    for (unsigned int c = warp; c < count; c += VALUE_WARPS) {
         const __half* __restrict__ pp = t.value_cfg + (size_t)t.aidx[cs + c] * ATTN;
-        float hidden[ATTN / 32];
         for (int q = 0, j = lane; q < ATTN / 32; ++q, j += 32)
-            hidden[q] = gelu1(__half2float(pp[j]) + bp[j] + rp[j] + hidden_b[j]);
-        float logit[BINS], top = -1e30f;
-        for (int b = 0; b < BINS; ++b) {
-            float acc = 0.0f;
-            for (int q = 0; q < ATTN / 32; ++q)
-                acc += hidden[q] * weight[b * ATTN + lane + 32 * q];
-            logit[b] = warp_sum(acc) + out_b[b];
-            top = fmaxf(top, logit[b]);
-        }
-        float norm = 0.0f, mean = 0.0f;
-        for (int b = 0; b < BINS; ++b) {
-            float e = __expf(logit[b] - top);
-            norm += e;
-            mean += e * ((b + 0.5f) * (2.0f / BINS) - 1.0f);
+            hid[warp][j] = gelu1(__half2float(pp[j]) + base[q]);
+        __syncwarp();
+        float acc = 0.0f;
+        for (int j = side; j < ATTN; j += 2) acc += hid[warp][j] * weight[j * BINS + bin];
+        float logit = acc + __shfl_xor_sync(0xffffffff, acc, BINS) + out_b[bin];
+        float top = logit;
+        for (int s = BINS / 2; s > 0; s >>= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffff, top, s));
+        float e = __expf(logit - top), norm = e;
+        float mean = e * ((bin + 0.5f) * (2.0f / BINS) - 1.0f);
+        for (int s = BINS / 2; s > 0; s >>= 1) {
+            norm += __shfl_xor_sync(0xffffffff, norm, s);
+            mean += __shfl_xor_sync(0xffffffff, mean, s);
         }
         if (lane == 0) opinion[c] = mean / norm;
+        __syncwarp();
     }
 }
 

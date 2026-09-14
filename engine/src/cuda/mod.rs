@@ -318,6 +318,7 @@ impl<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Default +
 }
 
 const SWEEP_WARPS: u32 = 4;
+const VALUE_WARPS: usize = 4;
 const WORK_BITS: u32 = 20;
 
 struct Batch {
@@ -701,6 +702,7 @@ fn compile_options(major: i32, minor: i32, trunk_blocks: usize) -> CompileOption
         TRUNK_ROWS,
         ATTN,
         BINS,
+        VALUE_WARPS,
     ];
     options.extend([
         format!("--gpu-architecture=compute_{major}{minor}"),
@@ -1204,13 +1206,9 @@ impl Card {
         let Scratch { input, projected, x, h, z, .. } = &mut *sc;
         let p = h.buf.as_mut().unwrap();
         self.run(self.layout.board_out, input.buf.as_ref().unwrap(), n, p)?;
-        let value_board = Span {
-            w: self.layout.value_hidden.w + ATTN * ATTN,
-            b: usize::MAX,
-            i: D,
-            o: ATTN,
-        };
-        self.lin(value_board, p, n, 0.0, z.buf.as_mut().unwrap())?;
+        let vh = self.layout.value_hidden;
+        let value_board = Span { w: vh.w + ATTN * ATTN, b: vh.b, i: D, o: ATTN };
+        self.run(value_board, p, n, z.buf.as_mut().unwrap())?;
         let mut src = 0;
         let mut g = self.solves.lock();
         for w in shards(sizes, board0, n) {
@@ -2106,7 +2104,6 @@ impl Card {
             i: 2 * ATTN,
             o: ATTN,
         };
-        let hidden_b = self.b.slice(l.value_hidden.b..l.value_hidden.b + ATTN);
         let out_w = self.w.slice(l.value_out.w..l.value_out.w + ATTN * BINS);
         let out_b = self.b.slice(l.value_out.b..l.value_out.b + BINS);
         let mut q0 = 0usize;
@@ -2130,11 +2127,11 @@ impl Card {
             unsafe {
                 self.stream.launch_builder(&self.k.value)
                     .arg(trees).arg(part).arg(local).arg(&*h)
-                    .arg(&hidden_b).arg(&out_w).arg(&out_b)
+                    .arg(&out_w).arg(&out_b)
                     .arg(&rows_i).arg(&q0_i)
                     .launch_unit(LaunchConfig {
                         grid_dim: (rows as u32, 1, 1),
-                        block_dim: (32, 4, 1),
+                        block_dim: (32, VALUE_WARPS as u32, 1),
                         shared_mem_bytes: 0,
                     })
             }.map_err(err)?;
