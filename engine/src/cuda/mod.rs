@@ -1403,7 +1403,7 @@ impl Card {
                     .arg(&mut *public).arg(&nb).arg(&tokens).arg(&c)
                     .launch_unit(spread(boards.len() * ntokens * C))
             }.map_err(err)?;
-            self.run(self.layout.attention_kv(), public, boards.len() * ntokens, kv)?;
+            self.lin(self.layout.attention_kv(), public, boards.len() * ntokens, 0.0, kv)?;
         }
         for tile in pairs.chunks(PAIR_TILE) {
             self.attention_pairs(board_at, tile)?;
@@ -1452,10 +1452,12 @@ impl Card {
         let part = stage.pair_part.buf();
         let config = stage.pair_config.buf();
         let (n, attn) = (pairs.len() as i32, ATTN as i32);
+        let kvb = self.layout.attention_kv().b;
+        let kv_b = self.b.slice(kvb..kvb + 2 * ATTN);
         unsafe {
             stream.launch_builder(&self.k.attention)
                 .arg(batch.trees.buf()).arg(&*kv)
-                .arg(part).arg(stage.pair_board.buf()).arg(config).arg(&mut *facts)
+                .arg(part).arg(stage.pair_board.buf()).arg(&kv_b).arg(config).arg(&mut *facts)
                 .arg(stage.pair_start.buf())
                 .launch_unit(LaunchConfig {
                     grid_dim: (runs as u32, HEADS as u32, 1),

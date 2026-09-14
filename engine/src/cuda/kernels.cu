@@ -439,6 +439,7 @@ __global__ void k_public_cache(const Tree* trees, const unsigned int* part,
 __global__ void k_attention(const Tree* trees, const float* kv,
                             const unsigned int* part,
                             const unsigned int* board,
+                            const float* __restrict__ kv_b,
                             const unsigned int* config, float* out,
                             const unsigned int* starts) {
     __shared__ float keys[ATTN_TOK * ATTN_PITCH];
@@ -449,9 +450,10 @@ __global__ void k_attention(const Tree* trees, const float* kv,
     const unsigned int begin = starts[blockIdx.x], end = starts[blockIdx.x + 1];
     const float* board_kv =
         kv + (size_t)board[begin] * ATTN_TOK * 2 * ATTN + head * ATTN_W;
+    kv_b += head * ATTN_W + lane;
     for (int t = warp; t < ATTN_TOK; t += ATTN_WARPS) {
-        keys[t * ATTN_PITCH + lane] = board_kv[(size_t)t * 2 * ATTN + lane];
-        values[t * ATTN_PITCH + lane] = board_kv[(size_t)t * 2 * ATTN + ATTN + lane];
+        keys[t * ATTN_PITCH + lane] = board_kv[(size_t)t * 2 * ATTN + lane] + *kv_b;
+        values[t * ATTN_PITCH + lane] = board_kv[(size_t)t * 2 * ATTN + ATTN + lane] + kv_b[ATTN];
     }
     __syncthreads();
     float* mine = query + warp * ATTN_W;
