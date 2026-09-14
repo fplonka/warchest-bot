@@ -4,6 +4,7 @@ set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 export WARCHEST_BOX_DIR=/workspace/curve WARCHEST_BOX_LOCAL_DIR=$here
 queue=$here/runs/curve/queue
+campaign=${WARCHEST_CAMPAIGN:-ladder/long}
 mkdir -p "$here/runs/curve"
 
 run() {
@@ -17,16 +18,20 @@ run() {
 }
 
 candidate() {
-    local branch=$1 minutes=$2
-    "$here/tools/box.sh" "rm -rf runs/smoke_$branch" &&
-        run "$branch" "out=${branch}-${minutes}m_s101" minutes="$minutes" \
-            snapshot_every=60 seed=101 lr_final=0.001
+    local name=$1 branch=$2
+    shift 2
+    run "$branch" "out=runs/$name" minutes=480 snapshot_every=60 \
+        seed=1001 lr_final=0.001 "$@" &&
+        "$here/tools/box.sh" "python tools/pack.py runs/$name" &&
+        "$here/tools/box.sh" "ls -1 runs/$name/snap_*.pt | head -n -1 | xargs -r rm -f" &&
+        "$here/tools/box.sh" pull "$name" &&
+        { grep -qxF "$name" "$here/$campaign/runs" ||
+              echo "$name" >> "$here/$campaign/runs"; }
 }
 
 while :; do
-    read -r branch minutes < <(head -1 "$queue" 2>/dev/null)
-    minutes=${minutes:-120}
-    if [ -z "$branch" ]; then
+    read -r name branch rest < <(head -1 "$queue" 2>/dev/null)
+    if [ -z "${name:-}" ]; then
         sleep 60
         continue
     fi
@@ -35,7 +40,9 @@ while :; do
         sleep 120
         continue
     fi
-    echo "[$(date +%FT%T)] $branch ${minutes}min"
-    candidate "$branch" "$minutes" || echo "[$(date +%FT%T)] $branch failed"
+    echo "[$(date +%FT%T)] $name on $branch ${rest:-}"
+    # shellcheck disable=SC2086
+    candidate "$name" "$branch" $rest || echo "[$(date +%FT%T)] $name failed"
     tail -n +2 "$queue" > "$queue.tmp" && mv "$queue.tmp" "$queue"
+    "$here/tools/ladder.sh" "$campaign" 1
 done
