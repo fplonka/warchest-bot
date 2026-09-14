@@ -10,7 +10,7 @@ run() {
     local branch=$1 tree=$here/../curve-$branch
     shift
     git -C "$here" worktree add --force --detach "$tree" "$branch" &&
-        "$tree/tools/box.sh" go --skip-ladder "$@"
+        "$tree/tools/box.sh" go "$@"
     local status=$?
     git -C "$here" worktree remove --force "$tree"
     return $status
