@@ -1,0 +1,10 @@
+categorical-480m_s101
+combined-480m_s101
+config-attn-480m_s101
+deep-12-480m_s101
+directional-480m_s101
+ema-480m_s101
+master-480m_s101
+no-directional-480m_s101
+no-directional-ema
+q-005-480m_s101

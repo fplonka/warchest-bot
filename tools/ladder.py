@@ -167,7 +167,11 @@ def main():
     campaign = Path(sys.argv[1])
     matches_path = campaign / "matches.jsonl"
     matches_path.touch()
-    bots = json.loads((campaign / "bots.json").read_text())
+    bots = {}
+    for run in (campaign / "runs").read_text().split():
+        for spec in sorted((ROOT / "runs" / run / "bots").glob("*/bot.json")):
+            bot = json.loads(spec.read_text())
+            bots[bot["name"]] = (bot["minutes"], str(spec.parent.relative_to(ROOT)))
     names = sorted(bots)
     ages = [round(bots[name][0]) for name in names]
     played = load(matches_path, {name: i for i, name in enumerate(names)})
