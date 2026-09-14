@@ -8,6 +8,7 @@ __device__ __forceinline__ float warp_sum(float v) {
     return v;
 }
 
+
 __device__ __forceinline__ float gelu1(float x) {
     const float k = 0.7978845608028654f;
     return 0.5f * x * (1.0f + tanhf(k * (x + 0.044715f * x * x * x)));
@@ -762,12 +763,10 @@ __global__ void k_belief(const Tree* trees, const int* part_of_row,
 
 __global__ void k_value(const Tree* trees, const int* part_of_row,
                         const int* local_row, const float* belief_projection,
-                        const float* out_w, const float* out_b, int rows, int q0) {
+                        const float* __restrict__ out_w,
+                        const float* out_b, int rows, int q0) {
     int k = blockIdx.x, lane = threadIdx.x, warp = threadIdx.y;
-    __shared__ float weight[ATTN * BINS];
     __shared__ float hid[VALUE_WARPS][ATTN];
-    for (int i = warp * 32 + lane; i < ATTN * BINS; i += VALUE_WARPS * 32) weight[i] = out_w[i];
-    __syncthreads();
     int r = q0 + (k >> 1);
     unsigned int player = k & 1;
     const Tree& t = trees[part_of_row[r]];
@@ -787,7 +786,7 @@ __global__ void k_value(const Tree* trees, const int* part_of_row,
             hid[warp][j] = gelu1(__half2float(pp[j]) + base[q]);
         __syncwarp();
         float acc = 0.0f;
-        for (int j = side; j < ATTN; j += 2) acc += hid[warp][j] * weight[j * BINS + bin];
+        for (int j = side; j < ATTN; j += 2) acc += hid[warp][j] * out_w[j * BINS + bin];
         float logit = acc + __shfl_xor_sync(0xffffffff, acc, BINS) + out_b[bin];
         float top = logit;
         for (int s = BINS / 2; s > 0; s >>= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffff, top, s));
