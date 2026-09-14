@@ -333,7 +333,9 @@ const WORK_BITS: u32 = 20;
 struct Batch {
     trees: Wire<u64>,
     work: Wire<u32>,
+    inner: Wire<u32>,
     level_at: Vec<u32>,
+    inner_at: Vec<u32>,
     coff: Wire<u32>,
     part: Wire<i32>,
     local: Wire<i32>,
@@ -350,7 +352,9 @@ impl Default for Batch {
         Batch {
             trees: Wire::default(),
             work: Wire::default(),
+            inner: Wire::default(),
             level_at: Vec::new(),
+            inner_at: Vec::new(),
             coff: Wire::default(),
             part: Wire::default(),
             local: Wire::default(),
@@ -375,6 +379,7 @@ struct Prefix {
     parts: u32,
     rows: usize,
     items: Vec<u32>,
+    inner: Vec<u32>,
     nterm: usize,
 }
 
@@ -1716,7 +1721,7 @@ impl Card {
         }
         let mut g = self.solves.lock();
         for &i in mine {
-            let Call::Tree { solve, writes, ncells, nreach, nvals, levels, nterm, seed, .. }
+            let Call::Tree { solve, writes, ncells, nreach, nvals, levels, splits, nterm, seed, .. }
                 = &calls[i] else {
                 unreachable!("tree shard holds only tree calls")
             };
@@ -1729,6 +1734,8 @@ impl Card {
             }
             b.level_start.clear();
             b.level_start.extend_from_slice(levels);
+            b.level_split.clear();
+            b.level_split.extend_from_slice(splits);
             b.nterm = *nterm;
             if let Some(sd) = seed {
                 b.seed.put(s, 0, &[*sd])?;
@@ -1782,6 +1789,7 @@ impl Card {
             (Vec::new(), Vec::new(), Vec::new());
         let (mut rows, mut cells, mut nterm) = (0usize, 0u32, 0usize);
         let (mut bucket, mut items): (Vec<Vec<u32>>, Vec<u32>) = (Vec::new(), Vec::new());
+        let (mut kernel, mut inner): (Vec<Vec<u32>>, Vec<u32>) = (Vec::new(), Vec::new());
         let mut upto: Vec<Prefix> = vec![Prefix::default()];
         {
             let g = self.solves.lock();
@@ -1800,7 +1808,9 @@ impl Card {
                 nterm = nterm.max(b.nterm);
                 while bucket.len() + 1 < b.level_start.len() {
                     bucket.push(Vec::new());
+                    kernel.push(Vec::new());
                     items.push(0);
+                    inner.push(0);
                 }
                 for (l, w) in b.level_start.windows(2).enumerate() {
                     let n = w[1] - w[0];
@@ -1809,32 +1819,44 @@ impl Card {
                         "a round of {} solves and a level of {n} nodes overflow a work item",
                         solves.len()
                     );
-                    bucket[l].extend((0..n).map(|slot| (part as u32) << WORK_BITS | slot));
+                    let item = |slot| (part as u32) << WORK_BITS | slot;
+                    bucket[l].extend((0..n).map(item));
                     items[l] += n;
+                    let cut = b.level_split[l] - w[0];
+                    kernel[l].extend((0..cut).map(item));
+                    inner[l] += cut;
                 }
                 upto.push(Prefix {
                     parts: part as u32 + 1,
                     rows,
                     items: items.clone(),
+                    inner: inner.clone(),
                     nterm,
                 });
             }
         }
-        let mut level_at: Vec<u32> = Vec::with_capacity(bucket.len() + 1);
-        let mut work: Vec<u32> = Vec::new();
-        for v in &bucket {
-            level_at.push(work.len() as u32);
-            work.extend_from_slice(v);
-        }
-        level_at.push(work.len() as u32);
+        let flatten = |b: &[Vec<u32>]| {
+            let mut at: Vec<u32> = Vec::with_capacity(b.len() + 1);
+            let mut all: Vec<u32> = Vec::new();
+            for v in b {
+                at.push(all.len() as u32);
+                all.extend_from_slice(v);
+            }
+            at.push(all.len() as u32);
+            (at, all)
+        };
+        let (level_at, work) = flatten(&bucket);
+        let (inner_at, inner_work) = flatten(&kernel);
         let s = &self.stream;
         batch.trees.put(s, desc.len(), copy(&desc))?;
         batch.work.put(s, work.len(), copy(&work))?;
+        batch.inner.put(s, inner_work.len(), copy(&inner_work))?;
         batch.coff.put(s, coff.len(), copy(&coff))?;
         batch.part.put(s, part_of_row.len(), copy(&part_of_row))?;
         batch.local.put(s, local_row.len(), copy(&local_row))?;
         batch.base.put(s, base.len(), copy(&base))?;
         batch.level_at = level_at;
+        batch.inner_at = inner_at;
         batch.upto = upto;
         batch.parts = solves.len() as u32;
         batch.cells = cells as usize;
@@ -2048,17 +2070,17 @@ impl Card {
     }
 
     fn backprop(&self, b: &Batch, p: &Prefix, avg: i32, iter: i32, k: Cfr) -> Res<()> {
-        for level in (0..p.items.len()).rev() {
-            if p.items[level] == 0 {
+        for level in (0..p.inner.len()).rev() {
+            if p.inner[level] == 0 {
                 continue;
             }
-            let (at, level_i) = (b.level_at[level] as i32, level as i32);
+            let (at, level_i) = (b.inner_at[level] as i32, level as i32);
             unsafe {
                 self.stream
                     .launch_builder(&self.k.backprop_sweep)
-                    .arg(b.trees.buf()).arg(b.work.buf()).arg(&at).arg(&level_i).arg(&avg).arg(&iter)
+                    .arg(b.trees.buf()).arg(b.inner.buf()).arg(&at).arg(&level_i).arg(&avg).arg(&iter)
                     .arg(&k.alpha).arg(&k.beta).arg(&k.gamma).arg(&k.predict)
-                    .launch_unit(Self::grid(p.items[level], 2, 1))
+                    .launch_unit(Self::grid(p.inner[level], 2, 1))
             }
             .map_err(err)?;
         }
@@ -2185,17 +2207,17 @@ impl Card {
 
     fn finish(&self, b: &Batch, p: &Prefix) -> Res<()> {
         let touched = b.touched.buf();
-        for level in 0..p.items.len() {
-            if p.items[level] == 0 {
+        for level in 0..p.inner.len() {
+            if p.inner[level] == 0 {
                 continue;
             }
-            let (at, level_i) = (b.level_at[level] as i32, level as i32);
+            let (at, level_i) = (b.inner_at[level] as i32, level as i32);
             unsafe {
                 self.stream
                     .launch_builder(&self.k.finish)
-                    .arg(b.trees.buf()).arg(b.work.buf()).arg(&at).arg(&level_i).arg(touched)
-                    .arg(&(p.items[level] as i32))
-                    .launch_unit(Self::grid(p.items[level], 1, SWEEP_WARPS))
+                    .arg(b.trees.buf()).arg(b.inner.buf()).arg(&at).arg(&level_i).arg(touched)
+                    .arg(&(p.inner[level] as i32))
+                    .launch_unit(Self::grid(p.inner[level], 1, SWEEP_WARPS))
             }
             .map_err(err)?;
         }
@@ -2333,6 +2355,7 @@ impl Plan {
         let batch = Batch {
             trees: self.wire(n * DESC)?,
             work: self.wire(n * nodes)?,
+            inner: self.wire(n * nodes)?,
             coff: self.wire(n * (2 * rows + 1))?,
             part: self.wire(n * rows)?,
             local: self.wire(n * rows)?,

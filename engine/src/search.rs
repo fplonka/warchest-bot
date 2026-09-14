@@ -1443,6 +1443,7 @@ impl Solver {
             nreach: self.nreach,
             nvals: self.nvals,
             levels: self.contract.level_start.clone(),
+            splits: self.contract.level_split.clone(),
             nterm: self.term_leaves.len(),
             seed: first.then_some(self.seed),
             prime,

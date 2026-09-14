@@ -349,6 +349,7 @@ pub struct Solve {
     pub ncells: usize,
     pub nreach: usize,
     pub level_start: Vec<u32>,
+    pub level_split: Vec<u32>,
     pub conditioned: Arr<f16>,
     pub value_cfg: Arr<f16>,
     pub seed: Arr<u64>,
@@ -386,6 +387,7 @@ impl Solve {
             ncells: 0,
             nreach: 0,
             level_start: Vec::new(),
+            level_split: Vec::new(),
             conditioned: Arr::with_cap(s, b.cap(Ent::Cidx) * ATTN)?,
             value_cfg: Arr::with_cap(s, b.cap(Ent::Cidx) * ATTN)?,
             seed: Arr::with_cap(s, 1)?,
@@ -423,6 +425,7 @@ impl Solve {
         self.todo = 0;
         self.nexpand = 0;
         self.level_start.clear();
+        self.level_split.clear();
         self.ent[Ent::Node as usize].rewind();
         self.ent[Ent::Draw as usize].rewind();
         self.ent[Ent::Cell as usize].zero(s)?;

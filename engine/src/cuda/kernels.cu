@@ -651,7 +651,6 @@ __global__ void k_backprop_sweep(const Tree* trees, const unsigned int* work, in
     int traverser = blockIdx.y;
     float* vals = t.vals + traverser * t.nvals;
     unsigned int node = work_node(t, level, item);
-    if (t.kind[node] == KIND_LEAF) return;
     unsigned int me = t.player[node];
     unsigned int n = t.nc[2 * node + traverser];
     unsigned int vi = t.voff[node];

@@ -33,6 +33,7 @@ pub enum Call {
         nreach: usize,
         nvals: usize,
         levels: Vec<u32>,
+        splits: Vec<u32>,
         nterm: usize,
         seed: Option<u64>,
         prime: Vec<Prime>,
@@ -228,6 +229,7 @@ pub struct Contract {
     pub rvd_p: Vec<f32>,
 
     pub level_start: Vec<u32>,
+    pub level_split: Vec<u32>,
     pub level_node: Vec<u32>,
     pub built: usize,
 }
@@ -436,8 +438,10 @@ impl Contract {
             c.level[i] = if p == NO_ROW { 0 } else { c.level[p as usize] + 1 };
         }
         let depth = c.level.iter().copied().max().unwrap_or(0) as usize + 1;
-        let (start, order) = crate::search::group_by(c.level.iter().map(|&l| l as usize), depth);
-        c.level_start = start;
+        let rank = |i: usize| 2 * c.level[i] as usize + (c.kind[i] == KIND_LEAF) as usize;
+        let (start, order) = crate::search::group_by((0..n).map(rank), 2 * depth);
+        c.level_start = (0..=depth).map(|l| start[2 * l]).collect();
+        c.level_split = (0..depth).map(|l| start[2 * l + 1]).collect();
         c.level_node = order;
     }
 
