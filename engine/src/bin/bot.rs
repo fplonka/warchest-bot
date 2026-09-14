@@ -62,12 +62,13 @@ fn run() -> Result<(), String> {
     let weights = packed.dir.join(&packed.manifest.weights);
     let net = Net::load_bin(weights.to_str().ok_or("invalid weights path")?)
         .map_err(|e| format!("{}: {e}", weights.display()))?;
-    let mind = Mind::Sog(Arc::new(Cards::new(Device::new(
-        &devices,
-        &net,
-        cfg,
-        usize::MAX,
-    )?)));
+    let mind = match packed.manifest.search.mind.as_str() {
+        "greedy" => Mind::Greedy { temp: cfg.prior_temp },
+        "" | "sog" => Mind::Sog(Arc::new(Cards::new(Device::new(
+            &devices, &net, cfg, usize::MAX,
+        )?))),
+        other => return Err(format!("unknown mind {other}")),
+    };
     let brain = Brain {
         mind,
         net: Arc::new(net),

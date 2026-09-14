@@ -15,6 +15,8 @@ pub struct Search {
     pub puct: f32,
     pub prior_temp: f32,
     pub cfr: String,
+    #[serde(default)]
+    pub mind: String,
 }
 
 impl Search {
