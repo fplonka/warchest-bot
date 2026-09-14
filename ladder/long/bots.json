@@ -1,0 +1,162 @@
+{
+ "master-480m_s101.0001-s1": [
+  60.0,
+  "runs/master-480m_s101/bots/0001-s1"
+ ],
+ "master-480m_s101.0002-s2": [
+  120.002,
+  "runs/master-480m_s101/bots/0002-s2"
+ ],
+ "master-480m_s101.0004-s4": [
+  240.002,
+  "runs/master-480m_s101/bots/0004-s4"
+ ],
+ "master-480m_s101.final": [
+  480.053,
+  "runs/master-480m_s101/bots/final"
+ ],
+ "q-005-480m_s101.0001-s1": [
+  60.002,
+  "runs/q-005-480m_s101/bots/0001-s1"
+ ],
+ "q-005-480m_s101.0002-s2": [
+  120.002,
+  "runs/q-005-480m_s101/bots/0002-s2"
+ ],
+ "q-005-480m_s101.0004-s4": [
+  240.003,
+  "runs/q-005-480m_s101/bots/0004-s4"
+ ],
+ "q-005-480m_s101.final": [
+  480.053,
+  "runs/q-005-480m_s101/bots/final"
+ ],
+ "ema-480m_s101.0001-s1": [
+  60.002,
+  "runs/ema-480m_s101/bots/0001-s1"
+ ],
+ "ema-480m_s101.0002-s2": [
+  120.002,
+  "runs/ema-480m_s101/bots/0002-s2"
+ ],
+ "ema-480m_s101.0004-s4": [
+  240.003,
+  "runs/ema-480m_s101/bots/0004-s4"
+ ],
+ "ema-480m_s101.final": [
+  480.055,
+  "runs/ema-480m_s101/bots/final"
+ ],
+ "deep-12-480m_s101.0001-s1": [
+  60.0,
+  "runs/deep-12-480m_s101/bots/0001-s1"
+ ],
+ "deep-12-480m_s101.0002-s2": [
+  120.002,
+  "runs/deep-12-480m_s101/bots/0002-s2"
+ ],
+ "deep-12-480m_s101.0004-s4": [
+  240.003,
+  "runs/deep-12-480m_s101/bots/0004-s4"
+ ],
+ "deep-12-480m_s101.final": [
+  480.053,
+  "runs/deep-12-480m_s101/bots/final"
+ ],
+ "config-attn-480m_s101.0001-s1": [
+  60.0,
+  "runs/config-attn-480m_s101/bots/0001-s1"
+ ],
+ "config-attn-480m_s101.0002-s2": [
+  120.0,
+  "runs/config-attn-480m_s101/bots/0002-s2"
+ ],
+ "config-attn-480m_s101.0004-s4": [
+  240.002,
+  "runs/config-attn-480m_s101/bots/0004-s4"
+ ],
+ "config-attn-480m_s101.final": [
+  480.035,
+  "runs/config-attn-480m_s101/bots/final"
+ ],
+ "categorical-480m_s101.0001-s1": [
+  60.002,
+  "runs/categorical-480m_s101/bots/0001-s1"
+ ],
+ "categorical-480m_s101.0002-s2": [
+  120.003,
+  "runs/categorical-480m_s101/bots/0002-s2"
+ ],
+ "categorical-480m_s101.0004-s4": [
+  240.005,
+  "runs/categorical-480m_s101/bots/0004-s4"
+ ],
+ "categorical-480m_s101.final": [
+  480.057,
+  "runs/categorical-480m_s101/bots/final"
+ ],
+ "directional-480m_s101.0001-s1": [
+  60.002,
+  "runs/directional-480m_s101/bots/0001-s1"
+ ],
+ "directional-480m_s101.0002-s2": [
+  120.002,
+  "runs/directional-480m_s101/bots/0002-s2"
+ ],
+ "directional-480m_s101.0004-s4": [
+  240.002,
+  "runs/directional-480m_s101/bots/0004-s4"
+ ],
+ "directional-480m_s101.final": [
+  480.055,
+  "runs/directional-480m_s101/bots/final"
+ ],
+ "combined-480m_s101.0001-s1": [
+  60.002,
+  "runs/combined-480m_s101/bots/0001-s1"
+ ],
+ "combined-480m_s101.0002-s2": [
+  120.003,
+  "runs/combined-480m_s101/bots/0002-s2"
+ ],
+ "combined-480m_s101.0004-s4": [
+  240.007,
+  "runs/combined-480m_s101/bots/0004-s4"
+ ],
+ "combined-480m_s101.final": [
+  480.037,
+  "runs/combined-480m_s101/bots/final"
+ ],
+ "no-directional-480m_s101.0001-s1": [
+  60.003,
+  "runs/no-directional-480m_s101/bots/0001-s1"
+ ],
+ "no-directional-480m_s101.0002-s2": [
+  120.003,
+  "runs/no-directional-480m_s101/bots/0002-s2"
+ ],
+ "no-directional-480m_s101.0004-s4": [
+  240.007,
+  "runs/no-directional-480m_s101/bots/0004-s4"
+ ],
+ "no-directional-480m_s101.final": [
+  480.038,
+  "runs/no-directional-480m_s101/bots/final"
+ ],
+ "no-directional-ema.0001-s1": [
+  60.003,
+  "runs/no-directional-ema/bots/0001-s1"
+ ],
+ "no-directional-ema.0002-s2": [
+  120.003,
+  "runs/no-directional-ema/bots/0002-s2"
+ ],
+ "no-directional-ema.0004-s4": [
+  240.007,
+  "runs/no-directional-ema/bots/0004-s4"
+ ],
+ "no-directional-ema.final": [
+  480.038,
+  "runs/no-directional-ema/bots/final"
+ ]
+}

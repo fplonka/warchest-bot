@@ -7,15 +7,13 @@ from pathlib import Path
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
-MATCHES = ROOT / "ladder/matches.jsonl"
-BOTS = ROOT / "ladder/bots.json"
 SCALE = math.log(10.0) / 400.0
 GAMES, BLIND, GAUGE = 200, 10, 500.0
 
 
-def load(index):
+def load(path, index):
     played = []
-    for line in MATCHES.read_text().splitlines():
+    for line in path.read_text().splitlines():
         row = json.loads(line)
         if row["a"] in index and row["b"] in index:
             counts = torch.zeros(2, 3)
@@ -38,7 +36,8 @@ def objective(theta, contrasts, counts, size):
     both = torch.stack([delta + seat * SCALE, delta - seat * SCALE], 1)
     return (-(counts * logprobs(both, log_nu)).sum()
             + 0.5 * ((theta[:size] / GAUGE) ** 2).sum()
-            + 0.5 * (seat / 100.0) ** 2)
+            + 0.5 * (seat / 100.0) ** 2
+            + 0.5 * (log_nu / 3.0) ** 2)
 
 
 def contrasts_for(pairs, size):
@@ -50,7 +49,8 @@ def contrasts_for(pairs, size):
 
 def fit(played, size):
     contrasts = contrasts_for([(a, b) for a, b, _, _ in played], size)
-    counts = torch.stack([c for _, _, c, _ in played])
+    counts = (torch.stack([c for _, _, c, _ in played]) if played
+              else torch.zeros(0, 2, 3))
     theta = torch.zeros(size + 2, requires_grad=True)
     optimiser = torch.optim.LBFGS([theta], max_iter=600, tolerance_grad=1e-10,
                                   line_search_fn="strong_wolfe")
@@ -97,68 +97,86 @@ def paint(text, value, ordered, dim):
     return f"\033[38;5;{RAMP[round(step * (len(RAMP) - 1))]}m{text}\033[0m"
 
 
-def average(members, ages, size):
-    """Contrasts for a branch's mean Elo at each age, and its mean improvement."""
-    rows = {}
-    for age in sorted({a for at in members for a in at}):
-        column = torch.zeros(size + 2)
-        for at in members:
-            column[at[age]] = 1.0 / len(members)
-        rows[age] = column
-    gain = rows[max(rows)] - rows[min(rows)]
-    return rows, gain
+def optimizer_rows(entries):
+    logs = {}
+    for age, path in entries:
+        log = ROOT / Path(path).parents[1] / "epochs.jsonl"
+        if log not in logs:
+            logs[log] = [(row["t"], row["optimizer_rows"])
+                         for row in map(json.loads, log.read_text().splitlines())
+                         if "optimizer_rows" in row]
+        yield min(logs[log], key=lambda row: abs(row[0] - age * 60))[1]
 
 
-def report(names, ages, mean, covariance, played):
+def age_label(minutes):
+    return f"{minutes / 60:g}h" if minutes >= 60 else f"{minutes:g}m"
+
+
+def report(names, ages, trained, mean, covariance, played):
     runs = {}
     for i, name in enumerate(names):
         runs.setdefault(name.split(".")[0], {})[ages[i]] = i
     branches = {}
     for run, at in runs.items():
         branches.setdefault(run.rsplit("_s", 1)[0], []).append((run, at))
-    size = len(names)
 
-    lines = []
+    def describe(members):
+        columns = {}
+        for age in sorted({a for at in members for a in at}):
+            column = torch.zeros(len(names) + 2)
+            present = [at[age] for at in members if age in at]
+            column[present] = 1.0 / len(present)
+            columns[age] = column
+        gain = columns[max(columns)] - columns[min(columns)]
+        value = float(gain @ mean)
+        doublings = sum(math.log2(trained[at[max(at)]] / trained[at[min(at)]])
+                        for at in members) / len(members)
+        return ({age: float(c @ mean) for age, c in columns.items()}, value,
+                float((gain @ covariance @ gain).sqrt()), value / doublings)
+
+    blocks = []
     for branch, members in branches.items():
-        columns, gain = average([at for _, at in members], ages, size)
-        elo = {age: float(column @ mean) for age, column in columns.items()}
-        spread = float((gain @ covariance @ gain).sqrt())
-        lines.append((float(gain @ mean), branch, elo, float(gain @ mean), spread, False))
-        for run, at in sorted(members):
-            early, late = at[min(at)], at[max(at)]
-            lines.append((float(gain @ mean), "  " + run, {a: float(mean[at[a]]) for a in at},
-                          float(mean[late] - mean[early]),
-                          float((covariance[early, early] + covariance[late, late]
-                                 - 2 * covariance[early, late]).sqrt()), True))
-    lines.sort(key=lambda row: -row[0])
+        head = describe([at for _, at in members])
+        blocks.append((head[1], [(branch, *head, False)]
+                       + [("  " + run, *describe([at]), True)
+                          for run, at in sorted(members)]))
+    lines = [row for _, block in sorted(blocks, key=lambda b: -b[0]) for row in block]
 
-    ordered = {age: sorted(elo[age] for _, _, elo, _, _, dim in lines if not dim)
-               for age in {a for _, _, elo, _, _, _ in lines for a in elo}}
-    ordered["gain"] = sorted(g for _, _, _, g, _, dim in lines if not dim)
+    bright = [row for row in lines if not row[-1]]
+    every = sorted({a for _, elo, *_ in lines for a in elo})
+    ordered = {age: sorted(elo[age] for _, elo, *_ in bright if age in elo)
+               for age in every}
+    ordered["gain"] = sorted(row[2] for row in bright)
+    ordered["rows"] = sorted(row[4] for row in bright)
 
-    print(f"{'branch':24s} {'30min':>8s} {'60min':>8s} {'120min':>8s} {'30->120':>15s}")
-    for _, label, elo, gain, spread, dim in lines:
-        ages = sorted(elo)
-        cells = "".join(paint(f" {elo[a]:+8.0f}", elo[a],
-                              None if a == ages[0] else ordered[a], dim)
-                        for a in ages)
-        tail = paint(f"{gain:+7.0f} +- {spread:<4.0f}", gain, ordered["gain"], dim)
-        print(paint(f"{label:24s}", gain, ordered["gain"], dim) + cells + "   " + tail)
+    span = f"{age_label(every[0])}->{age_label(every[-1])}"
+    print(f"{'branch':24s}" + "".join(f" {age_label(a):>8s}" for a in every)
+          + f" {span:>15s} {'Elo/2x rows':>12s}")
+    for label, elo, gain, spread, per_row, dim in lines:
+        cells = "".join(paint(f" {elo[a]:+8.0f}", elo[a], ordered[a], dim)
+                        if a in elo else " " * 9 for a in every)
+        print(paint(f"{label:24s}", gain, ordered["gain"], dim) + cells + "   "
+              + paint(f"{gain:+7.0f} +- {spread:<4.0f}", gain, ordered["gain"], dim)
+              + paint(f"{per_row:+12.0f}", per_row, ordered["rows"], dim))
     fresh = sum(1 for *_, seed in played if seed != 83)
     print(f"\n{len(played)} matches ({fresh} on fresh openings), {len(names)} bots, "
           f"seat {mean[-2]:+.1f} Elo, draws {mean[-1].exp():.3f}")
 
 
 def main():
-    bots = json.loads(BOTS.read_text())
+    campaign = Path(sys.argv[1])
+    matches_path = campaign / "matches.jsonl"
+    matches_path.touch()
+    bots = json.loads((campaign / "bots.json").read_text())
     names = sorted(bots)
     ages = [round(bots[name][0]) for name in names]
-    played = load({name: i for i, name in enumerate(names)})
+    played = load(matches_path, {name: i for i, name in enumerate(names)})
     mean, covariance = fit(played, len(names))
-    if sys.argv[1:2] == ["report"]:
-        report(names, ages, mean, covariance, played)
+    if sys.argv[2:] == ["report"]:
+        trained = list(optimizer_rows(bots[name] for name in names))
+        report(names, ages, trained, mean, covariance, played)
         return
-    seed = 1000 + len(MATCHES.read_text().splitlines())
+    seed = 1000 + len(matches_path.read_text().splitlines())
     pairs, gain = sharpening(mean, covariance, len(names))
     blind = seed % BLIND == 0
     pick = pairs[int(torch.randint(len(pairs), (1,), generator=torch.Generator()
