@@ -24,7 +24,7 @@ struct Col {
 }
 
 pub fn tree_source() -> String {
-    let mut out = String::from("struct Tree {\n");
+    let mut out = String::from("#include <cuda_fp16.h>\n\nstruct Tree {\n");
     for c in &TABLE {
         out += &format!("    {} {};\n", c.ty, c.name);
     }

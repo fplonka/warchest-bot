@@ -10,6 +10,8 @@ use cudarc::driver::{
 };
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 
+use half::f16;
+
 use crate::board::{board, NONE, N_HEXES};
 use crate::contract::{Call, Prime, Reply};
 use crate::net::{
@@ -148,24 +150,22 @@ pub struct Device {
 
 pub const PIPELINE: usize = 3;
 
-fn tf32(v: f32) -> f32 {
-    let u = v.to_bits();
-    f32::from_bits(u.wrapping_add(0x1000) & 0xFFFF_E000)
-}
-
-fn pack_mma(w: &[f32], base: usize, k: usize, n: usize, out: &mut Vec<f32>) {
-    for kt in 0..k / 8 {
+fn pack_mma(w: &[f32], base: usize, k: usize, n: usize, out: &mut Vec<u32>) {
+    for kt in 0..k / 16 {
         for nt in 0..n / 8 {
             for lane in 0..32 {
                 let (g, t) = (lane / 4, lane % 4);
-                let at = |i: usize| tf32(w[base + (8 * kt + i) * n + 8 * nt + g]);
-                out.extend([at(t), at(t + 4)]);
+                let at = |i: usize| f16::from_f32(w[base + (16 * kt + i) * n + 8 * nt + g]);
+                let pair = |i: usize| {
+                    at(i).to_bits() as u32 | ((at(i + 1).to_bits() as u32) << 16)
+                };
+                out.extend([pair(2 * t), pair(2 * t + 8)]);
             }
         }
     }
 }
 
-fn fragwise(l: &NetLayout, w: &[f32]) -> (Vec<f32>, Vec<usize>) {
+fn fragwise(l: &NetLayout, w: &[f32]) -> (Vec<u32>, Vec<usize>) {
     let mut out = Vec::new();
     let mut at = Vec::new();
     for blk in &l.blocks {
@@ -179,8 +179,10 @@ fn fragwise(l: &NetLayout, w: &[f32]) -> (Vec<f32>, Vec<usize>) {
 
 const TRUNK_ROWS: usize = N_HEXES.next_multiple_of(16);
 const TRUNK_LDS: usize = C + 4;
+const TRUNK_HLDS: usize = C + 8;
 
-const TRUNK_SHARED: usize = (2 * N_HEXES + TRUNK_ROWS) * TRUNK_LDS * 4 + 3 * C * 4;
+const TRUNK_SHARED: usize =
+    2 * N_HEXES * TRUNK_LDS * 4 + TRUNK_ROWS * TRUNK_HLDS * 2 + 3 * C * 4;
 const _: () = {
     assert!(C % 32 == 0, "k_trunk wants a whole number of warps a row");
     assert!(
@@ -427,7 +429,7 @@ struct Card {
     batch: parking_lot::Mutex<Batch>,
     scratch: parking_lot::Mutex<Scratch>,
     w: CudaSlice<f32>,
-    wt: CudaSlice<f32>,
+    wt: CudaSlice<u32>,
     b: CudaSlice<f32>,
     ln: CudaSlice<f32>,
     nb: CudaSlice<i32>,

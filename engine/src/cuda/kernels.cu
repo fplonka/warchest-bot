@@ -175,40 +175,35 @@ __global__ void k_stem(float* x, const float* projected, const int* occupant,
 
 #define TRUNK_OFF 12
 #define TRUNK_MT (TRUNK_ROWS / 16)
-#define TRUNK_KS (TRUNK_C / 8)
+#define TRUNK_KS (TRUNK_C / 16)
 #define TRUNK_SPAN (TRUNK_C / 8)
 #define TRUNK_MAXH (TRUNK_ROWS / TRUNK_SPAN)
 #define TRUNK_Q (TRUNK_C / 32)
 #define TRUNK_LDS (TRUNK_C + 4)
-
-__device__ __forceinline__ float tf32(float v) {
-    unsigned r;
-    asm("cvt.rna.tf32.f32 %0, %1;" : "=r"(r) : "f"(v));
-    return __uint_as_float(r);
-}
+#define TRUNK_HLDS (TRUNK_C + 8)
 
 __device__ __forceinline__ void mma_tile(float (&d)[4], const unsigned (&a)[4],
                                          const unsigned (&b)[2]) {
-    asm("mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 "
+    asm("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
         "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
         : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
-__device__ __forceinline__ void frag_a(const float* a, int m, int k, int lane,
+__device__ __forceinline__ void frag_a(const __half* a, int m, int k, int lane,
                                        int lds, unsigned (&f)[4]) {
-    const float* p = a + (size_t)(16 * m + (lane >> 2)) * lds + k + (lane & 3);
-    f[0] = __float_as_uint(p[0]);
-    f[1] = __float_as_uint(p[8 * lds]);
-    f[2] = __float_as_uint(p[4]);
-    f[3] = __float_as_uint(p[8 * lds + 4]);
+    const __half* p = a + (size_t)(16 * m + (lane >> 2)) * lds + k + 2 * (lane & 3);
+    f[0] = *(const unsigned*)p;
+    f[1] = *(const unsigned*)(p + 8 * lds);
+    f[2] = *(const unsigned*)(p + 8);
+    f[3] = *(const unsigned*)(p + 8 * lds + 8);
 }
 
-__device__ __forceinline__ void frag_b(const float* w, int k, int slot, int lane,
+__device__ __forceinline__ void frag_b(const unsigned* w, int k, int slot, int lane,
                                        int ntiles, unsigned (&f)[2]) {
-    float2 v = *(const float2*)(w + (((size_t)k * ntiles + slot) * 32 + lane) * 2);
-    f[0] = __float_as_uint(v.x);
-    f[1] = __float_as_uint(v.y);
+    const unsigned* p = w + (((size_t)k * ntiles + slot) * 32 + lane) * 2;
+    f[0] = p[0];
+    f[1] = p[1];
 }
 
 __device__ __forceinline__ int frag_row(int m, int i, int lane) {
@@ -251,7 +246,7 @@ __device__ __forceinline__ void pool_rows(const float* v, int nhex, int c, float
 
 __global__ __launch_bounds__(32 * TRUNK_SPAN, TRUNK_MIN_BLOCKS)
 void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
-             const float* __restrict__ wt, const float* __restrict__ bias,
+             const unsigned* __restrict__ wt, const float* __restrict__ bias,
              const float* __restrict__ ln,
              const int* __restrict__ off, const float* xpub, float* out,
              int rows, int nhex, int c, int blocks, int stride, int off_loose,
@@ -260,8 +255,8 @@ void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
     if (row >= rows) return;
     extern __shared__ float sm[];
     float* x = sm;
-    float* a = x + nhex * TRUNK_LDS;
-    float* u = a + TRUNK_ROWS * TRUNK_LDS;
+    __half* a = (__half*)(x + nhex * TRUNK_LDS);
+    float* u = (float*)(a + TRUNK_ROWS * TRUNK_HLDS);
     float* pooled = u + nhex * TRUNK_LDS;
     float* gb = pooled + 2 * c;
 
@@ -285,6 +280,11 @@ void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
 
     for (int blk = 0; blk < blocks; ++blk) {
         const int* o = off + blk * TRUNK_OFF;
+        float psum[TRUNK_Q], pmax[TRUNK_Q];
+        for (int q = 0; q < TRUNK_Q; ++q) {
+            psum[q] = 0.0f;
+            pmax[q] = neg_inf();
+        }
 #pragma unroll
         for (int t = 0; t < TRUNK_MAXH; ++t) {
             for (int q = 0; q < TRUNK_Q; ++q)
@@ -293,13 +293,28 @@ void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
             row_stats(cur, c, &mean, &inv);
             for (int q = 0; q < TRUNK_Q; ++q) {
                 int j = lane + 32 * q;
-                a[hex[t] * TRUNK_LDS + j] =
-                    live[t] ? tf32(gelu1((cur[q] - mean) * inv * ln[o[6] + j] + ln[o[7] + j]))
-                            : 0.0f;
+                float v = gelu1((cur[q] - mean) * inv * ln[o[6] + j] + ln[o[7] + j]);
+                a[hex[t] * TRUNK_HLDS + j] = __float2half(live[t] ? v : 0.0f);
+                if (live[t]) {
+                    psum[q] += v;
+                    pmax[q] = fmaxf(pmax[q], v);
+                }
             }
         }
+        for (int q = 0; q < TRUNK_Q; ++q) {
+            u[slot * 2 * TRUNK_C + lane + 32 * q] = psum[q];
+            u[slot * 2 * TRUNK_C + TRUNK_C + lane + 32 * q] = pmax[q];
+        }
         __syncthreads();
-        pool_rows(a, nhex, c, pooled);
+        for (int j = lane + 32 * slot; j < c; j += 32 * TRUNK_SPAN) {
+            float sv = 0.0f, mx = neg_inf();
+            for (int s = 0; s < TRUNK_SPAN; ++s) {
+                sv += u[s * 2 * TRUNK_C + j];
+                mx = fmaxf(mx, u[s * 2 * TRUNK_C + TRUNK_C + j]);
+            }
+            pooled[j] = sv / nhex;
+            pooled[c + j] = mx;
+        }
         __syncthreads();
         for (int q = 0; q < TRUNK_Q; ++q) {
             int j = lane + 32 * q;
@@ -321,11 +336,11 @@ void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
         for (int k = 0; k < TRUNK_KS; ++k) {
             unsigned bs[2], bn[2];
             frag_b(wt + o[10], k, slot, lane, TRUNK_SPAN, bs);
-            frag_b(wt + o[10] + (size_t)TRUNK_C * TRUNK_C, k, slot, lane, TRUNK_SPAN, bn);
+            frag_b(wt + o[10] + (size_t)TRUNK_C * TRUNK_C / 2, k, slot, lane, TRUNK_SPAN, bn);
 #pragma unroll
             for (int m = 0; m < TRUNK_MT; ++m) {
                 unsigned af[4];
-                frag_a(a, m, 8 * k, lane, TRUNK_LDS, af);
+                frag_a(a, m, 16 * k, lane, TRUNK_HLDS, af);
                 mma_tile(as[m], af, bs);
                 mma_tile(an[m], af, bn);
             }
@@ -337,14 +352,14 @@ void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
             for (int i = 0; i < 4; ++i) {
                 int r = frag_row(m, i, lane), j = frag_col(i, slot, lane);
                 if (r < nhex) u[r * TRUNK_LDS + j] = an[m][i];
-                a[r * TRUNK_LDS + j] = as[m][i] + bias[o[1] + j] + gb[j];
+                a[r * TRUNK_HLDS + j] = __float2half(as[m][i] + bias[o[1] + j] + gb[j]);
             }
         __syncthreads();
 #pragma unroll
         for (int t = 0; t < TRUNK_MAXH; ++t) {
             for (int q = 0; q < TRUNK_Q; ++q) {
                 int j = lane + 32 * q;
-                float v = a[hex[t] * TRUNK_LDS + j];
+                float v = __half2float(a[hex[t] * TRUNK_HLDS + j]);
                 if (live[t])
                     for (int k = 0; k < 6; ++k) {
                         int n = nb[hex[t] * 6 + k];
@@ -356,9 +371,8 @@ void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
             row_stats(cur, c, &mean, &inv);
             for (int q = 0; q < TRUNK_Q; ++q) {
                 int j = lane + 32 * q;
-                a[hex[t] * TRUNK_LDS + j] =
-                    live[t] ? tf32(gelu1((cur[q] - mean) * inv * ln[o[8] + j] + ln[o[9] + j]))
-                            : 0.0f;
+                a[hex[t] * TRUNK_HLDS + j] = __float2half(
+                    live[t] ? gelu1((cur[q] - mean) * inv * ln[o[8] + j] + ln[o[9] + j]) : 0.0f);
             }
         }
         __syncthreads();
@@ -373,7 +387,7 @@ void k_trunk(float* x0, const int* nb, const float* __restrict__ w,
 #pragma unroll
             for (int m = 0; m < TRUNK_MT; ++m) {
                 unsigned af[4];
-                frag_a(a, m, 8 * k, lane, TRUNK_LDS, af);
+                frag_a(a, m, 16 * k, lane, TRUNK_HLDS, af);
                 mma_tile(ao[m], af, bo);
             }
         }
