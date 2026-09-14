@@ -325,6 +325,7 @@ impl<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Default +
     }
 }
 
+const SWEEP_WARPS: u32 = 4;
 const WORK_BITS: u32 = 20;
 
 struct Batch {
@@ -1428,6 +1429,18 @@ impl Card {
             for (out, pair) in dst.iter_mut().zip(pairs) { *out = pair.3; }
             pairs.len()
         })?;
+        stage.pair_start.put(stream, pairs.len() + 1, |dst| {
+            let mut n = 0;
+            for (i, pair) in pairs.iter().enumerate() {
+                if i == 0 || pairs[i - 1].2 != pair.2 {
+                    dst[n] = i as u32;
+                    n += 1;
+                }
+            }
+            dst[n] = pairs.len() as u32;
+            n + 1
+        })?;
+        let runs = stage.pair_start.host.len - 1;
         let batch = self.batch.lock();
         let mut scratch = self.scratch.lock();
         scratch.facts.room(pairs.len() * ATTN)?;
@@ -1439,15 +1452,19 @@ impl Card {
         let config = stage.pair_config.buf();
         let (n, attn, heads, tokens) = (
             pairs.len() as i32, ATTN as i32, HEADS as i32, (N_HEXES + NTYPE) as i32);
+        const WARPS: usize = 8;
+        let (width, ntok) = (ATTN / HEADS, N_HEXES + NTYPE);
+        let shared = (ntok * (2 * width + 2) + WARPS * (width + ntok)) * 4;
         unsafe {
             stream.launch_builder(&self.k.attention)
                 .arg(batch.trees.buf()).arg(&*kv)
                 .arg(part).arg(stage.pair_board.buf()).arg(config).arg(&mut *facts)
-                .arg(&n).arg(&tokens).arg(&attn).arg(&heads)
+                .arg(stage.pair_start.buf())
+                .arg(&tokens).arg(&attn).arg(&heads)
                 .launch_unit(LaunchConfig {
-                    grid_dim: (pairs.len() as u32, HEADS as u32, 1),
-                    block_dim: (32, 1, 1),
-                    shared_mem_bytes: (tokens * 4) as u32,
+                    grid_dim: (runs as u32, HEADS as u32, 1),
+                    block_dim: (32, WARPS as u32, 1),
+                    shared_mem_bytes: shared as u32,
                 })
         }.map_err(err)?;
         self.run(self.layout.attn_out, facts, pairs.len(), h)?;
@@ -1999,10 +2016,10 @@ impl Card {
         Ok(())
     }
 
-    fn grid(items: u32, split: u32) -> LaunchConfig {
+    fn grid(items: u32, split: u32, nodes: u32) -> LaunchConfig {
         LaunchConfig {
-            grid_dim: (items, split, 1),
-            block_dim: (128, 1, 1),
+            grid_dim: (items.div_ceil(nodes), split, 1),
+            block_dim: (32, SWEEP_WARPS, 1),
             shared_mem_bytes: 0,
         }
     }
@@ -2018,7 +2035,8 @@ impl Card {
                 self.stream
                     .launch_builder(&self.k.reach_sweep)
                     .arg(trees).arg(work).arg(&at).arg(&level_i).arg(&avg).arg(&iter)
-                    .launch_unit(Self::grid(p.items[level], 2))
+                    .arg(&(p.items[level] as i32))
+                    .launch_unit(Self::grid(p.items[level], 2, SWEEP_WARPS))
             }
             .map_err(err)?;
         }
@@ -2036,7 +2054,7 @@ impl Card {
                     .launch_builder(&self.k.backprop_sweep)
                     .arg(b.trees.buf()).arg(b.work.buf()).arg(&at).arg(&level_i).arg(&avg).arg(&iter)
                     .arg(&k.alpha).arg(&k.beta).arg(&k.gamma).arg(&k.predict)
-                    .launch_unit(Self::grid(p.items[level], 2))
+                    .launch_unit(Self::grid(p.items[level], 2, 1))
             }
             .map_err(err)?;
         }
@@ -2172,7 +2190,8 @@ impl Card {
                 self.stream
                     .launch_builder(&self.k.finish)
                     .arg(b.trees.buf()).arg(b.work.buf()).arg(&at).arg(&level_i).arg(touched)
-                    .launch_unit(Self::grid(p.items[level], 1))
+                    .arg(&(p.items[level] as i32))
+                    .launch_unit(Self::grid(p.items[level], 1, SWEEP_WARPS))
             }
             .map_err(err)?;
         }
@@ -2193,6 +2212,7 @@ struct Stage {
     pair_at: Wire<u32>,
     pair_board: Wire<u32>,
     pair_config: Wire<u32>,
+    pair_start: Wire<u32>,
     board_part: Wire<u32>,
     board_local: Wire<u32>,
     cfg_cards: Wire<f32>,
@@ -2294,6 +2314,7 @@ impl Plan {
             owner: self.wire(configs)?,
             pair_part: self.wire(PAIR_TILE)?,
             pair_at: self.wire(PAIR_TILE)?,
+            pair_start: self.wire(PAIR_TILE + 1)?,
             pair_board: self.wire(PAIR_TILE)?,
             pair_config: self.wire(PAIR_TILE)?,
             board_part: self.wire(BOARD_TILE)?,

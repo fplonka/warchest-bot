@@ -424,39 +424,52 @@ __global__ void k_public_cache(const Tree* trees, const unsigned int* part,
 __global__ void k_attention(const Tree* trees, const float* kv,
                             const unsigned int* part,
                             const unsigned int* board,
-                            const unsigned int* config, float* out, int n,
+                            const unsigned int* config, float* out,
+                            const unsigned int* starts,
                             int tokens, int attn, int heads) {
-    extern __shared__ float score[];
-    int pair = blockIdx.x, head = blockIdx.y, lane = threadIdx.x;
-    if (pair >= n || head >= heads) return;
-    int width = attn / heads;
-    const Tree& tree = trees[part[pair]];
-    const float* q = tree.attn_query + (size_t)config[pair] * attn + head * width;
-    const float* k = kv + (size_t)board[pair] * tokens * 2 * attn + head * width;
-    float top = neg_inf();
-    for (int t = 0; t < tokens; ++t) {
-        float v = lane < width ? q[lane] * k[(size_t)t * 2 * attn + lane] : 0.0f;
-        v = warp_sum(v) * rsqrtf((float)width);
-        if (lane == 0) score[t] = v;
-        top = fmaxf(top, v);
+    extern __shared__ float sm[];
+    const int head = blockIdx.y, lane = threadIdx.x, warp = threadIdx.y;
+    const int width = attn / heads, pitch = width + 1, warps = blockDim.y;
+    float* keys = sm;
+    float* values = keys + tokens * pitch;
+    float* query = values + tokens * pitch;
+    float* score = query + warps * width;
+    const unsigned int begin = starts[blockIdx.x], end = starts[blockIdx.x + 1];
+    const float* board_kv =
+        kv + (size_t)board[begin] * tokens * 2 * attn + head * width;
+    for (int t = warp; t < tokens; t += warps) {
+        keys[t * pitch + lane] = board_kv[(size_t)t * 2 * attn + lane];
+        values[t * pitch + lane] = board_kv[(size_t)t * 2 * attn + attn + lane];
     }
-    __syncwarp();
-    top = __shfl_sync(0xffffffff, top, 0);
-    float total = 0.0f;
-    for (int t = lane; t < tokens; t += 32) {
-        float v = expf(score[t] - top);
-        score[t] = v;
-        total += v;
+    __syncthreads();
+    query += warp * width;
+    score += warp * tokens;
+    for (unsigned int pair = begin + warp; pair < end; pair += warps) {
+        const Tree& tree = trees[part[pair]];
+        query[lane] = tree.attn_query[(size_t)config[pair] * attn + head * width + lane];
+        __syncwarp();
+        float top = neg_inf();
+        for (int t = lane; t < tokens; t += 32) {
+            float v = 0.0f;
+            for (int e = 0; e < width; ++e) v += query[e] * keys[t * pitch + e];
+            v *= rsqrtf((float)width);
+            score[t] = v;
+            top = fmaxf(top, v);
+        }
+        for (int s = 16; s > 0; s >>= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffff, top, s));
+        float total = 0.0f;
+        for (int t = lane; t < tokens; t += 32) {
+            float v = expf(score[t] - top);
+            score[t] = v;
+            total += v;
+        }
+        total = warp_sum(total);
+        __syncwarp();
+        float mixed = 0.0f;
+        for (int t = 0; t < tokens; ++t) mixed += score[t] * values[t * pitch + lane];
+        out[(size_t)pair * attn + head * width + lane] = mixed / total;
+        __syncwarp();
     }
-    total = warp_sum(total);
-    for (int t = lane; t < tokens; t += 32) score[t] /= total;
-    __syncwarp();
-    const float* values = k + attn;
-    float mixed = 0.0f;
-    if (lane < width)
-        for (int t = 0; t < tokens; ++t)
-            mixed += score[t] * values[(size_t)t * 2 * attn + lane];
-    if (lane < width) out[(size_t)pair * attn + head * width + lane] = mixed;
 }
 
 __global__ void k_attention_residual(const Tree* trees, float* out,
@@ -575,8 +588,10 @@ __device__ __forceinline__ unsigned int rbase(const Tree& t, unsigned int i, int
 }
 
 __global__ void k_reach_sweep(const Tree* trees, const unsigned int* work, int at,
-                              int level, int avg, int iter) {
-    unsigned int item = work[at + blockIdx.x];
+                              int level, int avg, int iter, int items) {
+    int slot = blockIdx.x * blockDim.y + threadIdx.y;
+    if (slot >= items) return;
+    unsigned int item = work[at + slot];
     const Tree& t = trees[item >> WORK_BITS];
     if ((unsigned long long)iter >= t.todo) return;
     const float* strat = avg ? t.avg : t.cur;
@@ -588,7 +603,7 @@ __global__ void k_reach_sweep(const Tree* trees, const unsigned int* work, int a
     {
         unsigned int n = t.nc[2 * node + p];
         unsigned int dst = rbase(t, node, p), src = rbase(t, par, p);
-        for (unsigned int c = threadIdx.x; c < n; c += blockDim.x) {
+        for (unsigned int c = threadIdx.x; c < n; c += 32) {
             if (p != me) {
                 t.reach[dst + c] = t.reach[src + c];
                 continue;
@@ -618,6 +633,7 @@ __global__ void k_backprop_sweep(const Tree* trees, const unsigned int* work, in
     unsigned int item = work[at + blockIdx.x];
     const Tree& t = trees[item >> WORK_BITS];
     if ((unsigned long long)iter >= t.todo) return;
+    unsigned int flat = threadIdx.y * 32 + threadIdx.x, threads = blockDim.y * 32;
     int traverser = blockIdx.y;
     float* vals = t.vals + traverser * t.nvals;
     unsigned int node = work_node(t, level, item);
@@ -630,7 +646,7 @@ __global__ void k_backprop_sweep(const Tree* trees, const unsigned int* work, in
         unsigned int cv = t.voff[t.child[t.child_at[node]]];
         if (me == (unsigned)traverser) {
             unsigned int base = t.draw_base[node];
-            for (unsigned int c = threadIdx.x; c < n; c += blockDim.x) {
+            for (unsigned int c = flat; c < n; c += threads) {
                 unsigned int a = t.draw_start[base + c], b = t.draw_start[base + c + 1];
                 float v = 0.0f;
                 for (unsigned int k = a; k < b; ++k)
@@ -638,7 +654,7 @@ __global__ void k_backprop_sweep(const Tree* trees, const unsigned int* work, in
                 vals[vi + c] = v;
             }
         } else {
-            for (unsigned int c = threadIdx.x; c < n; c += blockDim.x)
+            for (unsigned int c = flat; c < n; c += threads)
                 vals[vi + c] = vals[cv + c];
         }
         return;
@@ -646,7 +662,7 @@ __global__ void k_backprop_sweep(const Tree* trees, const unsigned int* work, in
 
     if (me != (unsigned)traverser) {
         unsigned int a = t.child_at[node], k = t.child_n[node];
-        for (unsigned int c = threadIdx.x; c < n; c += blockDim.x) {
+        for (unsigned int c = flat; c < n; c += threads) {
             float v = 0.0f;
             for (unsigned int j = a; j < a + k; ++j) v += vals[t.voff[t.child[j]] + c];
             vals[vi + c] = v;
@@ -655,7 +671,7 @@ __global__ void k_backprop_sweep(const Tree* trees, const unsigned int* work, in
     }
 
     unsigned int so = t.soff[node], lb = t.legal_base[node];
-    unsigned int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, warps = blockDim.x >> 5;
+    unsigned int lane = threadIdx.x, warp = threadIdx.y, warps = blockDim.y;
     if (avg) {
         for (unsigned int c = warp; c < n; c += warps) {
             unsigned int a = t.legal_off[lb + c], b = t.legal_off[lb + c + 1];
@@ -1137,8 +1153,10 @@ __global__ void k_terminals(const Tree* trees) {
 }
 
 __global__ void k_finish(const Tree* trees, const unsigned int* work, int at,
-                         int level, const int* touched) {
-    unsigned int item = work[at + blockIdx.x];
+                         int level, const int* touched, int items) {
+    int slot = blockIdx.x * blockDim.y + threadIdx.y;
+    if (slot >= items) return;
+    unsigned int item = work[at + slot];
     unsigned int part = item >> WORK_BITS;
     int mask = touched[part];
     if (mask < 0) return;
@@ -1148,7 +1166,7 @@ __global__ void k_finish(const Tree* trees, const unsigned int* work, int at,
     unsigned int me = t.player[node], so = t.soff[node], lb = t.legal_base[node];
     unsigned int n = t.nc[2 * node + me];
     bool moved = (mask >> me) & 1;
-    for (unsigned int c = threadIdx.x; c < n; c += blockDim.x) {
+    for (unsigned int c = threadIdx.x; c < n; c += 32) {
         unsigned int a = t.legal_off[lb + c], b = t.legal_off[lb + c + 1];
         if (!moved) {
             for (unsigned int cell = a; cell < b; ++cell) t.avg[so + cell] = t.cur[so + cell];
