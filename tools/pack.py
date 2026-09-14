@@ -47,13 +47,8 @@ def pack(run):
                                 weights_only=False)
         net = Net()
         net.load_state_dict(checkpoint["acting"])
-        search = {"s": cfg.get("s", 512),
-                  "c": cfg.get("c", 8.0),
-                  "batch": cfg.get("round_batch", 8),
-                  "rounds": cfg.get("rounds", 0),
-                  "puct": 1.5,
-                  "prior_temp": 1.0,
-                  "cfr": "dcfr"}
+        search = {"s": 512, "c": 8.0, "batch": 8, "rounds": 0,
+                  "puct": 1.5, "prior_temp": 1.0, "cfr": "dcfr"}
         final = snap is snapshots[-1]
         stem = Path(snap["file"]).stem.removeprefix("snap_")
         bot = "final" if final else f"{stem}-{snap['label']}"
