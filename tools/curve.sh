@@ -4,7 +4,7 @@ set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 export WARCHEST_BOX_DIR=/workspace/curve WARCHEST_BOX_LOCAL_DIR=$here
 queue=$here/runs/curve/queue
-campaign=${WARCHEST_CAMPAIGN:-ladder/long}
+campaign=${WARCHEST_CAMPAIGN:-$here/ladder/long}
 mkdir -p "$here/runs/curve"
 
 run() {
@@ -20,13 +20,13 @@ run() {
 candidate() {
     local name=$1 branch=$2
     shift 2
-    run "$branch" "out=runs/$name" minutes=480 snapshot_every=60 \
+    run "$branch" "out=$name" minutes=480 snapshot_every=60 \
         seed=1001 lr_final=0.001 "$@" &&
         "$here/tools/box.sh" "python tools/pack.py runs/$name" &&
         "$here/tools/box.sh" "ls -1 runs/$name/snap_*.pt | head -n -1 | xargs -r rm -f" &&
         "$here/tools/box.sh" pull "$name" &&
-        { grep -qxF "$name" "$here/$campaign/runs" ||
-              echo "$name" >> "$here/$campaign/runs"; }
+        { grep -qxF "$name" "$campaign/runs" ||
+              echo "$name" >> "$campaign/runs"; }
 }
 
 while :; do
@@ -44,5 +44,5 @@ while :; do
     # shellcheck disable=SC2086
     candidate "$name" "$branch" $rest || echo "[$(date +%FT%T)] $name failed"
     tail -n +2 "$queue" > "$queue.tmp" && mv "$queue.tmp" "$queue"
-    "$here/tools/ladder.sh" "$here/$campaign" 1
+    "$here/tools/ladder.sh" "$campaign" 1
 done
