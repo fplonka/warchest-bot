@@ -26,10 +26,10 @@ impl Search {
             c: self.c,
             batch: self.batch,
             rounds: self.rounds,
+            budget: Budget::for_s(self.s),
             puct: self.puct,
             prior_temp: self.prior_temp,
             cfr: Cfr::named(&self.cfr).ok_or_else(|| format!("unknown cfr rule {}", self.cfr))?,
-            budget: Budget::for_s(self.s),
         })
     }
 }

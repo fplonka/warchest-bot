@@ -3,7 +3,6 @@ use std::sync::{Arc, LazyLock};
 
 use cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N;
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
-use cudarc::driver::sys::{CUdevice_attribute_enum, CUfunction_attribute_enum};
 use cudarc::driver::{
     CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DevicePtr, DevicePtrMut,
     DriverError, LaunchArgs, LaunchConfig, PushKernelArg,
@@ -30,13 +29,13 @@ use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
 
 mod slot;
 use slot::{
-    Arr, Solve, B_P, C_CUR, C_PRIOR, C_QVAL, C_SUM, C_VISITS, DESC, FIELDS, G_QUERY, I_AIDX,
+    Arr, Solve, B_P, C_CUR, C_PRIOR, C_QVAL, C_SUM, C_VISITS, DESC, FIELDS, G_QUERY,
     R_REACH, R_VALS, Y_BOARD_OF, Y_COFF,
 };
 
 type Res<T> = Result<T, String>;
 
-const KERNELS: &str = include_str!("kernels.cu");
+const KERNELS: &str = concat!(include_str!("kernels.cu"), include_str!("trunk.cu"), include_str!("cfr.cu"));
 
 macro_rules! kernels {
     ($($name:ident,)*) => {
@@ -56,13 +55,12 @@ macro_rules! kernels {
 
 kernels! {
     expand_rows,
+    narrow,
     gelu,
     norm_ip,
     bias,
     window,
     scatter,
-    terminals,
-    expand,
     finish,
     tokens,
     act_feats,
@@ -83,9 +81,8 @@ kernels! {
     value,
     policy_inputs,
     policy_offset,
-    leaf_scale,
-    reach_sweep,
-    backprop_sweep,
+    reach,
+    cfr,
 }
 
 trait LaunchUnit {
@@ -115,6 +112,9 @@ macro_rules! carved {
     ($($name:ident),* $(,)?) => { $( let $name = $name.buf.as_mut().expect("carved"); )* };
 }
 
+mod cfr;
+use cfr::Batch;
+
 const THREADS: u32 = 256;
 
 fn spread(n: usize) -> LaunchConfig {
@@ -140,9 +140,10 @@ pub struct Device {
     slot_bytes: usize,
 }
 
-pub const PIPELINE: usize = 3;
+pub const PIPELINE: usize = 5;
 
-fn pack_mma(w: &[f32], base: usize, k: usize, n: usize, out: &mut Vec<u32>) {
+fn pack_mma(w: &[f32], base: usize, k: usize, n: usize) -> Vec<u32> {
+    let mut out = Vec::with_capacity(k * n / 2);
     for kt in 0..k / 16 {
         for nt in 0..n / 8 {
             for lane in 0..32 {
@@ -153,37 +154,73 @@ fn pack_mma(w: &[f32], base: usize, k: usize, n: usize, out: &mut Vec<u32>) {
             }
         }
     }
+    out
 }
 
-fn fragwise(l: &NetLayout, w: &[f32]) -> (Vec<u32>, Vec<usize>) {
-    let mut out = Vec::new();
-    let mut at = Vec::new();
-    for blk in &l.blocks {
-        for s in [blk.mix, blk.out] {
-            at.push(out.len());
-            pack_mma(w, s.w, s.i, s.o, &mut out);
+fn pack_mma_a(w: &[f32], base: usize, k: usize, m: usize) -> Vec<u32> {
+    let mut out = Vec::with_capacity(k * m / 2);
+    for mt in 0..m / 16 {
+        for kt in 0..k / 16 {
+            for lane in 0..32 {
+                let (g, t) = (lane / 4, lane % 4);
+                let at = |r: usize, c: usize| f16::from_f32(w[base + (16 * kt + c) * m + 16 * mt + r]).to_bits();
+                let pair = |r: usize, c: usize| at(r, c) as u32 | ((at(r, c + 1) as u32) << 16);
+                out.extend([pair(g, 2 * t), pair(g + 8, 2 * t), pair(g, 2 * t + 8), pair(g + 8, 2 * t + 8)]);
+            }
         }
     }
-    (out, at)
+    out
 }
 
-const TRUNK_ROWS: usize = N_HEXES.next_multiple_of(16);
-const TRUNK_LDS: usize = C + 4;
-const TRUNK_HLDS: usize = C + 8;
+fn halved(w: &[f32]) -> Vec<f16> {
+    w.iter().map(|&v| f16::from_f32(v)).collect()
+}
 
-const TRUNK_SHARED: usize =
-    2 * N_HEXES * TRUNK_LDS * 4 + TRUNK_ROWS * TRUNK_HLDS * 2 + 3 * C * 4 + N_HEXES * 6 * 4;
-const _: () = {
-    assert!(C % 32 == 0, "k_trunk wants a whole number of warps a row");
-    assert!(
-        TRUNK_ROWS % (C / 8) == 0,
-        "k_trunk distributes whole hex rows"
-    );
+struct Trunk {
+    w: Vec<u32>,
+    g: Vec<u32>,
+    b: Vec<f32>,
+    ln: Vec<f32>,
+}
+
+const TRUNK_BOARDS: usize = 3;
+const TRUNK_THREADS: u32 = 384;
+const TRUNK_SHARED: u32 = {
+    let rows = (TRUNK_BOARDS * N_HEXES).next_multiple_of(16);
+    (2 * rows * (C + 8) * 2 + TRUNK_BOARDS * (2 * C + 8) * 2 + TRUNK_BOARDS * C * 4 + N_HEXES * 6 * 4)
+        as u32
 };
 
-const TILE: usize = 16384;
+fn trunk_pack(l: &NetLayout, flat: &crate::net::Flat) -> Trunk {
+    let mut t = Trunk { w: Vec::new(), g: Vec::new(), b: Vec::new(), ln: Vec::new() };
+    for (i, blk) in l.blocks.iter().enumerate() {
+        let mut mix = vec![0.0f32; C * 2 * C];
+        for k in 0..C {
+            mix[k * 2 * C..k * 2 * C + C].copy_from_slice(&flat.w[blk.mix.w + (C + k) * C..][..C]);
+            mix[k * 2 * C + C..(k + 1) * 2 * C].copy_from_slice(&flat.w[blk.mix.w + k * C..][..C]);
+        }
+        t.w.extend(pack_mma(&mix, 0, C, 2 * C));
+        t.w.extend(pack_mma(&flat.w, blk.out.w, C, C));
+        t.g.extend(pack_mma_a(&flat.w, blk.pool.w, 2 * C, C));
+        for j in 0..C {
+            t.b.push(flat.b[blk.mix.b + j] + flat.b[blk.pool.b + j]);
+        }
+        t.b.extend_from_slice(&flat.b[blk.out.b..blk.out.b + C]);
+        for k in 0..2 {
+            let n = l.norms[ln_block(i, k)];
+            t.ln.extend_from_slice(&flat.ln[n.g..n.g + C]);
+            t.ln.extend_from_slice(&flat.ln[n.b..n.b + C]);
+        }
+    }
+    let n = l.norms[LN_TRUNK];
+    t.ln.extend_from_slice(&flat.ln[n.g..n.g + C]);
+    t.ln.extend_from_slice(&flat.ln[n.b..n.b + C]);
+    t
+}
+
+const TILE: usize = 1024;
 const BOARD_TILE: usize = 1024;
-const PAIR_TILE: usize = 16384;
+const PAIR_TILE: usize = 32768;
 
 struct Shard {
     call: usize,
@@ -317,63 +354,8 @@ impl<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Default +
     }
 }
 
-const SWEEP_WARPS: u32 = 4;
-const VALUE_WARPS: usize = 4;
+const VALUE_WARPS: usize = 8;
 const ATTN_WARPS: usize = 8;
-const WORK_BITS: u32 = 20;
-
-struct Batch {
-    trees: Wire<u64>,
-    work: Wire<u32>,
-    inner: Wire<u32>,
-    level_at: Vec<u32>,
-    inner_at: Vec<u32>,
-    coff: Wire<u32>,
-    part: Wire<i32>,
-    local: Wire<i32>,
-    base: Wire<i32>,
-    prime: Wire<u32>,
-    touched: Wire<i32>,
-    upto: Vec<Prefix>,
-    parts: u32,
-    cells: usize,
-}
-
-impl Default for Batch {
-    fn default() -> Batch {
-        Batch {
-            trees: Wire::default(),
-            work: Wire::default(),
-            inner: Wire::default(),
-            level_at: Vec::new(),
-            inner_at: Vec::new(),
-            coff: Wire::default(),
-            part: Wire::default(),
-            local: Wire::default(),
-            base: Wire::default(),
-            prime: Wire::default(),
-            touched: Wire::default(),
-            upto: vec![Prefix::default()],
-            parts: 0,
-            cells: 0,
-        }
-    }
-}
-
-impl Batch {
-    fn all(&self) -> &Prefix {
-        self.upto.last().expect("a batch has at least the empty prefix")
-    }
-}
-
-#[derive(Default, Clone)]
-struct Prefix {
-    parts: u32,
-    rows: usize,
-    items: Vec<u32>,
-    inner: Vec<u32>,
-    nterm: usize,
-}
 
 #[derive(Default)]
 struct Pack {
@@ -418,7 +400,7 @@ struct Card {
     busy: parking_lot::Mutex<()>,
     blas: CudaBlas,
     k: Arc<Kernels>,
-    solves: Arc<parking_lot::Mutex<Vec<Solve>>>,
+    solves: Arc<Vec<parking_lot::Mutex<Solve>>>,
     host: parking_lot::Mutex<Stage>,
     pack: parking_lot::Mutex<Pack>,
     down: parking_lot::Mutex<Host<u32>>,
@@ -426,13 +408,17 @@ struct Card {
     batch: parking_lot::Mutex<Batch>,
     scratch: parking_lot::Mutex<Scratch>,
     w: CudaSlice<f32>,
-    wt: CudaSlice<u32>,
+    wh: CudaSlice<f16>,
+    value_w: CudaSlice<u32>,
+    trunk_w: CudaSlice<u32>,
+    trunk_g: CudaSlice<u32>,
+    trunk_b: CudaSlice<f32>,
+    trunk_ln: CudaSlice<f32>,
     b: CudaSlice<f32>,
     ln: CudaSlice<f32>,
     near: CudaSlice<i32>,
     card_facts: CudaSlice<f32>,
     locations: CudaSlice<u8>,
-    plan: CudaSlice<i32>,
     layout: NetLayout,
 }
 
@@ -470,16 +456,17 @@ impl Device {
                 slot_bytes = slot as usize;
             }
             let free = cudarc::driver::result::mem_get_info().map_err(err)?.0 as u64;
-            let tile = Card::carve_bytes(0, &cfg);
-            let extra = Card::carve_bytes(1, &cfg).saturating_sub(tile);
-            let per = slot + PIPELINE as u64 * extra;
+            let tile = Card::carve_bytes(0, 0, &cfg);
+            let extra = Card::carve_bytes(1, 1, &cfg).saturating_sub(tile);
+            let per = slot + extra;
             let usable = free.saturating_sub(PIPELINE as u64 * tile);
             let fit = (usable - usable / 10) / per.max(1);
             let gpus_left = ordinals.len() - g;
             const SLOTS_KNEE: usize = 64;
             let mut n = (fit as usize).min(left.div_ceil(gpus_left)).min(SLOTS_KNEE);
             while n > 0 {
-                let need = n as u64 * slot + PIPELINE as u64 * Card::carve_bytes(n, &cfg);
+                let batch = n.div_ceil(PIPELINE);
+                let need = n as u64 * slot + PIPELINE as u64 * Card::carve_bytes(batch, n, &cfg);
                 if need + need / 10 <= free {
                     break;
                 }
@@ -494,15 +481,20 @@ impl Device {
             for _ in 0..n {
                 solves.push(Solve::at_budget(&s0, &budget)?);
             }
-            let solves = Arc::new(parking_lot::Mutex::new(solves));
+            let solves: Arc<Vec<parking_lot::Mutex<Solve>>> =
+                Arc::new(solves.into_iter().map(parking_lot::Mutex::new).collect());
+            let batch = n.div_ceil(PIPELINE);
             for (p, card) in pair.iter_mut().enumerate() {
                 card.solves = Arc::clone(&solves);
-                card.carve(n, &cfg).map_err(|e| {
-                    format!("carve gpu {g} pipe {p} n={n} slot={slot} free={free}: {e}")
+                card.carve(batch, n, &cfg).map_err(|e| {
+                    format!("carve gpu {g} pipe {p} n={n} batch={batch} slot={slot} free={free}: {e}")
                 })?;
                 card.stream.synchronize().map_err(err)?;
             }
-            eprintln!("cuda: gpu {g} carved {n} solve slots");
+            eprintln!(
+                "cuda: gpu {g} carved {n} solve slots (gpu fits {fit}, host allows {}, {} MiB free)",
+                left.div_ceil(gpus_left), free >> 20
+            );
             left = left.saturating_sub(n);
             cards.extend(pair);
         }
@@ -514,7 +506,7 @@ impl Device {
     }
 
     pub fn slots(&self, gpu: usize) -> usize {
-        self.cards[gpu * PIPELINE].solves.lock().len()
+        self.cards[gpu * PIPELINE].solves.len()
     }
 
     pub fn total_slots(&self) -> usize {
@@ -570,8 +562,14 @@ impl Device {
             let _busy = card.busy.lock();
             card.stream.context().bind_to_thread().map_err(err)?;
             card.stream.memcpy_htod(&flat.w, &mut card.w).map_err(err)?;
-            let (lw, _) = fragwise(&card.layout, &flat.w);
-            card.stream.memcpy_htod(&lw, &mut card.wt).map_err(err)?;
+            card.stream.memcpy_htod(&halved(&flat.w), &mut card.wh).map_err(err)?;
+            let t = trunk_pack(&card.layout, &flat);
+            card.stream.memcpy_htod(&t.w, &mut card.trunk_w).map_err(err)?;
+            card.stream.memcpy_htod(&t.g, &mut card.trunk_g).map_err(err)?;
+            card.stream.memcpy_htod(&t.b, &mut card.trunk_b).map_err(err)?;
+            card.stream.memcpy_htod(&t.ln, &mut card.trunk_ln).map_err(err)?;
+            let value_w = pack_mma(&flat.w, card.layout.value_out.w, ATTN, BINS);
+            card.stream.memcpy_htod(&value_w, &mut card.value_w).map_err(err)?;
             card.stream.memcpy_htod(&flat.b, &mut card.b).map_err(err)?;
             card.stream
                 .memcpy_htod(&flat.ln, &mut card.ln)
@@ -595,10 +593,11 @@ impl Device {
         let c = &self.cards[card];
         let _busy = c.busy.lock();
         c.stream.context().bind_to_thread().map_err(err)?;
-        let g = c.solves.lock();
-        let s = g
+        let s = c
+            .solves
             .get(solve)
-            .ok_or_else(|| format!("solve {solve} is not resident"))?;
+            .ok_or_else(|| format!("solve {solve} is not resident"))?
+            .lock();
         let mut h = c.down_f.lock();
         Ok(Resident {
             p: s.ent[Ent::Board as usize].get_f32(
@@ -667,7 +666,7 @@ macro_rules! defines {
     };
 }
 
-fn compile_options(major: i32, minor: i32, trunk_blocks: usize) -> CompileOptions {
+fn compile_options(major: i32, minor: i32) -> CompileOptions {
     let mut options = defines![
         ROW_BYTES,
         PUBFEAT,
@@ -700,7 +699,6 @@ fn compile_options(major: i32, minor: i32, trunk_blocks: usize) -> CompileOption
         ROW_STACK_OWED,
         PENDING_KINDS,
         CONT_CAP,
-        TRUNK_ROWS,
         BLOCKS,
         LOOSE,
         ATTN,
@@ -711,7 +709,6 @@ fn compile_options(major: i32, minor: i32, trunk_blocks: usize) -> CompileOption
     ];
     options.extend([
         format!("--gpu-architecture=compute_{major}{minor}"),
-        format!("-DTRUNK_MIN_BLOCKS={trunk_blocks}"),
         format!("-DTRUNK_C={C}"),
         format!("-DMAX_COINS={MAX_COINS:.1}f"),
     ]);
@@ -798,39 +795,25 @@ impl Gpu {
         }
         let ctx = CudaContext::new(ordinal).map_err(|e| format!("device {ordinal}: {e:?}"))?;
         unsafe { ctx.disable_event_tracking() };
-        let threads = 4 * C;
-        let max_threads = ctx
-            .attribute(CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK)
-            .map_err(err)? as usize;
-        if threads > max_threads {
-            return Err(format!(
-                "trunk channel width {C} needs {threads} threads per block; device {ordinal} allows {max_threads}"
-            ));
-        }
-        let max_shared = ctx
-            .attribute(CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)
-            .map_err(err)? as usize;
-        if TRUNK_SHARED > max_shared {
-            return Err(format!(
-                "trunk channel width {C} needs {TRUNK_SHARED} bytes of shared memory per block; device {ordinal} allows {max_shared}"
-            ));
-        }
-        let sm_shared = ctx
-            .attribute(CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR)
-            .map_err(err)? as usize;
-        let trunk_blocks = (sm_shared / TRUNK_SHARED).max(1);
         let (major, minor) = ctx.compute_capability().map_err(err)?;
         let source = slot::tree_source() + KERNELS;
-        let ptx = compile_ptx_with_opts(&source, compile_options(major, minor, trunk_blocks))
+        let opts = compile_options(major, minor);
+        let ptx = compile_ptx_with_opts(&source, opts)
             .map_err(|e| format!("nvrtc: {e:?}"))?;
         let module = ctx.load_module(ptx).map_err(err)?;
         let k = Kernels::load(&module)?;
         k.trunk
             .set_attribute(
-                CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                cudarc::driver::sys::CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
                 TRUNK_SHARED as i32,
             )
             .map_err(err)?;
+        {
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            let regs = k.trunk.get_attribute(A::CU_FUNC_ATTRIBUTE_NUM_REGS).map_err(err)?;
+            let local = k.trunk.get_attribute(A::CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES).map_err(err)?;
+            eprintln!("k_trunk: regs={regs} local_bytes={local}");
+        }
         let torch = ctx.new_stream().map_err(err)?;
         let gpu = Arc::new(Gpu { ctx, k: Arc::new(k), torch });
         gpus.insert(ordinal, Arc::clone(&gpu));
@@ -839,8 +822,8 @@ impl Gpu {
 }
 
 impl Card {
-    fn carve_bytes(n: usize, cfg: &Cfg) -> u64 {
-        Plan { stream: None, bytes: 0 }.build(n, cfg).map_or(0, |(_, _, _, b)| b as u64)
+    fn carve_bytes(n: usize, slots: usize, cfg: &Cfg) -> u64 {
+        Plan { stream: None, bytes: 0 }.build(n, slots, cfg).map_or(0, |(_, _, _, b)| b as u64)
     }
 
     fn on(gpu: &Gpu, net: &Net) -> Res<Card> {
@@ -851,7 +834,7 @@ impl Card {
             .neighbors
             .iter()
             .flatten()
-            .map(|&n| if n == NONE { -1 } else { n as i32 * TRUNK_LDS as i32 })
+            .map(|&n| if n == NONE { -1 } else { n as i32 })
             .collect();
         let mut card_facts = vec![0.0; N_UNITS * CARD_FEATS];
         for u in 0..N_UNITS {
@@ -862,25 +845,16 @@ impl Card {
         }
         let locations: Vec<u8> = board().is_location.iter().map(|&x| x as u8).collect();
         let layout = NetLayout::new();
-        let (fragwise, lanes) = fragwise(&layout, &flat.w);
-        let mut plan: Vec<i32> = Vec::new();
-        for (i, blk) in layout.blocks.iter().enumerate() {
-            let (n0, n1) = (layout.norms[ln_block(i, 0)], layout.norms[ln_block(i, 1)]);
-            plan.extend(
-                [
-                    blk.mix.w, blk.mix.b, blk.pool.w, blk.pool.b, blk.out.w, blk.out.b, n0.g, n0.b,
-                    n1.g, n1.b,
-                ]
-                .map(|x| x as i32),
-            );
-            plan.extend([lanes[2 * i], lanes[2 * i + 1]].map(|x| x as i32));
-        }
-        let t = layout.norms[LN_TRUNK];
-        plan.extend([t.g as i32, t.b as i32]);
+        let t = trunk_pack(&layout, &flat);
         Ok(Card {
-            plan: stream.memcpy_stod(&plan).map_err(err)?,
+            value_w: stream.memcpy_stod(&pack_mma(&flat.w, layout.value_out.w, ATTN, BINS))
+                .map_err(err)?,
+            wh: stream.memcpy_stod(&halved(&flat.w)).map_err(err)?,
+            trunk_w: stream.memcpy_stod(&t.w).map_err(err)?,
+            trunk_g: stream.memcpy_stod(&t.g).map_err(err)?,
+            trunk_b: stream.memcpy_stod(&t.b).map_err(err)?,
+            trunk_ln: stream.memcpy_stod(&t.ln).map_err(err)?,
             w: stream.memcpy_stod(&flat.w).map_err(err)?,
-            wt: stream.memcpy_stod(&fragwise).map_err(err)?,
             b: stream.memcpy_stod(&flat.b).map_err(err)?,
             ln: stream.memcpy_stod(&flat.ln).map_err(err)?,
             near: stream.memcpy_stod(&near).map_err(err)?,
@@ -890,7 +864,7 @@ impl Card {
             busy: parking_lot::Mutex::new(()),
             blas,
             k: Arc::clone(&gpu.k),
-            solves: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            solves: Arc::new(Vec::new()),
             host: parking_lot::Mutex::new(Stage::default()),
             pack: parking_lot::Mutex::new(Pack::default()),
             down: parking_lot::Mutex::new(Host::default()),
@@ -901,13 +875,13 @@ impl Card {
         })
     }
 
-    fn carve(&mut self, n: usize, cfg: &Cfg) -> Res<()> {
+    fn carve(&mut self, n: usize, slots: usize, cfg: &Cfg) -> Res<()> {
         if n == 0 {
             return Ok(());
         }
         self.stream.context().bind_to_thread().map_err(err)?;
         let plan = Plan { stream: Some(Arc::clone(&self.stream)), bytes: 0 };
-        let (scratch, stage, batch, _) = plan.build(n, cfg)?;
+        let (scratch, stage, batch, _) = plan.build(n, slots, cfg)?;
         *self.host.lock() = stage;
         *self.scratch.lock() = scratch;
         *self.batch.lock() = batch;
@@ -923,12 +897,12 @@ impl Card {
         slots.sort_unstable();
         slots.dedup();
         {
-            let solves = self.solves.lock();
             for &slot in &slots {
-                let solve = solves.get(slot).ok_or_else(|| {
-                    format!("round names solve slot {slot}, but only {} were carved", solves.len())
+                let solve = self.solves.get(slot).ok_or_else(|| {
+                    format!("round names solve slot {slot}, but only {} were carved",
+                            self.solves.len())
                 })?;
-                self.stream.wait(&solve.ready).map_err(err)?;
+                self.stream.wait(&solve.lock().ready).map_err(err)?;
             }
         }
         let pick = |kind: usize| -> Vec<usize> {
@@ -939,11 +913,10 @@ impl Card {
         };
         let trees = pick(2);
         {
-            let mut solves = self.solves.lock();
             for &i in &trees {
                 let Call::Tree { solve, fresh, .. } = &calls[i] else { unreachable!() };
                 if *fresh {
-                    self.slot(&mut solves, *solve).rewind(&self.stream)?;
+                    self.slot(*solve).rewind(&self.stream)?;
                 }
             }
         }
@@ -960,9 +933,9 @@ impl Card {
         drop(pack);
         self.priors(calls, &trees).map_err(at("priors"))?;
         let rule = |i| match &calls[i] {
-            Call::Iterate { cfr, puct, refresh, .. } => [
+            Call::Iterate { cfr, puct, .. } => [
                 cfr.alpha.to_bits(), cfr.beta.to_bits(), cfr.gamma.to_bits(),
-                cfr.predict.to_bits(), puct.to_bits(), *refresh as u32,
+                cfr.predict.to_bits(), puct.to_bits(),
             ],
             _ => unreachable!(),
         };
@@ -973,9 +946,8 @@ impl Card {
         }
         self.read(calls, &pick(4), &mut out).map_err(at("read"))?;
         {
-            let solves = self.solves.lock();
             for &slot in &slots {
-                solves[slot].ready.record(&self.stream).map_err(err)?;
+                self.solves[slot].lock().ready.record(&self.stream).map_err(err)?;
             }
         }
         Ok(out)
@@ -1006,6 +978,56 @@ impl Card {
         };
         let w = self.w.slice(s.w..s.w + s.i * s.o);
         unsafe { self.blas.gemm(cfg, &w, inp, out) }.map_err(err)
+    }
+
+    fn hlin<B: DevicePtr<f16>, O: DevicePtrMut<f16>>(
+        &self,
+        s: Span,
+        inp: &B,
+        rows: usize,
+        beta: f32,
+        out: &mut O,
+    ) -> Res<()> {
+        if rows == 0 {
+            return Ok(());
+        }
+        let (m, n, k) = (s.o, rows, s.i);
+        let w = &self.wh.slice(s.w..s.w + s.i * s.o);
+        let cfg = GemmConfig {
+            transa: CUBLAS_OP_N,
+            transb: CUBLAS_OP_N,
+            m: m as i32,
+            n: n as i32,
+            k: k as i32,
+            alpha: f16::ONE,
+            lda: m as i32,
+            ldb: k as i32,
+            beta: f16::from_f32(beta),
+            ldc: m as i32,
+        };
+        unsafe { self.blas.gemm(cfg, w, inp, out) }.map_err(err)
+    }
+
+    fn hlin32<B: DevicePtr<f16>>(&self, s: Span, inp: &B, rows: usize, out: &mut CudaSlice<f32>) -> Res<()> {
+        if rows == 0 {
+            return Ok(());
+        }
+        let (m, n, k) = (s.o, rows, s.i);
+        let (one, zero) = (1.0f32, 0.0f32);
+        let w = self.wh.slice(s.w..s.w + s.i * s.o);
+        let (a, _ka) = w.device_ptr(&self.stream);
+        let (b, _kb) = inp.device_ptr(&self.stream);
+        let (c, _kc) = out.device_ptr_mut(&self.stream);
+        use cudarc::cublas::sys::{cudaDataType_t as T, cublasComputeType_t as CT, cublasGemmAlgo_t as A};
+        unsafe {
+            cudarc::cublas::result::gemm_ex(
+                *self.blas.handle(), CUBLAS_OP_N, CUBLAS_OP_N, m as i32, n as i32, k as i32,
+                (&one) as *const f32 as *const _, a as *const _, T::CUDA_R_16F, m as i32,
+                b as *const _, T::CUDA_R_16F, k as i32, (&zero) as *const f32 as *const _,
+                c as *mut _, T::CUDA_R_32F, m as i32, CT::CUBLAS_COMPUTE_32F, A::CUBLAS_GEMM_DEFAULT,
+            )
+        }
+        .map_err(err)
     }
 
     fn bias(&self, s: Span, rows: usize, out: &mut CudaSlice<f32>) -> Res<()> {
@@ -1051,9 +1073,12 @@ impl Card {
         .map_err(err)
     }
 
-    fn slot<'g>(&self, g: &'g mut [Solve], solve: usize) -> &'g mut Solve {
-        let n = g.len();
-        g.get_mut(solve).unwrap_or_else(|| panic!("solve {solve} pinned to a card that holds {n} slots"))
+    fn slot(&self, solve: usize) -> parking_lot::MutexGuard<'_, Solve> {
+        let n = self.solves.len();
+        self.solves
+            .get(solve)
+            .unwrap_or_else(|| panic!("solve {solve} pinned to a card that holds {n} slots"))
+            .lock()
     }
 
     fn trunk(&self, calls: &[Call], mine: &[usize], pack: &mut Pack) -> Res<()> {
@@ -1154,11 +1179,15 @@ impl Card {
         sc.facts.room(cells * HEX_FACTS)?;
         sc.occupant.room(cells)?;
         sc.x.room(cells * C)?;
+        sc.spatial.room(cells * C)?;
+        sc.token_half.room(n * NTYPE * C)?;
         sc.input.room(n * (2 * C + LOOSE))?;
         let Scratch {
-            piles, tokens, projected, type_pool, loose, glob, facts, occupant, x, input, ..
+            piles, tokens, projected, type_pool, loose, glob, facts, occupant, x, token_half,
+            input, spatial, ..
         } = &mut *sc;
-        carved!(piles, tokens, projected, type_pool, loose, glob, facts, occupant, x, input);
+        carved!(piles, tokens, projected, type_pool, loose, glob, facts, occupant, x, token_half,
+                input, spatial);
 
         let (off, width) = (OFF_PILES as i32, (NTYPE * PILE_COUNTS) as i32);
         launch!(self, window, n * NTYPE * PILE_COUNTS, xpub, &mut *piles, &rows_i, &stride, &off, &width)?;
@@ -1173,25 +1202,25 @@ impl Card {
         self.run(l.glob_stem, loose, n, &mut *glob)?;
         let (hex_ch, hex_facts) = (HEX_CH as i32, HEX_FACTS as i32);
         launch!(self, hex_facts, cells * HEX_FACTS, xpub, &mut *facts, &mut *occupant, &rows_i, &stride, &nhex, &hex_ch, &hex_facts, &ntype)?;
-        self.lin(l.hex_stem, facts, cells, 0.0, &mut *x)?;
+        let hex_w = self.w.slice(l.hex_stem.w..l.hex_stem.w + HEX_FACTS * C);
         let hex_b = self.b.slice(l.hex_stem.b..l.hex_stem.b + C);
         let pos = self.w.slice(l.pos..l.pos + N_HEXES * C);
-        launch!(self, stem, cells * C, &mut *x, &*projected, &*occupant, &hex_b, &pos, &*glob, &*type_pool, &cells_i, &nhex, &ntype, &chan)?;
-        const SLOTS: u32 = (C / 8) as u32;
+        launch!(self, stem, cells * C, &*facts, &hex_w, &mut *x, &*projected, &*occupant, &hex_b, &pos, &*glob, &*type_pool, &cells_i, &nhex, &ntype, &chan)?;
         unsafe {
             self.stream
                 .launch_builder(&self.k.trunk)
-                .arg(&*x).arg(&self.near).arg(&self.w).arg(&self.wt)
-                .arg(&self.b).arg(&self.ln)
-                .arg(&self.plan).arg(xpub).arg(&mut *input)
-                .arg(&rows_i)
+                .arg(&*x).arg(&self.trunk_w).arg(&self.trunk_g).arg(&self.trunk_b)
+                .arg(&self.trunk_ln).arg(&self.near).arg(xpub).arg(&mut *input)
+                .arg(&mut *spatial).arg(&rows_i)
                 .launch_unit(LaunchConfig {
-                    grid_dim: (n as u32, 1, 1),
-                    block_dim: (32, SLOTS, 1),
-                    shared_mem_bytes: TRUNK_SHARED as u32,
+                    grid_dim: (n.div_ceil(TRUNK_BOARDS) as u32, 1, 1),
+                    block_dim: (TRUNK_THREADS, 1, 1),
+                    shared_mem_bytes: TRUNK_SHARED,
                 })
         }
-        .map_err(err)
+        .map_err(err)?;
+        let narrow_n = (n * NTYPE * C) as i32;
+        launch!(self, narrow, n * NTYPE * C, &*projected, &mut *token_half, &narrow_n)
     }
 
     fn trunk_tile(
@@ -1207,14 +1236,13 @@ impl Card {
         let mut sc = self.scratch.lock();
         sc.h.room(n * D)?;
         sc.z.room(n * ATTN)?;
-        let Scratch { input, projected, x, h, z, .. } = &mut *sc;
+        let Scratch { input, token_half, spatial, h, z, .. } = &mut *sc;
         let p = h.buf.as_mut().unwrap();
         self.run(self.layout.board_out, input.buf.as_ref().unwrap(), n, p)?;
         let vh = self.layout.value_hidden;
         let value_board = Span { w: vh.w + ATTN * ATTN, b: vh.b, i: D, o: ATTN };
         self.run(value_board, p, n, z.buf.as_mut().unwrap())?;
         let mut src = 0;
-        let mut g = self.solves.lock();
         for w in shards(sizes, board0, n) {
             let Call::Trunk {
                 solve, boards_at, ..
@@ -1222,13 +1250,13 @@ impl Card {
             else {
                 unreachable!("trunk shard holds only trunk calls")
             };
-            self.slot(&mut g, *solve).copy_board(
+            self.slot(*solve).copy_board(
                 s,
                 *boards_at + w.at,
                 p,
                 z.buf.as_ref().unwrap(),
-                projected.buf.as_ref().unwrap(),
-                x.buf.as_ref().unwrap(),
+                token_half.buf.as_ref().unwrap(),
+                spatial.buf.as_ref().unwrap(),
                 src,
                 w.len,
             )?;
@@ -1238,22 +1266,13 @@ impl Card {
     }
 
     fn keep(&self, calls: &[Call], mine: &[usize], pack: &mut Pack) -> Res<()> {
-        let mut g = self.solves.lock();
         for &i in mine {
-            let Call::Trunk {
-                solve,
-                at: row0,
-                queries: nrows,
-                board_of,
-                aidx,
-                coff,
-                ..
-            } = &calls[i]
+            let Call::Trunk { solve, at: row0, queries: nrows, board_of, coff, .. } = &calls[i]
             else {
                 unreachable!("trunk shard holds only trunk calls")
             };
             let nrows = *nrows;
-            let b = self.slot(&mut g, *solve);
+            let mut b = self.slot(*solve);
             b.reserve(Ent::Row, row0 + nrows)?;
             let words = pack.words(board_of);
             let dst = b.ent[Ent::Row as usize].field(Y_BOARD_OF, &self.stream);
@@ -1261,13 +1280,13 @@ impl Card {
             let base = b.cells as u32;
             let shifted: Vec<u32> = coff.iter().map(|x| x + base).collect();
             b.host_coff.extend(shifted.iter().skip(1));
-            let words = pack.words(aidx);
-            let dst = b.view(&self.stream, Ent::Cidx, I_AIDX, b.cells, aidx.len(), 1)?;
-            pack.piece(dst, b.cells as u32, words, aidx.len() as u32);
+            let grown = *coff.last().expect("a coff run ends with its length") as usize;
+            let cells = b.cells + grown;
+            b.reserve(Ent::Cidx, cells)?;
             let words = pack.words(&shifted);
             let dst = b.ent[Ent::Row as usize].field(Y_COFF, &self.stream);
             pack.piece(dst, 2 * *row0 as u32, words, shifted.len() as u32);
-            b.cells += aidx.len();
+            b.cells += grown;
             b.rows = row0 + nrows;
         }
         Ok(())
@@ -1309,8 +1328,7 @@ impl Card {
         for (part, &i) in mine.iter().enumerate() {
             let Call::Configs { solve, pair_at, pair_board, pair_config, .. } = &calls[i] else { unreachable!() };
             assert_eq!(pair_board.len(), pair_config.len());
-            let mut resident = self.solves.lock();
-            let slot = self.slot(&mut resident, *solve);
+            let mut slot = self.slot(*solve);
             slot.conditioned.room((pair_at + pair_board.len()) * ATTN)?;
             slot.value_cfg.room((pair_at + pair_board.len()) * ATTN)?;
             pairs.extend((0..pair_board.len()).map(|j| {
@@ -1367,10 +1385,9 @@ impl Card {
         self.norm(self.layout.norms[LN_CFG], n, true, facts)?;
         self.run(self.layout.attn_q, facts, n, h)?;
         let mut src = 0;
-        let mut solves = self.solves.lock();
         for shard in shards(sizes, cfg0, n) {
             let Call::Configs { solve, at, .. } = &calls[mine[shard.call]] else { unreachable!() };
-            self.slot(&mut solves, *solve).copy_cfg(
+            self.slot(*solve).copy_cfg(
                 stream, *at + shard.at, facts, h, src, shard.len)?;
             src += shard.len;
         }
@@ -1403,7 +1420,7 @@ impl Card {
                     .arg(&mut *public).arg(&nb).arg(&tokens).arg(&c)
                     .launch_unit(spread(boards.len() * ntokens * C))
             }.map_err(err)?;
-            self.lin(self.layout.attention_kv(), public, boards.len() * ntokens, 0.0, kv)?;
+            self.hlin(self.layout.attention_kv(), &*public, boards.len() * ntokens, 0.0, kv)?;
         }
         for tile in pairs.chunks(PAIR_TILE) {
             self.attention_pairs(board_at, tile)?;
@@ -1444,20 +1461,20 @@ impl Card {
         let runs = stage.pair_start.host.len - 1;
         let batch = self.batch.lock();
         let mut scratch = self.scratch.lock();
-        scratch.facts.room(pairs.len() * ATTN)?;
-        scratch.h.room(pairs.len() * ATTN)?;
-        scratch.z.room(pairs.len() * ATTN)?;
-        let Scratch { kv, facts, h, z, .. } = &mut *scratch;
-        carved!(kv, facts, h, z);
+        scratch.attn_mix.room(pairs.len() * ATTN)?;
+        scratch.attn_out.room(pairs.len() * ATTN)?;
+        scratch.attn_val.room(pairs.len() * ATTN)?;
+        let Scratch { kv, attn_mix, attn_out, attn_val, .. } = &mut *scratch;
+        carved!(kv, attn_mix, attn_out, attn_val);
         let part = stage.pair_part.buf();
         let config = stage.pair_config.buf();
-        let (n, attn) = (pairs.len() as i32, ATTN as i32);
+        let n = pairs.len() as i32;
         let kvb = self.layout.attention_kv().b;
         let kv_b = self.b.slice(kvb..kvb + 2 * ATTN);
         unsafe {
             stream.launch_builder(&self.k.attention)
                 .arg(batch.trees.buf()).arg(&*kv).arg(&kv_b)
-                .arg(part).arg(stage.pair_board.buf()).arg(config).arg(&mut *facts)
+                .arg(part).arg(stage.pair_board.buf()).arg(config).arg(&mut *attn_mix)
                 .arg(stage.pair_start.buf())
                 .launch_unit(LaunchConfig {
                     grid_dim: (runs as u32, HEADS as u32, 1),
@@ -1465,20 +1482,20 @@ impl Card {
                     shared_mem_bytes: 0,
                 })
         }.map_err(err)?;
-        self.run(self.layout.attn_out, facts, pairs.len(), h)?;
+        self.hlin(self.layout.attn_out, &*attn_mix, pairs.len(), 0.0, attn_out)?;
         let norm = self.layout.norms[LN_ATTN];
         let gamma = self.ln.slice(norm.g..norm.g + ATTN);
         let beta = self.ln.slice(norm.b..norm.b + ATTN);
         unsafe {
             stream.launch_builder(&self.k.attention_residual)
-                .arg(batch.trees.buf()).arg(&mut *h).arg(part).arg(config)
-                .arg(&gamma).arg(&beta).arg(&n).arg(&attn)
+                .arg(batch.trees.buf()).arg(&mut *attn_out).arg(part).arg(config)
+                .arg(&gamma).arg(&beta).arg(&n)
                 .launch_unit(warp_rows(pairs.len()))
         }.map_err(err)?;
         let value_cfg = Span { w: self.layout.value_hidden.w, b: usize::MAX, i: ATTN, o: ATTN };
-        self.lin(value_cfg, h, pairs.len(), 0.0, z)?;
+        self.hlin(value_cfg, &*attn_out, pairs.len(), 0.0, attn_val)?;
         launch!(self, attention_store, pairs.len() * ATTN,
-                batch.trees.buf(), part, stage.pair_at.buf(), &*h, &*z, &n, &attn)?;
+                batch.trees.buf(), part, stage.pair_at.buf(), &*attn_out, &*attn_val, &n)?;
         Ok(())
     }
 
@@ -1698,7 +1715,6 @@ impl Card {
                 .arg(&*action)
                 .arg(&inv_d)
                 .arg(&m_i)
-                .arg(&attn_i)
                 .launch_unit(cfg)
         }
         .map_err(err)
@@ -1708,13 +1724,12 @@ impl Card {
         if mine.is_empty() {
             return Ok(());
         }
-        let mut g = self.solves.lock();
         for &i in mine {
             let Call::Tree { solve, writes, ncells, nreach, nvals, levels, splits, nterm, seed, .. }
                 = &calls[i] else {
                 unreachable!("tree shard holds only tree calls")
             };
-            let b = self.slot(&mut g, *solve);
+            let mut b = self.slot(*solve);
             let s = &self.stream;
             let base = pack.words(&writes.blob);
             for r in &writes.runs {
@@ -1771,443 +1786,6 @@ impl Card {
         Ok(())
     }
 
-    fn lay(&self, solves: &[usize]) -> Res<()> {
-        let mut batch = self.batch.lock();
-        let (mut desc, mut coff): (Vec<u64>, Vec<u32>) = (Vec::new(), vec![0]);
-        let (mut part_of_row, mut local_row, mut base): (Vec<i32>, Vec<i32>, Vec<i32>) =
-            (Vec::new(), Vec::new(), Vec::new());
-        let (mut rows, mut cells, mut nterm) = (0usize, 0u32, 0usize);
-        let (mut bucket, mut items): (Vec<Vec<u32>>, Vec<u32>) = (Vec::new(), Vec::new());
-        let (mut kernel, mut inner): (Vec<Vec<u32>>, Vec<u32>) = (Vec::new(), Vec::new());
-        let mut upto: Vec<Prefix> = vec![Prefix::default()];
-        {
-            let g = self.solves.lock();
-            for (part, &solve) in solves.iter().enumerate() {
-                let b = g
-                    .get(solve)
-                    .filter(|b| b.host_coff.len() == 2 * b.rows + 1)
-                    .ok_or_else(|| format!("solve {solve} has no resident tree"))?;
-                desc.extend_from_slice(&b.describe(&self.stream));
-                coff.extend(b.host_coff[1..].iter().map(|x| x + cells));
-                part_of_row.extend(std::iter::repeat_n(part as i32, b.rows));
-                local_row.extend(0..b.rows as i32);
-                base.push(cells as i32);
-                cells += b.host_coff[2 * b.rows];
-                rows += b.rows;
-                nterm = nterm.max(b.nterm);
-                while bucket.len() + 1 < b.level_start.len() {
-                    bucket.push(Vec::new());
-                    kernel.push(Vec::new());
-                    items.push(0);
-                    inner.push(0);
-                }
-                for (l, w) in b.level_start.windows(2).enumerate() {
-                    let n = w[1] - w[0];
-                    assert!(
-                        n <= u32::MAX >> (32 - WORK_BITS) && (part as u64) < 1 << (32 - WORK_BITS),
-                        "a round of {} solves and a level of {n} nodes overflow a work item",
-                        solves.len()
-                    );
-                    let item = |slot| (part as u32) << WORK_BITS | slot;
-                    bucket[l].extend((0..n).map(item));
-                    items[l] += n;
-                    let cut = b.level_split[l] - w[0];
-                    kernel[l].extend((0..cut).map(item));
-                    inner[l] += cut;
-                }
-                upto.push(Prefix {
-                    parts: part as u32 + 1,
-                    rows,
-                    items: items.clone(),
-                    inner: inner.clone(),
-                    nterm,
-                });
-            }
-        }
-        let flatten = |b: &[Vec<u32>]| {
-            let mut at: Vec<u32> = Vec::with_capacity(b.len() + 1);
-            let mut all: Vec<u32> = Vec::new();
-            for v in b {
-                at.push(all.len() as u32);
-                all.extend_from_slice(v);
-            }
-            at.push(all.len() as u32);
-            (at, all)
-        };
-        let (level_at, work) = flatten(&bucket);
-        let (inner_at, inner_work) = flatten(&kernel);
-        let s = &self.stream;
-        batch.trees.put(s, desc.len(), copy(&desc))?;
-        batch.work.put(s, work.len(), copy(&work))?;
-        batch.inner.put(s, inner_work.len(), copy(&inner_work))?;
-        batch.coff.put(s, coff.len(), copy(&coff))?;
-        batch.part.put(s, part_of_row.len(), copy(&part_of_row))?;
-        batch.local.put(s, local_row.len(), copy(&local_row))?;
-        batch.base.put(s, base.len(), copy(&base))?;
-        batch.level_at = level_at;
-        batch.inner_at = inner_at;
-        batch.upto = upto;
-        batch.parts = solves.len() as u32;
-        batch.cells = cells as usize;
-        Ok(())
-    }
-
-    fn value_pass(&self, b: &Batch) -> Res<()> {
-        let all = b.all();
-        self.reaches(b, all, 1, 0)?;
-        self.network(b, all, true)?;
-        self.terminals(b.trees.buf(), all)?;
-        self.backprop(b, all, 1, 0, Cfr::LINEAR)
-    }
-
-    fn iterate(&self, calls: &[Call], mine: &[usize], out: &mut Vec<(usize, Reply)>) -> Res<()> {
-        if mine.is_empty() {
-            return Ok(());
-        }
-        fn at(stage: &'static str) -> impl Fn(String) -> String {
-            move |e| format!("{stage}: {e}")
-        }
-        let mut order: Vec<usize> = mine.to_vec();
-        order.sort_by_key(|&i| std::cmp::Reverse(Self::asked(&calls[i]).0));
-        let (rounds, refresh, puct, k) = {
-            let Call::Iterate { iters, refresh, puct, cfr, .. } = &calls[order[0]] else {
-                unreachable!("iterate shard holds only iterate calls")
-            };
-            (*iters, *refresh, *puct, *cfr)
-        };
-        let mut sims = 0usize;
-        let mut query_at = vec![0usize; calls.len()];
-        let mut query_len = vec![0usize; calls.len()];
-        let mut query_total = 0usize;
-        {
-            let mut g = self.solves.lock();
-            for &i in &order {
-                let Call::Iterate { solve, step, iters, expand, query, cfr, puct: p, refresh: r } =
-                    &calls[i]
-                else {
-                    unreachable!("iterate shard holds only iterate calls")
-                };
-                assert_eq!((cfr.alpha, cfr.beta, cfr.gamma, cfr.predict, *p, *r),
-                           (k.alpha, k.beta, k.gamma, k.predict, puct, refresh),
-                           "a round mixes two regret rules");
-                let b = self.slot(&mut g, *solve);
-                b.step = *step;
-                b.todo = *iters;
-                b.nexpand = *expand;
-                sims = sims.max(*expand);
-                query_at[i] = query_total;
-                debug_assert!(
-                    query.iter().all(|q| (q.iter as usize) < *iters),
-                    "query pick is outside its solve's live iterations"
-                );
-                query_len[i] = query.iter().map(|q| q.len as usize).sum();
-                query_total += query_len[i];
-            }
-        }
-        let solves: Vec<usize> = order.iter().map(|&i| calls[i].solve()).collect();
-        self.lay(&solves).map_err(at("lay"))?;
-        let b = self.batch.lock();
-        self.scratch.lock().queries.room(query_total)?;
-
-        self.reaches(&b, b.all(), 0, 0).map_err(at("reach"))?;
-        for iter in 0..rounds {
-            let live = order
-                .iter()
-                .position(|&i| Self::asked(&calls[i]).0 <= iter)
-                .unwrap_or(order.len());
-            let p = &b.upto[live];
-            let it = iter as i32;
-            if query_total > 0 {
-                let solves = self.solves.lock();
-                let mut scratch = self.scratch.lock();
-                let dst = scratch.queries.buf.as_mut().expect("query scratch is carved");
-                for &i in &order[..live] {
-                    let Call::Iterate { solve, query, .. } = &calls[i] else {
-                        unreachable!("iterate shard holds only iterate calls")
-                    };
-                    let mut to = query_at[i];
-                    for q in query {
-                        if q.iter as usize == iter {
-                            solves[*solve].ent[Ent::Reach as usize].copy_f32_to(
-                                &self.stream,
-                                R_REACH,
-                                q.reach as usize,
-                                dst,
-                                to,
-                                q.len as usize,
-                            )?;
-                        }
-                        to += q.len as usize;
-                    }
-                }
-            }
-            self.network(&b, p, iter % refresh == 0).map_err(at("net"))?;
-            self.terminals(b.trees.buf(), p).map_err(at("terminals"))?;
-            self.backprop(&b, p, 0, it, k).map_err(at("backprop"))?;
-            self.reaches(&b, p, 0, it).map_err(at("reach"))?;
-            if sims > 0 {
-                {
-                    self.expand(b.trees.buf(), b.parts, sims, puct, iter, rounds, p.items.len())
-                }
-                .map_err(at("expand"))?;
-            }
-        }
-        let each = b.parts as usize * sims;
-        let host = self.sampled(rounds * each)?;
-        let query_host = if query_total == 0 {
-            Vec::new()
-        } else {
-            let scratch = self.scratch.lock();
-            let src = scratch.queries.buf.as_ref().expect("query scratch is carved");
-            self.down_f.lock().recv(&self.stream, &src.slice(..query_total))?
-        };
-        for (part, &i) in order.iter().enumerate() {
-            let (iters, want) = Self::asked(&calls[i]);
-            let mut leaves = Vec::with_capacity(iters * want);
-            for phase in 0..iters {
-                let at = phase * each + part * sims;
-                leaves.extend_from_slice(&host[at..at + want]);
-            }
-            let q = query_at[i];
-            let c = query_host[q..q + query_len[i]].to_vec();
-            out.push((i, Reply { c, leaves, ..Default::default() }));
-        }
-        Ok(())
-    }
-
-    fn asked(c: &Call) -> (usize, usize) {
-        match c {
-            Call::Iterate { iters, expand, .. } => (*iters, *expand),
-            _ => unreachable!("iterate shard holds only iterate calls"),
-        }
-    }
-
-    fn read(&self, calls: &[Call], mine: &[usize], out: &mut Vec<(usize, Reply)>) -> Res<()> {
-        if mine.is_empty() {
-            return Ok(());
-        }
-        let solves: Vec<usize> = mine.iter().map(|&i| calls[i].solve()).collect();
-        self.lay(&solves)?;
-        let mut b = self.batch.lock();
-        let touched: Vec<i32> = mine
-            .iter()
-            .map(|&i| match &calls[i] {
-                Call::Read { touched, .. } => (touched[0] as i32) | ((touched[1] as i32) << 1),
-                _ => unreachable!("read shard holds only read calls"),
-            })
-            .collect();
-        b.touched.put(&self.stream, touched.len(), copy(&touched))?;
-        self.finish(&b, b.all())?;
-
-        let want: Vec<usize> = mine
-            .iter()
-            .filter(|&&i| matches!(&calls[i],
-                Call::Read { vals_at, .. } if vals_at[0].1 > 0 || vals_at[1].1 > 0))
-            .map(|&i| calls[i].solve())
-            .collect();
-        drop(b);
-        if !want.is_empty() {
-            self.lay(&want)?;
-            self.value_pass(&self.batch.lock())?;
-        }
-
-        let g = self.solves.lock();
-        let mut h = self.down_f.lock();
-        for &i in mine {
-            let Call::Read { solve, vals_at, policy_at, .. } = &calls[i] else {
-                unreachable!("read shard holds only read calls")
-            };
-            let s = &g[*solve];
-            let mut root = Vec::new();
-            for &(at, n) in vals_at {
-                root.extend(s.ent[Ent::Reach as usize].get_f32(&self.stream, R_VALS, at as usize, n as usize, &mut h)?);
-            }
-            let cells = &s.ent[Ent::Cell as usize];
-            let (at, n) = (policy_at.0 as usize, policy_at.1 as usize);
-            let policy = cells.get_f32(&self.stream, C_SUM, at, n, &mut h)?;
-            let q = cells.get_f32(&self.stream, C_QVAL, at, n, &mut h)?;
-            out.push((i, Reply { a: root, b: policy, q, ..Default::default() }));
-        }
-        Ok(())
-    }
-
-    fn grid(items: u32, split: u32, nodes: u32) -> LaunchConfig {
-        LaunchConfig {
-            grid_dim: (items.div_ceil(nodes), split, 1),
-            block_dim: (32, SWEEP_WARPS, 1),
-            shared_mem_bytes: 0,
-        }
-    }
-
-    fn reaches(&self, b: &Batch, p: &Prefix, avg: i32, iter: i32) -> Res<()> {
-        let (trees, work) = (b.trees.buf(), b.work.buf());
-        for level in 1..p.items.len() {
-            if p.items[level] == 0 {
-                continue;
-            }
-            let (at, level_i) = (b.level_at[level] as i32, level as i32);
-            unsafe {
-                self.stream
-                    .launch_builder(&self.k.reach_sweep)
-                    .arg(trees).arg(work).arg(&at).arg(&level_i).arg(&avg).arg(&iter)
-                    .arg(&(p.items[level] as i32))
-                    .launch_unit(Self::grid(p.items[level], 2, SWEEP_WARPS))
-            }
-            .map_err(err)?;
-        }
-        Ok(())
-    }
-
-    fn backprop(&self, b: &Batch, p: &Prefix, avg: i32, iter: i32, k: Cfr) -> Res<()> {
-        for level in (0..p.inner.len()).rev() {
-            if p.inner[level] == 0 {
-                continue;
-            }
-            let (at, level_i) = (b.inner_at[level] as i32, level as i32);
-            unsafe {
-                self.stream
-                    .launch_builder(&self.k.backprop_sweep)
-                    .arg(b.trees.buf()).arg(b.inner.buf()).arg(&at).arg(&level_i).arg(&avg).arg(&iter)
-                    .arg(&k.alpha).arg(&k.beta).arg(&k.gamma).arg(&k.predict)
-                    .launch_unit(Self::grid(p.inner[level], 2, 1))
-            }
-            .map_err(err)?;
-        }
-        Ok(())
-    }
-
-    fn network(&self, b: &Batch, p: &Prefix, fresh: bool) -> Res<()> {
-        let stride = p.rows;
-        if stride == 0 {
-            return Ok(());
-        }
-        if fresh {
-            self.opinions(b, p)?;
-        }
-        let rows = (2 * stride) as i32;
-        unsafe {
-            self.stream
-                .launch_builder(&self.k.leaf_scale)
-                .arg(b.trees.buf()).arg(b.part.buf()).arg(b.local.buf()).arg(&rows)
-                .launch_unit(warp_rows(2 * stride))
-        }
-        .map_err(err)
-    }
-
-    fn opinions(&self, b: &Batch, p: &Prefix) -> Res<()> {
-        let (trees, part, local) = (b.trees.buf(), b.part.buf(), b.local.buf());
-        let stride = p.rows;
-        let l = &self.layout;
-        let tile = TILE.min(stride);
-        let belief_span = Span {
-            w: l.value_hidden.w + (ATTN + D) * ATTN,
-            b: usize::MAX,
-            i: 2 * ATTN,
-            o: ATTN,
-        };
-        let out_w = self.w.slice(l.value_out.w..l.value_out.w + ATTN * BINS);
-        let out_b = self.b.slice(l.value_out.b..l.value_out.b + BINS);
-        let mut q0 = 0usize;
-        while q0 < stride {
-            let n = tile.min(stride - q0);
-            let q0_i = q0 as i32;
-            let rows = 2 * n;
-            let rows_i = rows as i32;
-            let mut scratch = self.scratch.lock();
-            scratch.input.room(rows * 2 * ATTN)?;
-            scratch.h.room(rows * ATTN)?;
-            let Scratch { input, h, .. } = &mut *scratch;
-            carved!(input, h);
-            unsafe {
-                self.stream.launch_builder(&self.k.belief)
-                    .arg(trees).arg(part).arg(local).arg(&mut *input)
-                    .arg(&rows_i).arg(&q0_i)
-                    .launch_unit(warp_rows(2 * rows))
-            }.map_err(err)?;
-            self.lin(belief_span, input, rows, 0.0, h)?;
-            unsafe {
-                self.stream.launch_builder(&self.k.value)
-                    .arg(trees).arg(part).arg(local).arg(&*h)
-                    .arg(&out_w).arg(&out_b)
-                    .arg(&rows_i).arg(&q0_i)
-                    .launch_unit(LaunchConfig {
-                        grid_dim: (rows as u32, 1, 1),
-                        block_dim: (32, VALUE_WARPS as u32, 1),
-                        shared_mem_bytes: 0,
-                    })
-            }.map_err(err)?;
-            q0 += n;
-        }
-        Ok(())
-    }
-
-    fn terminals(&self, trees: &CudaSlice<u64>, p: &Prefix) -> Res<()> {
-        if p.nterm == 0 {
-            return Ok(());
-        }
-        unsafe {
-            self.stream
-                .launch_builder(&self.k.terminals)
-                .arg(trees)
-                .launch_unit(LaunchConfig {
-                    grid_dim: (p.nterm.div_ceil(8) as u32, p.parts, 2),
-                    block_dim: (32, 8, 1),
-                    shared_mem_bytes: 0,
-                })
-        }
-        .map_err(err)
-    }
-
-    fn expand(&self, trees: &CudaSlice<u64>, parts: u32, sims: usize, puct: f32,
-              iter: usize, iters: usize, depth: usize) -> Res<()> {
-        let each = parts as usize * sims;
-        let draws = sims * crate::search::TRIES;
-        let mut sc = self.scratch.lock();
-        let out = sc.leaves.room((iters * each).max(1))?;
-        let (parts_i, sims_i, iter_i, each_i) = (parts as i32, sims as i32, iter as i32, each as i32);
-        let (tries_i, depth_i) = (crate::search::TRIES as i32, depth as i32);
-        unsafe {
-            self.stream
-                .launch_builder(&self.k.expand)
-                .arg(trees).arg(out).arg(&parts_i).arg(&sims_i).arg(&puct).arg(&iter_i)
-                .arg(&each_i).arg(&tries_i).arg(&depth_i)
-                .launch_unit(LaunchConfig {
-                    grid_dim: (parts.max(1), 1, 1),
-                    block_dim: (32, draws.clamp(1, 32) as u32, 1),
-                    shared_mem_bytes: (4 * draws * (depth + 2)) as u32,
-                })
-        }
-        .map_err(err)
-    }
-
-    fn sampled(&self, n: usize) -> Res<Vec<u32>> {
-        if n == 0 {
-            return Ok(Vec::new());
-        }
-        let mut sc = self.scratch.lock();
-        let out = sc.leaves.room(n)?;
-        self.down.lock().recv(&self.stream, &out.slice(0..n))
-    }
-
-    fn finish(&self, b: &Batch, p: &Prefix) -> Res<()> {
-        let touched = b.touched.buf();
-        for level in 0..p.inner.len() {
-            if p.inner[level] == 0 {
-                continue;
-            }
-            let (at, level_i) = (b.inner_at[level] as i32, level as i32);
-            unsafe {
-                self.stream
-                    .launch_builder(&self.k.finish)
-                    .arg(b.trees.buf()).arg(b.inner.buf()).arg(&at).arg(&level_i).arg(touched)
-                    .arg(&(p.inner[level] as i32))
-                    .launch_unit(Self::grid(p.inner[level], 1, SWEEP_WARPS))
-            }
-            .map_err(err)?;
-        }
-        Ok(())
-    }
-
 }
 
 #[derive(Default)]
@@ -2241,8 +1819,8 @@ struct Scratch {
     input: Arr<f32>,
     leaves: Arr<u32>,
     queries: Arr<f32>,
-    public: Arr<f32>,
-    kv: Arr<f32>,
+    public: Arr<f16>,
+    kv: Arr<f16>,
     piles: Arr<f32>,
     tokens: Arr<f32>,
     projected: Arr<f32>,
@@ -2252,6 +1830,11 @@ struct Scratch {
     facts: Arr<f32>,
     occupant: Arr<i32>,
     x: Arr<f32>,
+    spatial: Arr<f16>,
+    attn_mix: Arr<f16>,
+    attn_out: Arr<f16>,
+    attn_val: Arr<f16>,
+    token_half: Arr<f16>,
     action: Arr<f32>,
 }
 
@@ -2283,11 +1866,11 @@ impl Plan {
         }
     }
 
-    fn build(mut self, n: usize, cfg: &Cfg) -> Res<(Scratch, Stage, Batch, usize)> {
+    fn build(mut self, n: usize, slots: usize, cfg: &Cfg) -> Res<(Scratch, Stage, Batch, usize)> {
         let b = &cfg.budget;
         let (nodes, rows, cidx) = (b.cap(Ent::Node), b.cap(Ent::Row), b.cap(Ent::Cidx));
-        let cards = n * NTYPE * TYPE;
-        let configs = n * b.cap(Ent::Config);
+        let cards = slots * NTYPE * TYPE;
+        let configs = slots * b.cap(Ent::Config);
         let resident = FIELDS[0] * nodes
             + FIELDS[1] * b.cap(Ent::Cell)
             + FIELDS[2] * b.cap(Ent::Reach)
@@ -2302,8 +1885,8 @@ impl Plan {
             input: self.arr(TILE * (D + 2 * ATTN))?,
             leaves: self.arr(n * cfg.s.max(1) as usize)?,
             queries: self.arr(BOARD_TILE * (N_HEXES + NTYPE) * ATTN)?,
-            public: self.arr(BOARD_TILE * (N_HEXES + NTYPE) * C)?,
-            kv: self.arr(BOARD_TILE * (N_HEXES + NTYPE) * 2 * ATTN)?,
+            public: self.arr::<f16>(BOARD_TILE * (N_HEXES + NTYPE) * C)?,
+            kv: self.arr::<f16>(BOARD_TILE * (N_HEXES + NTYPE) * 2 * ATTN)?,
             piles: self.arr(TILE * NTYPE * PILE_COUNTS)?,
             tokens: self.arr(TILE * NTYPE * TYPE)?,
             projected: self.arr(TILE * NTYPE * C)?,
@@ -2312,7 +1895,12 @@ impl Plan {
             glob: self.arr(TILE * C)?,
             facts: self.arr(TILE * N_HEXES * HEX_FACTS)?,
             occupant: self.arr(TILE * N_HEXES)?,
-            x: self.arr(TILE * N_HEXES * C)?,
+            x: self.arr::<f32>(TILE * N_HEXES * C)?,
+            spatial: self.arr::<f16>(TILE * N_HEXES * C)?,
+            attn_mix: self.arr::<f16>(PAIR_TILE * ATTN)?,
+            attn_out: self.arr::<f16>(PAIR_TILE * ATTN)?,
+            attn_val: self.arr::<f16>(PAIR_TILE * ATTN)?,
+            token_half: self.arr::<f16>(TILE * NTYPE * C)?,
             action: self.arr(TILE * C)?,
         };
         let stage = Stage {
@@ -2336,18 +1924,7 @@ impl Plan {
             src: self.wire(TILE)?,
             start: self.wire(TILE + 1)?,
         };
-        let batch = Batch {
-            trees: self.wire(n * DESC)?,
-            work: self.wire(n * nodes)?,
-            inner: self.wire(n * nodes)?,
-            coff: self.wire(n * (2 * rows + 1))?,
-            part: self.wire(n * rows)?,
-            local: self.wire(n * rows)?,
-            base: self.wire(n)?,
-            prime: self.wire(12 * TILE + n * b.cap(Ent::Cell))?,
-            touched: self.wire(n)?,
-            ..Batch::default()
-        };
+        let batch = Batch::carve(&mut self, n, slots, cfg)?;
         Ok((scratch, stage, batch, self.bytes))
     }
 }

@@ -18,11 +18,11 @@ OFF_LOOSE = warchest.OFF_LOOSE
 LOOSE = warchest.LOOSE
 
 TYPE = 64
-C = 96
+C = 192
 BLOCKS = 12
-D = 256
-ATTN = 128
-HEADS = 4
+D = 384
+ATTN = 192
+HEADS = 6
 HEAD = ATTN // HEADS
 BINS = 16
 N_KINDS = warchest.N_KINDS

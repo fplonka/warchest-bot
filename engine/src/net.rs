@@ -21,11 +21,11 @@ fn dense(w: &[f32], b: &[f32], i: usize, o: usize, input: &[f32], rows: usize, o
 
 
 pub const TYPE: usize = 64;
-pub const C: usize = 96;
+pub const C: usize = 192;
 pub const BLOCKS: usize = 12;
-pub const D: usize = 256;
-pub const ATTN: usize = 128;
-pub const HEADS: usize = 4;
+pub const D: usize = 384;
+pub const ATTN: usize = 192;
+pub const HEADS: usize = 6;
 pub const HEAD: usize = ATTN / HEADS;
 pub const BINS: usize = 16;
 

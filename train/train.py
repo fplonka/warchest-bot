@@ -34,6 +34,7 @@ ACT_BYTES = warchest.ACT_BYTES
 NSLOT = warchest.NSLOT
 
 ROUND_KEYS = ("rounds", "round_calls", "round_rows", "round_nanos", "budget_hits")
+PROBE_ROWS = 2048
 EMA = 0.999
 POLICY_METRICS = ("policy_loss", "policy_target_entropy", "policy_prior_entropy",
                   "policy_search_kl")
@@ -307,6 +308,11 @@ class Buffer:
         return self.gather(np.arange(self.lo, self.rows))
 
 
+def fuse(net):
+    net.evaluate = torch.compile(net.evaluate, dynamic=True)
+    return net
+
+
 def forward_values(net, parts):
     return net(*parts[:4], parts[5], parts[6])
 
@@ -524,23 +530,6 @@ def ingest(buf, data, warm=False):
     return len(x)
 
 
-def physical_cpus():
-    cpus = set()
-    root = "/sys/devices/system/cpu"
-    if not os.path.isdir(root):
-        return []
-    for name in os.listdir(root):
-        if not name.startswith("cpu") or not name[3:].isdigit():
-            continue
-        path = os.path.join(root, name, "topology", "thread_siblings_list")
-        try:
-            first = open(path).read().strip().split(",", 1)[0].split("-", 1)[0]
-            cpus.add(int(first))
-        except (OSError, ValueError):
-            pass
-    return sorted(cpus)
-
-
 def append_epoch(args, rec):
     with open(f"{args.out}/epochs.jsonl", "a") as f:
         f.write(json.dumps(rec, separators=(",", ":")) + "\n")
@@ -640,13 +629,7 @@ def main():
               f"{over or 'baseline'}", flush=True)
     if args.note:
         print(f"[train] {args.note}", flush=True)
-    if args.gen_workers == 0:
-        cores = physical_cpus()
-        args.gen_workers = len(cores) or (
-            len(os.sched_getaffinity(0))
-            if hasattr(os, "sched_getaffinity")
-            else (os.cpu_count() or 1)
-        )
+    args.gen_workers = config.workers(args.gen_workers)
 
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
@@ -680,28 +663,33 @@ def main():
     gpu_batch.warmup(dev)
     batcher = gpu_batch.make_batch
     torch.cuda.reset_peak_memory_stats(dev)
-    n = max(args.batch, 2048)
-    k = n * args.cfgs_per_row
-    x = torch.zeros(n, PUBFEAT, device=dev)
-    phi = torch.zeros(k, CFEAT, device=dev)
-    segment = np.arange(k) % (2 * n)
-    slot, width = gpu_batch.attention_layout(segment // 2, n)
-    attention = (torch.as_tensor(slot, device=dev), width)
-    seg = torch.as_tensor(segment, device=dev)
-    w = torch.bincount(seg, minlength=2 * n).float().reciprocal()[seg]
-    y = torch.zeros(k, device=dev)
-    parts = (x, phi, w, seg, y, 2 * n, attention, None)
-    scratch = Net().to(dev)
+
+    def shaped(n):
+        k = n * args.cfgs_per_row
+        segment = np.arange(k) % (2 * n)
+        slot, width = gpu_batch.attention_layout(segment // 2, n)
+        seg = torch.as_tensor(segment, device=dev)
+        w = torch.bincount(seg, minlength=2 * n).float().reciprocal()[seg]
+        return (torch.zeros(n, PUBFEAT, device=dev),
+                torch.zeros(k, CFEAT, device=dev), w, seg,
+                torch.zeros(k, device=dev), 2 * n,
+                (torch.as_tensor(slot, device=dev), width), None)
+
+    scratch = fuse(Net().to(dev))
     scratch_opt = adam(scratch, args.lr, args.wd)
+    parts = shaped(args.batch)
     losses(scratch, *parts, wp=0.0)[0].backward()
     scratch_opt.step()
-    forward_values(scratch, parts)
+    del parts
+    with torch.no_grad():
+        forward_values(scratch, shaped(PROBE_ROWS))
     torch.cuda.synchronize(dev)
-    del scratch_opt, scratch, parts, x, phi, w, seg, y, attention
+    del scratch_opt, scratch
 
     torch.manual_seed(args.seed)
     value = Net().to(dev)
     acting = copy.deepcopy(value).requires_grad_(False)
+    fuse(value)
     opt = adam(value, args.lr, args.wd)
     buf = Buffer(args.cap, args.cap * args.cfgs_per_row)
     if checkpoint:
@@ -723,7 +711,7 @@ def main():
         target_state = cpu_state(acting)
     peak = torch.cuda.max_memory_reserved(dev)
     print(f"[train] torch peak {peak / (1 << 20):.0f} MiB reserved on {dev} "
-          f"(rows={n} configs={k}); farm carves mem_get_info free",
+          f"(train {args.batch} rows, probe {PROBE_ROWS}); farm carves mem_get_info free",
           flush=True)
     print(f"[train] search inference on cuda:{args.gen_devices}, "
           f"training on {dev}", flush=True)
@@ -838,7 +826,8 @@ def main():
             p_td1=args.p_td1,
             query_rate=args.query_rate,
             recursive_rate=args.recursive_rate,
-            devices=[int(d) for d in args.gen_devices.split(",")])
+            devices=[int(d) for d in args.gen_devices.split(",")],
+            slots=args.gen_slots)
 
         progress["farm_runs"] += 1
         optimizer_rows = int(progress["optimizer_rows"])
@@ -920,7 +909,7 @@ def main():
                 acting.push()
                 target_state = cpu_state(acting)
                 if len(buf) >= 2048:
-                    probe = batcher(buf.sample(2048, diag_rng), diag_rng, dev)
+                    probe = batcher(buf.sample(PROBE_ROWS, diag_rng), diag_rng, dev)
                 print(
                     f"[t={now - t0:6.1f}s] --- target network refresh ---",
                     flush=True)
@@ -935,7 +924,7 @@ def main():
             steps = int(window["train_steps"])
             lv = window["loss_sum"] / max(steps, 1)
             if probe is None and len(buf) >= 2048:
-                probe = batcher(buf.sample(2048, diag_rng), diag_rng, dev)
+                probe = batcher(buf.sample(PROBE_ROWS, diag_rng), diag_rng, dev)
             diag = diagnostics(value, buf, probe, args.batch, diag_rng, dev, batcher,
                                args.recent_frac)
             target_n = max(int(window["target_n"]), 1)

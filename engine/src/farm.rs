@@ -35,6 +35,8 @@ fn deal(mut replies: Vec<Reply>, spans: &[usize]) -> Vec<Vec<Reply>> {
         .collect()
 }
 
+const WAVE: usize = 3;
+
 pub fn host_slots(budget: Budget) -> usize {
     let slot = budget.host_slot_bytes() as u64;
     (host_free() / slot.max(1)) as usize
@@ -160,6 +162,7 @@ pub struct Stats {
     pub slots: AtomicU64,
     pub budget_hits: AtomicU64,
     pub entity_hits: [AtomicU64; 8],
+    pub host_nanos: AtomicU64,
     pub slot_bytes: AtomicU64,
     pub slots_per_card: AtomicU64,
     shapes: Mutex<Vec<[u32; 10]>>,
@@ -256,7 +259,7 @@ impl Farm {
                     Arc::clone(&broken),
                 );
                 let lane = g * pipes + p;
-                let wave = per_gpu[g].div_ceil(pipes.max(1));
+                let wave = WAVE.min(per_gpu[g].div_ceil(pipes)).max(1);
                 drivers.push(
                     std::thread::Builder::new()
                         .name(format!("card-{g}.{p}"))
@@ -373,7 +376,10 @@ fn advance_job(
     stats: &Stats,
 ) {
     let replies = std::mem::take(&mut job.replies);
-    match job.solver.advance(&replies) {
+    let at = std::time::Instant::now();
+    let step = job.solver.advance(&replies);
+    stats.host_nanos.fetch_add(at.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    match step {
         Step::Calls(calls) => device[job.card].push((job, calls)),
         Step::Done(solved) => {
             let mask = job.solver.hit_mask();

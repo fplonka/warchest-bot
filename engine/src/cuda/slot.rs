@@ -15,6 +15,7 @@ use super::{err, Host, Res};
 const CU: &str = "const unsigned int*";
 const CF: &str = "const float*";
 const FM: &str = "float*";
+const CH: &str = "const __half*";
 
 struct Col {
     ent: Ent,
@@ -33,7 +34,9 @@ pub fn tree_source() -> String {
                  "unsigned long long* seed",
                  "unsigned long long nterm", "unsigned long long nvals",
                  "unsigned long long step", "unsigned long long todo",
-                 "unsigned long long nexpand"] {
+                 "unsigned long long nexpand", "unsigned long long nlevels",
+                 "unsigned long long nrows", "unsigned long long query_at",
+                 "unsigned long long nquery"] {
         out += &format!("    {tail};\n");
     }
     out + "};\n"
@@ -71,6 +74,7 @@ const TABLE: [Col; 53] = [
     Col { ent: Ent::Draw, width: 1, dst: Some(Dst::DrawTo), name: "draw_to", ty: CU },
     Col { ent: Ent::Draw, width: 1, dst: Some(Dst::DrawP), name: "draw_p", ty: CF },
     Col { ent: Ent::Node, width: 1, dst: Some(Dst::LevelStart), name: "level_start", ty: CU },
+    Col { ent: Ent::Node, width: 1, dst: Some(Dst::LevelSplit), name: "level_split", ty: CU },
     Col { ent: Ent::Node, width: 1, dst: Some(Dst::LevelNode), name: "level_node", ty: CU },
     Col { ent: Ent::Reach, width: 1, dst: Some(Dst::Reach), name: "reach", ty: FM },
     Col { ent: Ent::Reach, width: 2, dst: None, name: "vals", ty: FM },
@@ -84,18 +88,17 @@ const TABLE: [Col; 53] = [
     Col { ent: Ent::Cell, width: 0, dst: None, name: "avg", ty: FM },
     Col { ent: Ent::Board, width: D, dst: None, name: "p", ty: CF },
     Col { ent: Ent::Board, width: ATTN, dst: None, name: "value_board", ty: CF },
-    Col { ent: Ent::Board, width: NTYPE * C, dst: None, name: "tokens", ty: CF },
-    Col { ent: Ent::Board, width: N_HEXES * C, dst: None, name: "spatial", ty: CF },
+    Col { ent: Ent::Board, width: NTYPE * C / 2, dst: None, name: "tokens", ty: CH },
+    Col { ent: Ent::Board, width: N_HEXES * C / 2, dst: None, name: "spatial", ty: CH },
     Col { ent: Ent::Row, width: 1, dst: None, name: "board_of", ty: CU },
     Col { ent: Ent::Config, width: ATTN, dst: None, name: "query", ty: CF },
     Col { ent: Ent::Config, width: ATTN, dst: None, name: "attn_query", ty: CF },
-    Col { ent: Ent::Cidx, width: 1, dst: None, name: "aidx", ty: CU },
     Col { ent: Ent::Row, width: 2, dst: None, name: "coff", ty: CU },
     Col { ent: Ent::Row, width: 1, dst: Some(Dst::LeafNode), name: "leaf_node", ty: CU },
     Col { ent: Ent::Row, width: 1, dst: Some(Dst::Term), name: "term", ty: CU },
 ];
 
-pub const DESC: usize = TABLE.len() + 8;
+pub const DESC: usize = TABLE.len() + 12;
 
 const fn fields() -> [usize; 8] {
     let mut f = [0; 8];
@@ -152,18 +155,18 @@ pub const B_SPATIAL: usize = lane(Ent::Board, "spatial");
 pub const G_QUERY: usize = lane(Ent::Config, "query");
 pub const G_ATTN_QUERY: usize = lane(Ent::Config, "attn_query");
 pub const Y_BOARD_OF: usize = lane(Ent::Row, "board_of");
-pub const I_AIDX: usize = lane(Ent::Cidx, "aidx");
 pub const Y_COFF: usize = lane(Ent::Row, "coff");
 
 const _: () = {
-    assert!(FIELDS[0] == 18);
+    assert!(FIELDS[0] == 19);
     assert!(FIELDS[1] == 13);
     assert!(FIELDS[2] == 9);
     assert!(FIELDS[3] == 4);
     assert!(FIELDS[4] == 5);
-    assert!(FIELDS[5] == D + ATTN + NTYPE * C + N_HEXES * C);
+    assert!(FIELDS[5] == D + ATTN + (NTYPE + N_HEXES) * C / 2);
+    assert!(C % 2 == 0, "half board columns pack two channels a word");
     assert!(FIELDS[6] == 2 * ATTN);
-    assert!(FIELDS[7] == 1);
+    assert!(FIELDS[7] == 0);
     assert!(C_CUR == 7 && C_SUM == 9 && C_PRIOR == 12);
     assert!(B_P == 0 && B_VALUE_BOARD == D);
     assert!(G_QUERY == 0 && Y_COFF == 1);
@@ -215,9 +218,11 @@ impl<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Default> 
         stream.memcpy_htod(host, &mut d).map_err(err)
     }
 
+    #[track_caller]
     pub fn room(&mut self, want: usize) -> Res<&mut CudaSlice<T>> {
         if want > self.cap {
-            return Err(format!("scratch grew past its slot: {want} > {}", self.cap));
+            let at = std::panic::Location::caller();
+            return Err(format!("scratch grew past its slot at {at}: {want} > {}", self.cap));
         }
         self.len = self.len.max(want);
         Ok(self.buf.as_mut().expect("a capacity implies a buffer"))
@@ -300,23 +305,23 @@ impl Entity {
         stream.memcpy_dtod(&src.slice(from..from + n), &mut fview).map_err(err)
     }
 
-    pub fn copy_f32_to(
-        &self,
+    fn copy_f16(
+        &mut self,
         stream: &Arc<CudaStream>,
         field: usize,
         at: usize,
-        dst: &mut CudaSlice<f32>,
-        to: usize,
+        src: &CudaSlice<f16>,
+        from: usize,
         n: usize,
     ) -> Res<()> {
         if n == 0 {
             return Ok(());
         }
-        let off = field * self.stride + at;
-        let buf = self.arr.buf.as_ref().ok_or("copying an arena that was never written")?;
-        let src = buf.slice(off..off + n);
-        let src = unsafe { src.transmute::<f32>(n).expect("u32 and f32 are four bytes") };
-        stream.memcpy_dtod(&src, &mut dst.slice_mut(to..to + n)).map_err(err)
+        let off = field * self.stride + at / 2;
+        let dst = self.arr.buf.as_mut().expect("a capacity implies a buffer");
+        let mut view = dst.slice_mut(off..off + n / 2);
+        let mut hview = unsafe { view.transmute_mut::<f16>(n).expect("a word holds two halves") };
+        stream.memcpy_dtod(&src.slice(from..from + n), &mut hview).map_err(err)
     }
 
     pub fn get_f32(
@@ -356,6 +361,8 @@ pub struct Solve {
     pub step: usize,
     pub todo: usize,
     pub nexpand: usize,
+    pub query_at: usize,
+    pub nquery: usize,
 }
 
 impl Solve {
@@ -394,6 +401,8 @@ impl Solve {
             step: 0,
             todo: 0,
             nexpand: 0,
+            query_at: 0,
+            nquery: 0,
         })
     }
 
@@ -424,6 +433,8 @@ impl Solve {
         self.step = 0;
         self.todo = 0;
         self.nexpand = 0;
+        self.query_at = 0;
+        self.nquery = 0;
         self.level_start.clear();
         self.level_split.clear();
         self.ent[Ent::Node as usize].rewind();
@@ -445,8 +456,8 @@ impl Solve {
         at: usize,
         p: &CudaSlice<f32>,
         value_board: &CudaSlice<f32>,
-        tokens: &CudaSlice<f32>,
-        spatial: &CudaSlice<f32>,
+        tokens: &CudaSlice<f16>,
+        spatial: &CudaSlice<f16>,
         from: usize,
         n: usize,
     ) -> Res<()> {
@@ -454,8 +465,8 @@ impl Solve {
         let e = &mut self.ent[Ent::Board as usize];
         e.copy_f32(s, B_P, at * D, p, from * D, n * D)?;
         e.copy_f32(s, B_VALUE_BOARD, at * ATTN, value_board, from * ATTN, n * ATTN)?;
-        e.copy_f32(s, B_TOKENS, at * NTYPE * C, tokens, from * NTYPE * C, n * NTYPE * C)?;
-        e.copy_f32(s, B_SPATIAL, at * N_HEXES * C, spatial, from * N_HEXES * C, n * N_HEXES * C)
+        e.copy_f16(s, B_TOKENS, at * NTYPE * C, tokens, from * NTYPE * C, n * NTYPE * C)?;
+        e.copy_f16(s, B_SPATIAL, at * N_HEXES * C, spatial, from * N_HEXES * C, n * N_HEXES * C)
     }
 
     pub fn copy_cfg(
@@ -505,6 +516,10 @@ impl Solve {
         out[i + 5] = self.step as u64;
         out[i + 6] = self.todo as u64;
         out[i + 7] = self.nexpand as u64;
+        out[i + 8] = self.level_start.len().saturating_sub(1) as u64;
+        out[i + 9] = self.rows as u64;
+        out[i + 10] = self.query_at as u64;
+        out[i + 11] = self.nquery as u64;
         out
     }
 }

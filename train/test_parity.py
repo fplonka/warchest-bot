@@ -113,8 +113,8 @@ def slot_invariance(net, rng, perms=6):
 
 
 def attention_token_relabelling(net, rng):
-    query = torch.from_numpy(rng.standard_normal((9, 128)).astype(np.float32))
-    tokens = torch.from_numpy(rng.standard_normal((3, 49, 128)).astype(np.float32))
+    query = torch.from_numpy(rng.standard_normal((9, ATTN)).astype(np.float32))
+    tokens = torch.from_numpy(rng.standard_normal((3, 49, ATTN)).astype(np.float32))
     board_of = torch.as_tensor([0, 2, 1, 1, 0, 2, 0, 1, 2])
     slot, width = attention_layout(board_of.numpy(), len(tokens))
     attention = (torch.from_numpy(slot), width)

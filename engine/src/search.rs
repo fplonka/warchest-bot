@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 pub const TRIES: usize = 4;
 
+pub static GROW_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Ent {
@@ -73,14 +74,8 @@ impl Budget {
     }
 }
 
-impl Default for Budget {
-    fn default() -> Budget {
-        Budget::for_s(512)
-    }
-}
 
-
-const BUDGET_512: Budget = Budget([16_595, 136_283, 346_018, 174_834, 10_090, 8_219, 921, 259_756]);
+pub const BUDGET_512: Budget = Budget([16_595, 136_283, 346_018, 174_834, 10_090, 8_219, 921, 259_756]);
 
 #[derive(Clone, Copy)]
 pub struct Cfg {
@@ -97,14 +92,14 @@ pub struct Cfg {
 impl Default for Cfg {
     fn default() -> Self {
         Cfg {
-            s: 512,
+            s: 1024,
             c: 8.0,
             batch: 8,
-            rounds: 0,
+            rounds: 1,
             cfr: Cfr::SOG,
             puct: 1.5,
             prior_temp: 1.0,
-            budget: Budget::for_s(512),
+            budget: Budget::for_s(1024),
         }
     }
 }
@@ -314,7 +309,6 @@ struct Mark {
     term_leaves: usize,
     leaf_coff: usize,
     leaf_cidx: usize,
-    attn: usize,
     counts: Counts,
 }
 
@@ -505,18 +499,14 @@ pub struct Solver {
     pub leaf_rows: Vec<usize>,
     pub(crate) term_leaves: Vec<usize>,
     pub(crate) leaf_cidx: Vec<u32>,
-    pub(crate) leaf_aidx: Vec<u32>,
     pub(crate) leaf_coff: Vec<u32>,
     pub(crate) cphi: Vec<f32>,
     pub(crate) cplayer: Vec<u8>,
     pub(crate) cmap: std::collections::HashMap<u64, u32, KeyHash>,
-    attn_board: Vec<u32>,
-    attn_config: Vec<u32>,
-    amap: std::collections::HashMap<u64, u32, KeyHash>,
+    leaf_board: Vec<u32>,
     batch_rows: usize,
     batch_boards: usize,
     batch_cfgs: usize,
-    batch_attn: usize,
     pub cards: Vec<f32>,
     pub(crate) board_of: Vec<u32>,
     bmap: std::collections::HashMap<u64, u32, KeyHash>,
@@ -568,7 +558,6 @@ impl Solver {
         sv.nodes = NODES.with(Pool::take);
         sv.cphi = CONFIGS.with(Pool::take);
         sv.cmap = std::collections::HashMap::with_capacity_and_hasher(1024, KeyHash);
-        sv.amap = std::collections::HashMap::with_capacity_and_hasher(1024, KeyHash);
         sv.bmap = std::collections::HashMap::with_capacity_and_hasher(1024, KeyHash);
         sv.nodes.reserve(640);
         sv.cur.reserve(640);
@@ -859,7 +848,6 @@ impl Solver {
             term_leaves: self.term_leaves.len(),
             leaf_coff: self.leaf_coff.len(),
             leaf_cidx: self.leaf_cidx.len(),
-            attn: self.attn_board.len(),
             counts: self.counts,
         }
     }
@@ -878,10 +866,7 @@ impl Solver {
         self.term_leaves.truncate(m.term_leaves);
         self.leaf_coff.truncate(m.leaf_coff);
         self.leaf_cidx.truncate(m.leaf_cidx);
-        self.leaf_aidx.truncate(m.leaf_cidx);
-        self.attn_board.truncate(m.attn);
-        self.attn_config.truncate(m.attn);
-        self.amap.retain(|_, &mut i| (i as usize) < m.attn);
+        self.leaf_board.truncate(m.leaf_cidx);
         self.cur.truncate(m.counts.cells);
         self.cplayer.truncate(m.counts.cfgs);
         self.cmap.retain(|_, &mut i| (i as usize) < m.counts.cfgs);
@@ -1167,22 +1152,9 @@ impl Solver {
                 }
                 let idx = self.intern_config(c, &res, p);
                 self.leaf_cidx.push(idx);
-                let aidx = self.intern_attention(board, idx);
-                self.leaf_aidx.push(aidx);
+                self.leaf_board.push(board);
             }
         }
-    }
-
-    fn intern_attention(&mut self, board: u32, config: u32) -> u32 {
-        let key = ((board as u64) << 32) | config as u64;
-        if let Some(&i) = self.amap.get(&key) {
-            return i;
-        }
-        let i = self.attn_board.len() as u32;
-        self.attn_board.push(board);
-        self.attn_config.push(config);
-        self.amap.insert(key, i);
-        i
     }
 
     fn intern_config(&mut self, c: &Config, res: &[u8; NSLOT], p: usize) -> u32 {
@@ -1215,14 +1187,12 @@ impl Solver {
 
     fn growth_calls(&mut self) -> Vec<Call> {
         let rows = self.leaf_rows.len();
-        if rows == self.batch_rows && self.counts.cfgs == self.batch_cfgs
-            && self.attn_board.len() == self.batch_attn {
+        if rows == self.batch_rows && self.counts.cfgs == self.batch_cfgs {
             return Vec::new();
         }
         if self.net.is_empty() {
             self.batch_rows = rows;
             self.batch_cfgs = self.counts.cfgs;
-            self.batch_attn = self.attn_board.len();
             return Vec::new();
         }
         let mut calls = Vec::with_capacity(2);
@@ -1232,12 +1202,16 @@ impl Solver {
             let (me, other) = (self.ctx.slots[0], self.ctx.slots[1]);
             self.net.cards(&[me, other].concat(), &mut self.cards);
         }
+        let cs = if fresh_rows > 0 {
+            self.leaf_coff[2 * self.batch_rows] as usize
+        } else {
+            self.leaf_cidx.len()
+        };
         if fresh_rows > 0 {
             let at = self.batch_boards * ROW_BYTES;
             let end = self.counts.boards * ROW_BYTES;
-            let q0 = 2 * self.batch_rows;
-            let cs = self.leaf_coff[q0] as usize;
-            let mut coff: Vec<u32> = self.leaf_coff[q0..].iter().map(|x| x - cs as u32).collect();
+            let mut coff: Vec<u32> =
+                self.leaf_coff[2 * self.batch_rows..].iter().map(|x| x - cs as u32).collect();
             coff.push((self.leaf_cidx.len() - cs) as u32);
             calls.push(Call::Trunk {
                 solve: self.slot,
@@ -1248,12 +1222,10 @@ impl Solver {
                 boards: self.counts.boards - self.batch_boards,
                 packed: self.packed[at..end].to_vec(),
                 cards: self.cards.clone(),
-                aidx: self.leaf_aidx[cs..].to_vec(),
                 coff,
             });
         }
-        let fresh_attn = self.attn_board.len() - self.batch_attn;
-        if fresh_cfgs > 0 || fresh_attn > 0 {
+        if fresh_cfgs > 0 || self.leaf_cidx.len() > cs {
             calls.push(Call::Configs {
                 solve: self.slot,
                 at: self.batch_cfgs,
@@ -1261,9 +1233,9 @@ impl Solver {
                 owner: self.cplayer[self.batch_cfgs..].iter().map(|&p| p as u32).collect(),
                 cards: self.cards.clone(),
                 n: fresh_cfgs,
-                pair_at: self.batch_attn,
-                pair_board: self.attn_board[self.batch_attn..].to_vec(),
-                pair_config: self.attn_config[self.batch_attn..].to_vec(),
+                pair_at: cs,
+                pair_board: self.leaf_board[cs..].to_vec(),
+                pair_config: self.leaf_cidx[cs..].to_vec(),
             });
         }
         calls
@@ -1275,7 +1247,6 @@ impl Solver {
             self.batch_boards = self.counts.boards;
         }
         self.batch_cfgs = self.batch_cfgs.max(self.counts.cfgs);
-        self.batch_attn = self.batch_attn.max(self.attn_board.len());
     }
 
     fn expansions_at(&self, i: usize) -> usize {
@@ -1293,6 +1264,7 @@ impl Solver {
                 self.absorb();
                 let last = replies.last().expect("a round answers every call it was given");
                 self.absorb_queries(&last.c);
+                let grow = std::time::Instant::now();
                 for &leaf in &last.leaves.clone() {
                     if leaf == crate::contract::NO_ROW {
                         continue;
@@ -1302,6 +1274,8 @@ impl Solver {
                     }
                     self.expand(leaf as usize);
                 }
+                GROW_NANOS.fetch_add(grow.elapsed().as_nanos() as u64,
+                                     std::sync::atomic::Ordering::Relaxed);
             }
             Phase::Reading => {
                 self.absorb();
@@ -1330,9 +1304,14 @@ impl Solver {
         let alike = (at + 1..=iters)
             .take_while(|&k| self.expansions_at(k) == want)
             .count();
-        let done = if want == 0 { alike } else { alike.min(self.cfg.batch.max(1)) };
-        let grown = if at + done < iters { want } else { 0 };
-        (done, grown)
+        let batch = self.cfg.batch.max(1);
+        if want == 0 {
+            return (alike.min(batch), 0);
+        }
+        let polish = iters.saturating_sub(batch);
+        let room = if at < polish { polish - at } else { alike };
+        let done = alike.min(batch).min(room);
+        (done, if at < polish { want } else { 0 })
     }
 
     fn iterate_round(&mut self) -> Vec<Call> {
@@ -1358,7 +1337,6 @@ impl Solver {
             solve: self.slot,
             step: self.steps[0],
             iters: done,
-            refresh: self.cfg.batch.max(1),
             expand,
             query,
             cfr: self.cfg.cfr,

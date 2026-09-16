@@ -120,7 +120,7 @@ struct SolveFarm {
 #[pymethods]
 impl SolveFarm {
     #[new]
-    #[pyo3(signature = (seed, workers, s=512, c=8.0, batch=8, rounds=0, explore=0.1, random_draft=true, cfr="sog", p_td1=0.2, query_rate=0.9, recursive_rate=0.1, devices=vec![0]))]
+    #[pyo3(signature = (seed, workers, s=1024, c=8.0, batch=8, rounds=1, explore=0.1, random_draft=true, cfr="sog", p_td1=0.2, query_rate=0.9, recursive_rate=0.1, devices=vec![0], slots=0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         seed: u64,
@@ -136,6 +136,7 @@ impl SolveFarm {
         query_rate: f32,
         recursive_rate: f32,
         devices: Vec<usize>,
+        slots: usize,
     ) -> PyResult<SolveFarm> {
         let query_rate = rate("query_rate", query_rate)?;
         let recursive_rate = rate("recursive_rate", recursive_rate)?;
@@ -160,14 +161,14 @@ impl SolveFarm {
         #[cfg(feature = "gpu")]
         {
             let net = Arc::clone(&nets().read());
-            let device = device_for(&devices, &net, cfg)?;
+            let device = device_for(&devices, &net, cfg, slots)?;
             Ok(SolveFarm {
                 farm: Farm::new(seed, workers, gc, net, device),
             })
         }
         #[cfg(not(feature = "gpu"))]
         {
-            let _ = (seed, workers, gc, devices, cfg);
+            let _ = (seed, workers, gc, devices, cfg, slots);
             Err(pyo3::exceptions::PyRuntimeError::new_err(
                 "built without the `gpu` feature: there is no CUDA solve farm",
             ))
@@ -203,6 +204,8 @@ impl SolveFarm {
             dict.set_item("round_calls", read(&s.calls))?;
             dict.set_item("round_rows", read(&s.rows))?;
             dict.set_item("round_nanos", read(&s.nanos))?;
+            dict.set_item("host_nanos", read(&s.host_nanos))?;
+            dict.set_item("grow_nanos", crate::search::GROW_NANOS.load(std::sync::atomic::Ordering::Relaxed))?;
             dict.set_item("slots", read(&s.slots))?;
             dict.set_item("slots_used", read(&s.slots))?;
             dict.set_item("slots_per_card", read(&s.slots_per_card))?;
@@ -223,8 +226,16 @@ impl SolveFarm {
 }
 
 #[cfg(feature = "gpu")]
-fn device_for(devices: &[usize], value: &crate::net::Net, cfg: Cfg) -> PyResult<crate::cuda::Device> {
-    let max_slots = crate::farm::host_slots(cfg.budget);
+fn device_for(
+    devices: &[usize],
+    value: &crate::net::Net,
+    cfg: Cfg,
+    slots: usize,
+) -> PyResult<crate::cuda::Device> {
+    let max_slots = match slots {
+        0 => crate::farm::host_slots(cfg.budget),
+        n => n,
+    };
     crate::cuda::Device::new(devices, value, cfg, max_slots).map_err(pyo3::exceptions::PyRuntimeError::new_err)
 }
 
@@ -405,6 +416,7 @@ fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_weights, m)?)?;
     m.add_function(wrap_pyfunction!(gen_data, m)?)?;
     m.add("ENT_NAMES", Ent::NAME.to_vec())?;
+    m.add("ENT_CAPS_512", crate::search::BUDGET_512.0.to_vec())?;
     m.add("STOP_NAMES", crate::search::STOP_NAMES.to_vec())?;
     m.add("SOLVE_KIND_NAMES", crate::selfplay::SolveKind::NAMES.to_vec())?;
     Ok(())

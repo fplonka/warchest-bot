@@ -11,7 +11,6 @@ pub enum Call {
         boards: usize,
         packed: Vec<u8>,
         cards: Vec<f32>,
-        aidx: Vec<u32>,
         coff: Vec<u32>,
     },
     Configs {
@@ -45,7 +44,6 @@ pub enum Call {
         solve: usize,
         step: usize,
         iters: usize,
-        refresh: usize,
         expand: usize,
         query: Vec<QueryPick>,
         cfr: Cfr,
@@ -84,7 +82,7 @@ pub enum Dst {
     RevBase, RevStart, RevSrc, RevCell,
     RvdBase, RvdStart, RvdSrc, RvdP,
     DrawBase, DrawStart, DrawTo, DrawP,
-    LevelStart, LevelNode,
+    LevelStart, LevelSplit, LevelNode,
     Cur, Prior, LeafNode, Term, Reach,
 }
 
@@ -303,6 +301,7 @@ impl Contract {
             sent.pools[13 + i] = v.len();
         }
         w.u32s(Dst::LevelStart, 0, &self.level_start);
+        w.u32s(Dst::LevelSplit, 0, &self.level_split);
         w.u32s(Dst::LevelNode, 0, &self.level_node);
     }
 
