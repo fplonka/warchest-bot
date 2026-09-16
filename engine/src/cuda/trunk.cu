@@ -4,7 +4,6 @@
 #define TMT ((TROWS + 15) / 16)
 #define TPROWS (TMT * 16)
 #define TNT (TRUNK_C / 8)
-#define TWARPS 12
 #define TWN (TNT / TWARPS)
 #define TLDS (TRUNK_C + 8)
 #define TPACK (TRUNK_C * TRUNK_C / 2)
@@ -13,7 +12,7 @@
 static_assert(TNT % TWARPS == 0, "k_trunk gives every warp the same number of column tiles");
 static_assert(TRUNK_C % 64 == 0, "k_trunk row passes give every lane whole words");
 static_assert(TWARPS % TB == 0, "k_trunk pools a board with a fixed set of warps");
-static_assert(TRUNK_C / 16 == TWARPS, "k_trunk projects the pooled rows with one warp a channel tile");
+static_assert(TRUNK_C / 16 <= TWARPS, "k_trunk projects the pooled rows with one warp a channel tile");
 
 __device__ __forceinline__ void mma_h16(unsigned (&d)[2], const unsigned (&a)[4],
                                         const unsigned (&b)[2]) {
@@ -235,35 +234,129 @@ __device__ __forceinline__ void pool_pass(TrunkShared& s, const float* __restric
     }
 }
 
-extern "C" __global__ void __launch_bounds__(32 * TWARPS, 1)
-k_trunk(const float* __restrict__ x0, const unsigned* __restrict__ w,
-        const uint4* __restrict__ wg, const float* __restrict__ bias,
-        const float* __restrict__ ln, const int* __restrict__ near,
-        const float* __restrict__ xpub, float* out, __half* spatial,
-        int boards) {
-    extern __shared__ __align__(16) unsigned char smem_raw[];
-    TrunkShared& s = *(TrunkShared*)smem_raw;
-    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
-    const int first = blockIdx.x * TB;
-    const int rows = min(boards - first, TB) * N_HEXES;
-    for (int i = tid; i < N_HEXES * 6; i += 32 * TWARPS) s.near[i] = near[i];
+struct Stem {
+    const float* cards;
+    const int* card_of_row;
+    const float* w_pile;
+    const float* seat;
+    const float* w_tok;
+    const unsigned* w_hex;
+    const float* b_hex;
+    const float* pos;
+    const float* w_glob;
+};
 
-    float x[TMT][TWN][4];
+static_assert(TB * NTYPE * (TOKEN_W + TRUNK_C) + 2 * TB * TRUNK_C <= TPROWS * TLDS / 2,
+              "the stem scratch fits in the neighbour buffer");
+static_assert(HEX_K <= TRUNK_C, "the hex facts tile fits an activation row");
+
+__device__ void stem(TrunkShared& s, const Stem& st, const float* __restrict__ xpub, __half* tokens,
+                     int first, int nboards, float (&x)[TMT][TWN][4]) {
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    float* tk = (float*)s.u;
+    float* pj = tk + TB * NTYPE * TOKEN_W;
+    float* tp = pj + TB * NTYPE * TRUNK_C;
+    float* gl = tp + TB * TRUNK_C;
+    for (int i = tid; i < nboards * NTYPE * TOKEN_W; i += 32 * TWARPS) {
+        int b = i / (NTYPE * TOKEN_W), t = (i / TOKEN_W) % NTYPE, j = i % TOKEN_W;
+        const float* xp = xpub + (size_t)(first + b) * PUBFEAT + OFF_PILES + t * PILE_COUNTS;
+        float acc = st.cards[((size_t)st.card_of_row[first + b] * NTYPE + t) * TOKEN_W + j]
+                  + st.seat[(size_t)(t / NSLOT) * TOKEN_W + j];
+        for (int k = 0; k < PILE_COUNTS; ++k) acc += xp[k] * st.w_pile[(size_t)k * TOKEN_W + j];
+        tk[i] = acc;
+    }
+    for (int row = warp; row < TPROWS; row += TWARPS) {
+        int b = row / N_HEXES, hex = row - b * N_HEXES;
+        const float* xh = xpub + (size_t)(first + b) * PUBFEAT + hex * HEX_CH;
+        for (int k = lane; k < HEX_K; k += 32)
+            s.a[(size_t)row * TLDS + k] = __float2half(row < nboards * N_HEXES && k < HEX_FACTS ? xh[k] : 0.0f);
+    }
+    __syncthreads();
+    const int half = tid / TRUNK_C, c = tid % TRUNK_C;
+    for (int bt = half; bt < nboards * NTYPE; bt += 32 * TWARPS / TRUNK_C) {
+        const float* row = tk + (size_t)bt * TOKEN_W;
+        float acc = 0.0f;
+#pragma unroll 8
+        for (int j = 0; j < TOKEN_W; ++j) acc += row[j] * st.w_tok[(size_t)j * TRUNK_C + c];
+        pj[bt * TRUNK_C + c] = acc;
+        tokens[((size_t)first * NTYPE + bt) * TRUNK_C + c] = __float2half(acc);
+    }
+    __syncthreads();
+    for (int i = tid; i < nboards * TRUNK_C; i += 32 * TWARPS) {
+        int b = i / TRUNK_C, c = i % TRUNK_C;
+        float acc = 0.0f;
+        for (int t = 0; t < NTYPE; ++t) acc += gelu1(pj[((size_t)b * NTYPE + t) * TRUNK_C + c]);
+        tp[i] = acc / NTYPE;
+        const float* loose = xpub + (size_t)(first + b) * PUBFEAT + OFF_LOOSE;
+        float g = 0.0f;
+        for (int k = 0; k < LOOSE; ++k) g += loose[k] * st.w_glob[(size_t)k * TRUNK_C + c];
+        gl[i] = g;
+    }
+    __syncthreads();
+    unsigned acc[TMT][TWN][2];
+#pragma unroll
+    for (int m = 0; m < TMT; ++m)
+#pragma unroll
+        for (int n = 0; n < TWN; ++n) acc[m][n][0] = acc[m][n][1] = 0u;
+    for (int kt = 0; kt < HEX_K / 16; ++kt) {
+        unsigned bf[TWN][2];
+#pragma unroll
+        for (int n = 0; n < TWN; ++n) frag_b16(st.w_hex, kt, warp * TWN + n, TNT, lane, bf[n]);
+#pragma unroll
+        for (int m = 0; m < TMT; ++m) {
+            unsigned af[4];
+            frag_a16(s.a, 16 * m, 16 * kt, lane, af);
+#pragma unroll
+            for (int n = 0; n < TWN; ++n) mma_h16(acc[m][n], af, bf[n]);
+        }
+    }
 #pragma unroll
     for (int m = 0; m < TMT; ++m)
 #pragma unroll
         for (int h = 0; h < 2; ++h) {
             int row = 16 * m + (lane >> 2) + 8 * h;
+            int b = row / N_HEXES, hex = row - b * N_HEXES;
+            const bool live = row < nboards * N_HEXES;
+            const float* xh = xpub + (size_t)(first + b) * PUBFEAT + hex * HEX_CH;
+            int occ = -1;
+            if (live)
+                for (int t = 0; t < NTYPE; ++t)
+                    if (xh[HEX_FACTS + t] != 0.0f) { occ = t; break; }
 #pragma unroll
             for (int n = 0; n < TWN; ++n) {
                 int col = 8 * (warp * TWN + n) + 2 * (lane & 3);
-                float2 v = row < rows
-                    ? *(const float2*)(x0 + ((size_t)first * N_HEXES + row) * TRUNK_C + col)
-                    : make_float2(0.0f, 0.0f);
-                x[m][n][2 * h] = v.x;
-                x[m][n][2 * h + 1] = v.y;
+                float2 f = word2(acc[m][n][h]);
+#pragma unroll
+                for (int j = 0; j < 2; ++j) {
+                    float v = 0.0f;
+                    if (live) {
+                        int cc = col + j;
+                        v = (j ? f.y : f.x) + st.b_hex[cc] + st.pos[(size_t)hex * TRUNK_C + cc]
+                          + gl[b * TRUNK_C + cc] + tp[b * TRUNK_C + cc];
+                        if (occ >= 0) v += pj[((size_t)b * NTYPE + occ) * TRUNK_C + cc];
+                    }
+                    x[m][n][2 * h + j] = v;
+                }
             }
         }
+    __syncthreads();
+}
+
+extern "C" __global__ void __launch_bounds__(32 * TWARPS, 1)
+k_trunk(const float* __restrict__ xpub, const Stem st, const unsigned* __restrict__ w,
+        const uint4* __restrict__ wg, const float* __restrict__ bias,
+        const float* __restrict__ ln, const int* __restrict__ near,
+        float* out, __half* spatial, __half* tokens, int boards) {
+    extern __shared__ __align__(16) unsigned char smem_raw[];
+    TrunkShared& s = *(TrunkShared*)smem_raw;
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int first = blockIdx.x * TB;
+    const int nboards = min(boards - first, TB);
+    const int rows = nboards * N_HEXES;
+    for (int i = tid; i < N_HEXES * 6; i += 32 * TWARPS) s.near[i] = near[i];
+
+    float x[TMT][TWN][4];
+    stem(s, st, xpub, tokens, first, nboards, x);
 
     for (int blk = 0; blk < BLOCKS; ++blk) {
         const unsigned* w1 = w + (size_t)blk * 3 * TPACK;
@@ -283,8 +376,8 @@ k_trunk(const float* __restrict__ x0, const unsigned* __restrict__ w,
         __syncthreads();
         pool_pass(s, l, l + TRUNK_C, warp, lane, tid, nullptr);
         __syncthreads();
-        {
-            const uint4* wgp = wg + (size_t)blk * (2 * TRUNK_C / 16) * TWARPS * 32;
+        if (warp < TRUNK_C / 16) {
+            const uint4* wgp = wg + (size_t)blk * (2 * TRUNK_C / 16) * (TRUNK_C / 16) * 32;
             unsigned d[6][2] = {};
             const int g = lane >> 2, t = lane & 3;
             const uint4* wl = wgp + (size_t)warp * (2 * TRUNK_C / 16) * 32 + lane;

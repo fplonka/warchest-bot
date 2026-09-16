@@ -11,7 +11,7 @@ struct CfrShared {
 };
 
 
-template <int LANES, typename Count, typename Body>
+template <int LANES, int U, typename Count, typename Body>
 __device__ void level_items(CfrShared& s, const Tree& t, unsigned begin, unsigned end,
                             Count count, Body body) {
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
@@ -50,14 +50,22 @@ __device__ void level_items(CfrShared& s, const Tree& t, unsigned begin, unsigne
         if (tid == CFR_THREADS - 1) s.prefix[n] = base + run;
         __syncthreads();
         const unsigned total = s.prefix[n];
-        for (unsigned base = 0; base < total; base += groups) {
-            unsigned idx = base + group;
-            unsigned lo = 0, hi = n;
-            while (lo + 1 < hi) {
-                unsigned mid = (lo + hi) >> 1;
-                if (s.prefix[mid] <= min(idx, total - 1)) lo = mid; else hi = mid;
+        for (unsigned base = 0; base < total; base += U * groups) {
+            unsigned node[U], c[U];
+            bool live[U];
+#pragma unroll
+            for (int u = 0; u < U; ++u) {
+                unsigned idx = base + u * groups + group;
+                live[u] = idx < total;
+                unsigned lo = 0, hi = n;
+                while (lo + 1 < hi) {
+                    unsigned mid = (lo + hi) >> 1;
+                    if (s.prefix[mid] <= min(idx, total - 1)) lo = mid; else hi = mid;
+                }
+                node[u] = t.level_node[chunk + lo];
+                c[u] = idx - s.prefix[lo];
             }
-            body(t.level_node[chunk + lo], idx - s.prefix[lo], sub, idx < total);
+            body(node, c, sub, live);
         }
         __syncthreads();
     }
@@ -70,33 +78,44 @@ __device__ __forceinline__ float sum8(float v) {
     return v;
 }
 
+#define CFR_U 4
+
 __device__ void reach_level(CfrShared& s, const Tree& t, int level, const float* strat) {
-    level_items<1>(s, t, t.level_start[level], t.level_start[level + 1],
+    level_items<1, CFR_U>(s, t, t.level_start[level], t.level_start[level + 1],
         [&](unsigned node) { return t.nc[2 * node] + t.nc[2 * node + 1]; },
-        [&](unsigned node, unsigned e, int, bool live) {
-            if (!live) return;
-            unsigned n0 = t.nc[2 * node];
-            int p = e < n0 ? 0 : 1;
-            unsigned c = e - (p ? n0 : 0);
-            unsigned par = t.parent[node];
-            unsigned dst = rbase(t, node, p) + c, src = rbase(t, par, p);
-            if ((int)t.player[par] != p) {
-                t.reach[dst] = t.reach[src + c];
-                return;
-            }
-            float v = 0.0f;
-            unsigned rb = t.rev_base[node];
-            if (rb != NO_ROW) {
-                unsigned a = t.rev_start[rb + c], b = t.rev_start[rb + c + 1];
-                for (unsigned k = a; k < b; ++k) v += t.reach[src + t.rev_src[k]] * strat[t.rev_cell[k]];
-            } else {
-                unsigned db = t.rvd_base[node];
-                if (db != NO_ROW) {
-                    unsigned a = t.rvd_start[db + c], b = t.rvd_start[db + c + 1];
-                    for (unsigned k = a; k < b; ++k) v += t.reach[src + t.rvd_src[k]] * t.rvd_p[k];
+        [&](const unsigned (&node)[CFR_U], const unsigned (&e)[CFR_U], int, const bool (&live)[CFR_U]) {
+            float v[CFR_U];
+            unsigned dst[CFR_U];
+#pragma unroll
+            for (int u = 0; u < CFR_U; ++u) {
+                v[u] = 0.0f;
+                dst[u] = 0u;
+                if (!live[u]) continue;
+                unsigned n0 = t.nc[2 * node[u]];
+                int p = e[u] < n0 ? 0 : 1;
+                unsigned c = e[u] - (p ? n0 : 0);
+                unsigned par = t.parent[node[u]];
+                unsigned src = rbase(t, par, p);
+                dst[u] = rbase(t, node[u], p) + c;
+                if ((int)t.player[par] != p) {
+                    v[u] = t.reach[src + c];
+                    continue;
+                }
+                unsigned rb = t.rev_base[node[u]];
+                if (rb != NO_ROW) {
+                    unsigned a = t.rev_start[rb + c], b = t.rev_start[rb + c + 1];
+                    for (unsigned k = a; k < b; ++k) v[u] += t.reach[src + t.rev_src[k]] * strat[t.rev_cell[k]];
+                } else {
+                    unsigned db = t.rvd_base[node[u]];
+                    if (db != NO_ROW) {
+                        unsigned a = t.rvd_start[db + c], b = t.rvd_start[db + c + 1];
+                        for (unsigned k = a; k < b; ++k) v[u] += t.reach[src + t.rvd_src[k]] * t.rvd_p[k];
+                    }
                 }
             }
-            t.reach[dst] = v;
+#pragma unroll
+            for (int u = 0; u < CFR_U; ++u)
+                if (live[u]) t.reach[dst[u]] = v[u];
         });
 }
 
@@ -108,26 +127,35 @@ __device__ void reach_pass(CfrShared& s, const Tree& t, int avg) {
 __device__ void leaf_values(const Tree& t) {
     const int sub = threadIdx.x % 8, group = threadIdx.x / 8, groups = CFR_THREADS / 8;
     const unsigned rows = 2 * (unsigned)t.nrows, total = rows + 2 * (unsigned)t.nterm;
-    for (unsigned base = 0; base < total; base += groups) {
-        unsigned item = base + group;
-        bool live = item < total;
-        unsigned k = live ? (item < rows ? item : item - rows) >> 1 : 0u;
-        unsigned traverser = item & 1, opp = 1 - traverser;
-        bool leaf = item < rows;
-        unsigned node = live ? (leaf ? t.leaf_node[k] : t.term[k]) : 0u;
-        unsigned n = live ? t.nc[2 * node + opp] : 0u, ra = live ? rbase(t, node, opp) : 0u;
-        float mass = 0.0f;
-        for (unsigned c = sub; c < n; c += 8) mass += t.reach[ra + c];
-        mass = sum8(mass);
-        if (!live) continue;
-        unsigned m = t.nc[2 * node + traverser], vo = t.voff[node];
-        float* vals = t.vals + traverser * t.nvals;
-        if (leaf) {
-            const float* opinion = t.opinion + traverser * t.nvals;
-            for (unsigned c = sub; c < m; c += 8) vals[vo + c] = opinion[vo + c] * mass;
-        } else {
-            float u = t.player[node] == traverser ? t.util[node] : -t.util[node];
-            for (unsigned c = sub; c < m; c += 8) vals[vo + c] = u * mass;
+    for (unsigned base = 0; base < total; base += CFR_U * groups) {
+        unsigned node[CFR_U];
+        float mass[CFR_U];
+#pragma unroll
+        for (int u = 0; u < CFR_U; ++u) {
+            unsigned item = base + u * groups + group;
+            bool live = item < total;
+            unsigned k = live ? (item < rows ? item : item - rows) >> 1 : 0u;
+            unsigned opp = 1 - (item & 1);
+            node[u] = live ? (item < rows ? t.leaf_node[k] : t.term[k]) : 0u;
+            unsigned n = live ? t.nc[2 * node[u] + opp] : 0u, ra = live ? rbase(t, node[u], opp) : 0u;
+            mass[u] = 0.0f;
+            for (unsigned c = sub; c < n; c += 8) mass[u] += t.reach[ra + c];
+        }
+#pragma unroll
+        for (int u = 0; u < CFR_U; ++u) {
+            unsigned item = base + u * groups + group;
+            mass[u] = sum8(mass[u]);
+            if (item >= total) continue;
+            unsigned traverser = item & 1;
+            unsigned m = t.nc[2 * node[u] + traverser], vo = t.voff[node[u]];
+            float* vals = t.vals + traverser * t.nvals;
+            if (item < rows) {
+                const float* opinion = t.opinion + traverser * t.nvals;
+                for (unsigned c = sub; c < m; c += 8) vals[vo + c] = opinion[vo + c] * mass[u];
+            } else {
+                float sign = t.player[node[u]] == traverser ? t.util[node[u]] : -t.util[node[u]];
+                for (unsigned c = sub; c < m; c += 8) vals[vo + c] = sign * mass[u];
+            }
         }
     }
 }
@@ -138,40 +166,50 @@ __device__ void backprop_level(CfrShared& s, const Tree& t, int level, int avg, 
     float da = cfr_factor(m, alpha), db = cfr_factor(m, beta);
     float dg = powf((m - 1.0f) / m, gamma);
     const unsigned begin = t.level_start[level], split = t.level_split[level];
-    level_items<1>(s, t, begin, split,
+    level_items<1, CFR_U>(s, t, begin, split,
         [&](unsigned node) {
             return t.kind[node] == KIND_CHANCE ? t.nc[2 * node] + t.nc[2 * node + 1]
                                                : t.nc[2 * node + 1 - t.player[node]];
         },
-        [&](unsigned node, unsigned c, int, bool live) {
-            if (!live) return;
-            unsigned me = t.player[node], vi = t.voff[node];
-            unsigned traverser = t.kind[node] == KIND_CHANCE
-                ? (c < t.nc[2 * node] ? 0u : 1u) : 1 - me;
-            if (traverser) c -= t.kind[node] == KIND_CHANCE ? t.nc[2 * node] : 0u;
-            float* vals = t.vals + traverser * t.nvals;
-            if (t.kind[node] == KIND_CHANCE) {
-                unsigned cv = t.voff[t.child[t.child_at[node]]];
-                if (me != traverser) {
-                    vals[vi + c] = vals[cv + c];
-                    return;
+        [&](const unsigned (&node)[CFR_U], const unsigned (&e)[CFR_U], int, const bool (&live)[CFR_U]) {
+            float v[CFR_U];
+            float* dst[CFR_U];
+#pragma unroll
+            for (int u = 0; u < CFR_U; ++u) {
+                v[u] = 0.0f;
+                dst[u] = nullptr;
+                if (!live[u]) continue;
+                unsigned c = e[u];
+                unsigned me = t.player[node[u]], vi = t.voff[node[u]];
+                bool chance = t.kind[node[u]] == KIND_CHANCE;
+                unsigned traverser = chance ? (c < t.nc[2 * node[u]] ? 0u : 1u) : 1 - me;
+                if (chance && traverser) c -= t.nc[2 * node[u]];
+                float* vals = t.vals + traverser * t.nvals;
+                dst[u] = vals + vi + c;
+                if (chance) {
+                    unsigned cv = t.voff[t.child[t.child_at[node[u]]]];
+                    if (me != traverser) {
+                        v[u] = vals[cv + c];
+                        continue;
+                    }
+                    unsigned base = t.draw_base[node[u]];
+                    unsigned a = t.draw_start[base + c], b = t.draw_start[base + c + 1];
+                    for (unsigned k = a; k < b; ++k) v[u] += t.draw_p[k] * vals[cv + t.draw_to[k]];
+                    continue;
                 }
-                unsigned base = t.draw_base[node];
-                unsigned a = t.draw_start[base + c], b = t.draw_start[base + c + 1];
-                float v = 0.0f;
-                for (unsigned k = a; k < b; ++k) v += t.draw_p[k] * vals[cv + t.draw_to[k]];
-                vals[vi + c] = v;
-                return;
+                unsigned a = t.child_at[node[u]], k = t.child_n[node[u]];
+                for (unsigned j = a; j < a + k; ++j) v[u] += vals[t.voff[t.child[j]] + c];
             }
-            unsigned a = t.child_at[node], k = t.child_n[node];
-            float v = 0.0f;
-            for (unsigned j = a; j < a + k; ++j) v += vals[t.voff[t.child[j]] + c];
-            vals[vi + c] = v;
+#pragma unroll
+            for (int u = 0; u < CFR_U; ++u)
+                if (live[u]) *dst[u] = v[u];
         });
     const float* strat = avg ? t.avg : t.cur;
-    level_items<8>(s, t, begin, split,
+    level_items<8, 1>(s, t, begin, split,
         [&](unsigned node) { return t.kind[node] == KIND_DECISION ? t.nc[2 * node + t.player[node]] : 0u; },
-        [&](unsigned node, unsigned c, int sub, bool live) {
+        [&](const unsigned (&nodes)[1], const unsigned (&cs)[1], int sub, const bool (&lives)[1]) {
+            const unsigned node = nodes[0], c = cs[0];
+            const bool live = lives[0];
             unsigned me = live ? t.player[node] : 0u;
             unsigned so = live ? t.soff[node] : 0u, lb = live ? t.legal_base[node] : 0u;
             unsigned a = live ? t.legal_off[lb + c] : 0u, b = live ? t.legal_off[lb + c + 1] : 0u;
@@ -439,10 +477,11 @@ k_finish(const Tree* trees, const int* touched) {
     const Tree& t = trees[blockIdx.x];
     int mask = touched[blockIdx.x];
     if (mask < 0) return;
-    level_items<1>(s, t, 0, t.level_start[t.nlevels],
+    level_items<1, 1>(s, t, 0, t.level_start[t.nlevels],
         [&](unsigned node) { return t.kind[node] == KIND_DECISION ? t.nc[2 * node + t.player[node]] : 0u; },
-        [&](unsigned node, unsigned c, int, bool live) {
-            if (!live) return;
+        [&](const unsigned (&nodes)[1], const unsigned (&cs)[1], int, const bool (&lives)[1]) {
+            if (!lives[0]) return;
+            const unsigned node = nodes[0], c = cs[0];
             unsigned me = t.player[node], so = t.soff[node], lb = t.legal_base[node];
             unsigned a = t.legal_off[lb + c], b = t.legal_off[lb + c + 1];
             if (!((mask >> me) & 1)) {

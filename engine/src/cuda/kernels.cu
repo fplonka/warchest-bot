@@ -79,11 +79,6 @@ extern "C" __global__ void k_expand_rows(const unsigned char* rows, const float*
     }
 }
 
-extern "C" __global__ void k_narrow(const float* x, __half* out, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) out[i] = __float2half(x[i]);
-}
-
 extern "C" __global__ void k_gelu(float* x, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) x[i] = gelu1(x[i]);
@@ -130,70 +125,6 @@ extern "C" __global__ void k_bias(float* out, const float* b, int rows, int widt
 }
 
 
-extern "C" __global__ void k_window(const float* src, float* out, int rows, int stride,
-                         int off, int width) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= rows * width) return;
-    out[i] = src[(size_t)(i / width) * stride + off + (i % width)];
-}
-
-extern "C" __global__ void k_tokens(const float* cards, const int* card_of_row,
-                         const float* seat, float* out, int rows, int ntype,
-                         int type, int nslot) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= rows * ntype * type) return;
-    int r = i / (ntype * type), t = (i / type) % ntype, j = i % type;
-    out[i] += cards[((size_t)card_of_row[r] * ntype + t) * type + j]
-            + seat[(size_t)(t / nslot) * type + j];
-}
-
-extern "C" __global__ void k_hex_facts(const float* xpub, float* facts, int* occupant,
-                            int rows, int stride, int nhex, int hex_ch,
-                            int hex_facts, int ntype) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= rows * nhex * hex_facts) return;
-    int cell = i / hex_facts, j = i % hex_facts;
-    const float* hex = xpub + (size_t)(cell / nhex) * stride + (size_t)(cell % nhex) * hex_ch;
-    facts[i] = hex[j];
-    if (j) return;
-    int who = -1;
-    for (int t = 0; t < ntype; ++t)
-        if (hex[hex_facts + t] != 0.0f) { who = t; break; }
-    occupant[cell] = who;
-}
-
-extern "C" __global__ void k_type_pool(const float* projected, float* out, int rows,
-                            int ntype, int c) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= rows * c) return;
-    int r = i / c, j = i % c;
-    float acc = 0.0f;
-    for (int t = 0; t < ntype; ++t)
-        acc += gelu1(projected[((size_t)r * ntype + t) * c + j]);
-    out[i] = acc / ntype;
-}
-
-extern "C" __global__ void k_stem(const float* facts, const float* __restrict__ w, float* out,
-                       const float* projected, const int* occupant,
-                       const float* bias, const float* pos, const float* glob,
-                       const float* type_pool, int cells, int nhex, int ntype,
-                       int c) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= cells * c) return;
-    int cell = i / c, j = i % c;
-    int r = cell / nhex, h = cell % nhex;
-    float acc = bias[j] + pos[(size_t)h * c + j] + glob[(size_t)r * c + j]
-              + type_pool[(size_t)r * c + j];
-    const float* f = facts + (size_t)cell * HEX_FACTS;
-    for (int k = 0; k < HEX_FACTS; ++k) acc += f[k] * w[(size_t)k * c + j];
-    int t = occupant[cell];
-    if (t >= 0) acc += projected[((size_t)r * ntype + t) * c + j];
-    out[i] = acc;
-}
-
-
-#define TRUNK_Q (TRUNK_C / 32)
-
 __device__ __forceinline__ void mma_tile(float (&d)[4], const unsigned (&a)[4],
                                          const unsigned (&b)[2]) {
     asm("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
@@ -210,133 +141,6 @@ __device__ __forceinline__ void frag_b(const unsigned* w, int k, int slot, int l
 }
 
 
-__device__ __forceinline__ void row_stats(const float* v, float* mean, float* inv) {
-    float s = 0.0f;
-    for (int q = 0; q < TRUNK_Q; ++q) s += v[q];
-    s = warp_sum(s);
-    float m = s / TRUNK_C, t = 0.0f;
-    for (int q = 0; q < TRUNK_Q; ++q) {
-        float d = v[q] - m;
-        t += d * d;
-    }
-    t = warp_sum(t);
-    *mean = m;
-    *inv = rsqrtf(t / TRUNK_C + 1e-5f);
-}
-
-template <typename T>
-__device__ __forceinline__ void board_pool(const float* ps, const float* pm, T* out) {
-    extern __shared__ float part[];
-    const int lane = threadIdx.x, w = threadIdx.y, nw = blockDim.y;
-    for (int q = 0; q < TRUNK_Q; ++q) {
-        part[(w * 2 * TRUNK_Q + q) * 32 + lane] = ps[q];
-        part[(w * 2 * TRUNK_Q + TRUNK_Q + q) * 32 + lane] = pm[q];
-    }
-    __syncthreads();
-    if (w) return;
-    for (int q = 0; q < TRUNK_Q; ++q) {
-        float s = 0.0f, m = neg_inf();
-        for (int k = 0; k < nw; ++k) {
-            s += part[(k * 2 * TRUNK_Q + q) * 32 + lane];
-            m = fmaxf(m, part[(k * 2 * TRUNK_Q + TRUNK_Q + q) * 32 + lane]);
-        }
-        out[lane + 32 * q] = (T)(s / N_HEXES);
-        out[TRUNK_C + lane + 32 * q] = (T)m;
-    }
-}
-
-extern "C" __global__ void k_trunk_in(const float* __restrict__ x, __half* a, __half* pooled,
-                                      const float* __restrict__ carry,
-                                      const float* __restrict__ g, const float* __restrict__ b) {
-    const int lane = threadIdx.x, w = threadIdx.y, row = blockIdx.x;
-    float ps[TRUNK_Q], pm[TRUNK_Q];
-    for (int q = 0; q < TRUNK_Q; ++q) {
-        ps[q] = 0.0f;
-        pm[q] = neg_inf();
-    }
-    for (int h = w; h < N_HEXES; h += blockDim.y) {
-        size_t o = ((size_t)row * N_HEXES + h) * TRUNK_C;
-        float v[TRUNK_Q];
-        for (int q = 0; q < TRUNK_Q; ++q)
-            v[q] = x[o + lane + 32 * q] + carry[lane + 32 * q];
-        float mean, inv;
-        row_stats(v, &mean, &inv);
-        for (int q = 0; q < TRUNK_Q; ++q) {
-            int j = lane + 32 * q;
-            float y = gelu1((v[q] - mean) * inv * g[j] + b[j]);
-            a[o + j] = __float2half(y);
-            ps[q] += y;
-            pm[q] = fmaxf(pm[q], y);
-        }
-    }
-    board_pool(ps, pm, pooled + (size_t)row * 2 * TRUNK_C);
-}
-
-extern "C" __global__ void k_trunk_mix(const __half* __restrict__ mix,
-                                       const __half* __restrict__ nbmix,
-                                       const __half* __restrict__ gb,
-                                       const int* __restrict__ near, const float* __restrict__ bias,
-                                       const float* __restrict__ g, const float* __restrict__ b,
-                                       __half* a, int cells) {
-    int cell = blockIdx.x * blockDim.y + threadIdx.y;
-    if (cell >= cells) return;
-    const int lane = threadIdx.x;
-    int row = cell / N_HEXES, h = cell - row * N_HEXES;
-    const __half* here = mix + (size_t)cell * TRUNK_C;
-    const __half* nb = nbmix + (size_t)row * N_HEXES * TRUNK_C;
-    float v[TRUNK_Q];
-    for (int q = 0; q < TRUNK_Q; ++q) {
-        int j = lane + 32 * q;
-        v[q] = __half2float(here[j]) + bias[j]
-             + __half2float(gb[(size_t)row * TRUNK_C + j]);
-    }
-    for (int k = 0; k < 6; ++k) {
-        int n = near[h * 6 + k];
-        if (n >= 0)
-            for (int q = 0; q < TRUNK_Q; ++q)
-                v[q] += __half2float(nb[(size_t)n * TRUNK_C + lane + 32 * q]);
-    }
-    float mean, inv;
-    row_stats(v, &mean, &inv);
-    for (int q = 0; q < TRUNK_Q; ++q) {
-        int j = lane + 32 * q;
-        a[(size_t)cell * TRUNK_C + j] =
-            __float2half(gelu1((v[q] - mean) * inv * g[j] + b[j]));
-    }
-}
-
-extern "C" __global__ void k_trunk_out(const float* __restrict__ x, __half* spatial,
-                                       const float* __restrict__ carry,
-                                       const float* __restrict__ g, const float* __restrict__ b,
-                                       const float* __restrict__ xpub, float* out) {
-    const int lane = threadIdx.x, w = threadIdx.y, row = blockIdx.x;
-    float ps[TRUNK_Q], pm[TRUNK_Q];
-    for (int q = 0; q < TRUNK_Q; ++q) {
-        ps[q] = 0.0f;
-        pm[q] = neg_inf();
-    }
-    for (int h = w; h < N_HEXES; h += blockDim.y) {
-        size_t o = ((size_t)row * N_HEXES + h) * TRUNK_C;
-        float v[TRUNK_Q];
-        for (int q = 0; q < TRUNK_Q; ++q)
-            v[q] = x[o + lane + 32 * q] + carry[lane + 32 * q];
-        float mean, inv;
-        row_stats(v, &mean, &inv);
-        for (int q = 0; q < TRUNK_Q; ++q) {
-            int j = lane + 32 * q;
-            float y = gelu1((v[q] - mean) * inv * g[j] + b[j]);
-            spatial[o + j] = __float2half(y);
-            ps[q] += y;
-            pm[q] = fmaxf(pm[q], y);
-        }
-    }
-    const size_t width = 2 * TRUNK_C + LOOSE;
-    board_pool(ps, pm, out + row * width);
-    if (w) return;
-    for (int k = lane; k < LOOSE; k += 32)
-        out[row * width + 2 * TRUNK_C + k] = xpub[(size_t)row * PUBFEAT + OFF_LOOSE + k];
-}
-
 extern "C" __global__ void k_public_cache(const Tree* trees, const unsigned int* part,
                                const unsigned int* board, __half* out, int rows,
                                int tokens, int c) {
@@ -351,9 +155,20 @@ extern "C" __global__ void k_public_cache(const Tree* trees, const unsigned int*
 
 #define ATTN_TOK (N_HEXES + NTYPE)
 #define ATTN_W (ATTN / HEADS)
-#define ATTN_PITCH (ATTN_W + 1)
-static_assert(ATTN_W == 32, "k_attention gives one head to one warp lane by lane");
-static_assert(ATTN_W % 4 == 0, "k_attention unrolls the score by four");
+#define ATTN_KV (2 * ATTN)
+#define ATTN_NT ((ATTN_TOK + 7) / 8)
+#define ATTN_KT ((ATTN_TOK + 15) / 16)
+static_assert(ATTN_W == 32, "k_attention gives one head two mma k-steps and four column tiles");
+
+__device__ __forceinline__ unsigned halves(__half a, __half b) {
+    __half2 h = __halves2half2(a, b);
+    return *(unsigned*)&h;
+}
+
+__device__ __forceinline__ unsigned halves(float a, float b) {
+    __half2 h = __floats2half2_rn(a, b);
+    return *(unsigned*)&h;
+}
 
 extern "C" __global__ void k_attention(const Tree* trees, const __half* kv,
                             const float* __restrict__ kv_b,
@@ -361,63 +176,95 @@ extern "C" __global__ void k_attention(const Tree* trees, const __half* kv,
                             const unsigned int* board,
                             const unsigned int* config, __half* out,
                             const unsigned int* starts) {
-    __shared__ float keys[ATTN_TOK * ATTN_PITCH];
-    __shared__ float values[ATTN_TOK * ATTN_PITCH];
-    __shared__ float query[ATTN_WARPS * ATTN_W];
-    __shared__ float score[ATTN_WARPS * ATTN_TOK];
-    const int head = blockIdx.y, lane = threadIdx.x, warp = threadIdx.y;
+    const int head = threadIdx.y, lane = threadIdx.x, g = lane >> 2, t = lane & 3;
     const unsigned int begin = starts[blockIdx.x], end = starts[blockIdx.x + 1];
-    const __half* board_kv =
-        kv + (size_t)board[begin] * ATTN_TOK * 2 * ATTN + head * ATTN_W;
-    kv_b += head * ATTN_W + lane;
-    for (int t = warp; t < ATTN_TOK; t += ATTN_WARPS) {
-        keys[t * ATTN_PITCH + lane] =
-            __half2float(board_kv[(size_t)t * 2 * ATTN + lane]) + *kv_b;
-        values[t * ATTN_PITCH + lane] =
-            __half2float(board_kv[(size_t)t * 2 * ATTN + ATTN + lane]) + kv_b[ATTN];
-    }
-    __syncthreads();
-    float* mine = query + warp * ATTN_W;
-    float* sc = score + warp * ATTN_TOK;
-    for (unsigned int pair = begin + warp; pair < end; pair += ATTN_WARPS) {
-        const Tree& tree = trees[part[pair]];
-        mine[lane] = tree.attn_query[(size_t)config[pair] * ATTN + head * ATTN_W + lane];
-        __syncwarp();
-        float top = neg_inf();
-        for (int t = lane; t < ATTN_TOK; t += 32) {
-            const float* kt = keys + t * ATTN_PITCH;
-            float v0 = 0.0f, v1 = 0.0f, v2 = 0.0f, v3 = 0.0f;
-            for (int e = 0; e < ATTN_W; e += 4) {
-                v0 += mine[e] * kt[e];
-                v1 += mine[e + 1] * kt[e + 1];
-                v2 += mine[e + 2] * kt[e + 2];
-                v3 += mine[e + 3] * kt[e + 3];
+    const __half* bk = kv + (size_t)board[begin] * ATTN_TOK * ATTN_KV + head * ATTN_W;
+    const __half* bv = bk + ATTN;
+    const float scale = rsqrtf((float)ATTN_W);
+    for (unsigned int p0 = begin; p0 < end; p0 += 16) {
+        const unsigned int pa = min(p0 + g, end - 1), pb = min(p0 + g + 8, end - 1);
+        const float* qa = trees[part[pa]].attn_query + (size_t)config[pa] * ATTN + head * ATTN_W;
+        const float* qb = trees[part[pb]].attn_query + (size_t)config[pb] * ATTN + head * ATTN_W;
+        float d[ATTN_NT][4] = {};
+#pragma unroll
+        for (int kk = 0; kk < ATTN_W / 16; ++kk) {
+            const int c = 16 * kk + 2 * t;
+            unsigned int af[4] = {
+                halves(qa[c] * scale, qa[c + 1] * scale), halves(qb[c] * scale, qb[c + 1] * scale),
+                halves(qa[c + 8] * scale, qa[c + 9] * scale), halves(qb[c + 8] * scale, qb[c + 9] * scale),
+            };
+#pragma unroll
+            for (int nt = 0; nt < ATTN_NT; ++nt) {
+                const int tok = 8 * nt + g;
+                unsigned int bf[2] = {0u, 0u};
+                if (tok < ATTN_TOK) {
+                    const __half* k = bk + (size_t)tok * ATTN_KV + c;
+                    bf[0] = *(const unsigned*)k;
+                    bf[1] = *(const unsigned*)(k + 8);
+                }
+                mma_tile(d[nt], af, bf);
             }
-            float v = ((v0 + v1) + (v2 + v3)) * rsqrtf((float)ATTN_W);
-            sc[t] = v;
-            top = fmaxf(top, v);
         }
-        for (int s = 16; s > 0; s >>= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffff, top, s));
-        float total = 0.0f;
-        for (int t = lane; t < ATTN_TOK; t += 32) {
-            float v = __expf(sc[t] - top);
-            sc[t] = v;
-            total += v;
+        float top[2] = {neg_inf(), neg_inf()};
+#pragma unroll
+        for (int nt = 0; nt < ATTN_NT; ++nt)
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                if (8 * nt + 2 * t + (i & 1) >= ATTN_TOK) d[nt][i] = neg_inf();
+                top[i >> 1] = fmaxf(top[i >> 1], d[nt][i]);
+            }
+        float total[2] = {0.0f, 0.0f};
+#pragma unroll
+        for (int r = 0; r < 2; ++r) {
+            top[r] = fmaxf(top[r], __shfl_xor_sync(0xffffffff, top[r], 1));
+            top[r] = fmaxf(top[r], __shfl_xor_sync(0xffffffff, top[r], 2));
         }
-        total = warp_sum(total);
-        __syncwarp();
-        float m0 = 0.0f, m1 = 0.0f, m2 = 0.0f, m3 = 0.0f;
-        int t = 0;
-        for (; t + 3 < ATTN_TOK; t += 4) {
-            m0 += sc[t] * values[t * ATTN_PITCH + lane];
-            m1 += sc[t + 1] * values[(t + 1) * ATTN_PITCH + lane];
-            m2 += sc[t + 2] * values[(t + 2) * ATTN_PITCH + lane];
-            m3 += sc[t + 3] * values[(t + 3) * ATTN_PITCH + lane];
+#pragma unroll
+        for (int nt = 0; nt < ATTN_NT; ++nt)
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                d[nt][i] = __expf(d[nt][i] - top[i >> 1]);
+                total[i >> 1] += d[nt][i];
+            }
+#pragma unroll
+        for (int r = 0; r < 2; ++r) {
+            total[r] += __shfl_xor_sync(0xffffffff, total[r], 1);
+            total[r] += __shfl_xor_sync(0xffffffff, total[r], 2);
         }
-        float mixed = (m0 + m1) + (m2 + m3);
-        for (; t < ATTN_TOK; ++t) mixed += sc[t] * values[t * ATTN_PITCH + lane];
-        out[(size_t)pair * ATTN + head * ATTN_W + lane] = __float2half(mixed / total);
-        __syncwarp();
+        float o[ATTN_W / 8][4] = {};
+#pragma unroll
+        for (int kk = 0; kk < ATTN_KT; ++kk) {
+            unsigned int af[4] = {
+                halves(d[2 * kk][0], d[2 * kk][1]), halves(d[2 * kk][2], d[2 * kk][3]),
+                halves(d[2 * kk + 1][0], d[2 * kk + 1][1]), halves(d[2 * kk + 1][2], d[2 * kk + 1][3]),
+            };
+#pragma unroll
+            for (int nt = 0; nt < ATTN_W / 8; ++nt) {
+                const int dim = 8 * nt + g;
+                const int tok = 16 * kk + 2 * t;
+                unsigned int bf[2] = {0u, 0u};
+                if (tok + 1 < ATTN_TOK)
+                    bf[0] = halves(bv[(size_t)tok * ATTN_KV + dim], bv[(size_t)(tok + 1) * ATTN_KV + dim]);
+                else if (tok < ATTN_TOK)
+                    bf[0] = halves(bv[(size_t)tok * ATTN_KV + dim], __float2half(0.0f));
+                if (tok + 9 < ATTN_TOK)
+                    bf[1] = halves(bv[(size_t)(tok + 8) * ATTN_KV + dim], bv[(size_t)(tok + 9) * ATTN_KV + dim]);
+                else if (tok + 8 < ATTN_TOK)
+                    bf[1] = halves(bv[(size_t)(tok + 8) * ATTN_KV + dim], __float2half(0.0f));
+                mma_tile(o[nt], af, bf);
+            }
+        }
+#pragma unroll
+        for (int nt = 0; nt < ATTN_W / 8; ++nt) {
+            const int dim = head * ATTN_W + 8 * nt + 2 * t;
+            const float b0 = kv_b[ATTN + dim], b1 = kv_b[ATTN + dim + 1];
+            if (p0 + g < end)
+                *(unsigned*)(out + (size_t)(p0 + g) * ATTN + dim) =
+                    halves(o[nt][0] / total[0] + b0, o[nt][1] / total[0] + b1);
+            if (p0 + g + 8 < end)
+                *(unsigned*)(out + (size_t)(p0 + g + 8) * ATTN + dim) =
+                    halves(o[nt][2] / total[1] + b0, o[nt][3] / total[1] + b1);
+        }
     }
 }
 

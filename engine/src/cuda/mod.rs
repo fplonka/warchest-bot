@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N;
-use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
+use cudarc::cublas::CudaBlas;
 use cudarc::driver::{
     CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DevicePtr, DevicePtrMut,
     DriverError, LaunchArgs, LaunchConfig, PushKernelArg,
@@ -35,6 +35,21 @@ use slot::{
 
 type Res<T> = Result<T, String>;
 
+trait Elem: cudarc::driver::DeviceRepr {
+    const KIND: cudarc::cublas::sys::cudaDataType_t;
+    const HALF: bool;
+}
+
+impl Elem for f32 {
+    const KIND: cudarc::cublas::sys::cudaDataType_t = cudarc::cublas::sys::cudaDataType_t::CUDA_R_32F;
+    const HALF: bool = false;
+}
+
+impl Elem for f16 {
+    const KIND: cudarc::cublas::sys::cudaDataType_t = cudarc::cublas::sys::cudaDataType_t::CUDA_R_16F;
+    const HALF: bool = true;
+}
+
 const KERNELS: &str = concat!(include_str!("kernels.cu"), include_str!("trunk.cu"), include_str!("cfr.cu"));
 
 macro_rules! kernels {
@@ -55,20 +70,14 @@ macro_rules! kernels {
 
 kernels! {
     expand_rows,
-    narrow,
     gelu,
     norm_ip,
     bias,
-    window,
     scatter,
     finish,
-    tokens,
     act_feats,
     act_add,
     prior,
-    hex_facts,
-    type_pool,
-    stem,
     trunk,
     public_cache,
     attention,
@@ -176,6 +185,22 @@ fn halved(w: &[f32]) -> Vec<f16> {
     w.iter().map(|&v| f16::from_f32(v)).collect()
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Stem {
+    cards: u64,
+    card_of_row: u64,
+    w_pile: u64,
+    seat: u64,
+    w_tok: u64,
+    w_hex: u64,
+    b_hex: u64,
+    pos: u64,
+    w_glob: u64,
+}
+
+unsafe impl cudarc::driver::DeviceRepr for Stem {}
+
 struct Trunk {
     w: Vec<u32>,
     g: Vec<u32>,
@@ -184,12 +209,21 @@ struct Trunk {
 }
 
 const TRUNK_BOARDS: usize = 3;
-const TRUNK_THREADS: u32 = 384;
+const TRUNK_WARPS: usize = 12;
+const TRUNK_THREADS: u32 = 32 * TRUNK_WARPS as u32;
 const TRUNK_SHARED: u32 = {
     let rows = (TRUNK_BOARDS * N_HEXES).next_multiple_of(16);
     (2 * rows * (C + 8) * 2 + TRUNK_BOARDS * (2 * C + 8) * 2 + TRUNK_BOARDS * C * 4 + N_HEXES * 6 * 4)
         as u32
 };
+
+const HEX_K: usize = HEX_FACTS.next_multiple_of(16);
+
+fn hex_pack(l: &NetLayout, flat: &crate::net::Flat) -> Vec<u32> {
+    let mut w = vec![0.0f32; HEX_K * C];
+    w[..HEX_FACTS * C].copy_from_slice(&flat.w[l.hex_stem.w..l.hex_stem.w + HEX_FACTS * C]);
+    pack_mma(&w, 0, HEX_K, C)
+}
 
 fn trunk_pack(l: &NetLayout, flat: &crate::net::Flat) -> Trunk {
     let mut t = Trunk { w: Vec::new(), g: Vec::new(), b: Vec::new(), ln: Vec::new() };
@@ -355,7 +389,6 @@ impl<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Default +
 }
 
 const VALUE_WARPS: usize = 8;
-const ATTN_WARPS: usize = 8;
 
 #[derive(Default)]
 struct Pack {
@@ -414,6 +447,7 @@ struct Card {
     trunk_g: CudaSlice<u32>,
     trunk_b: CudaSlice<f32>,
     trunk_ln: CudaSlice<f32>,
+    trunk_hex: CudaSlice<u32>,
     b: CudaSlice<f32>,
     ln: CudaSlice<f32>,
     near: CudaSlice<i32>,
@@ -568,6 +602,7 @@ impl Device {
             card.stream.memcpy_htod(&t.g, &mut card.trunk_g).map_err(err)?;
             card.stream.memcpy_htod(&t.b, &mut card.trunk_b).map_err(err)?;
             card.stream.memcpy_htod(&t.ln, &mut card.trunk_ln).map_err(err)?;
+            card.stream.memcpy_htod(&hex_pack(&card.layout, &flat), &mut card.trunk_hex).map_err(err)?;
             let value_w = pack_mma(&flat.w, card.layout.value_out.w, ATTN, BINS);
             card.stream.memcpy_htod(&value_w, &mut card.value_w).map_err(err)?;
             card.stream.memcpy_htod(&flat.b, &mut card.b).map_err(err)?;
@@ -705,11 +740,13 @@ fn compile_options(major: i32, minor: i32) -> CompileOptions {
         BINS,
         HEADS,
         VALUE_WARPS,
-        ATTN_WARPS,
     ];
     options.extend([
         format!("--gpu-architecture=compute_{major}{minor}"),
         format!("-DTRUNK_C={C}"),
+        format!("-DTOKEN_W={TYPE}"),
+        format!("-DTWARPS={TRUNK_WARPS}"),
+        format!("-DHEX_K={HEX_K}"),
         format!("-DMAX_COINS={MAX_COINS:.1}f"),
     ]);
     CompileOptions {
@@ -854,6 +891,7 @@ impl Card {
             trunk_g: stream.memcpy_stod(&t.g).map_err(err)?,
             trunk_b: stream.memcpy_stod(&t.b).map_err(err)?,
             trunk_ln: stream.memcpy_stod(&t.ln).map_err(err)?,
+            trunk_hex: stream.memcpy_stod(&hex_pack(&layout, &flat)).map_err(err)?,
             w: stream.memcpy_stod(&flat.w).map_err(err)?,
             b: stream.memcpy_stod(&flat.b).map_err(err)?,
             ln: stream.memcpy_stod(&flat.ln).map_err(err)?,
@@ -953,81 +991,49 @@ impl Card {
         Ok(out)
     }
 
-    fn lin<A: DevicePtr<f32>, O: DevicePtrMut<f32>>(
+    fn gemm<I: Elem, O: Elem>(
         &self,
         s: Span,
-        inp: &A,
+        inp: &impl DevicePtr<I>,
         rows: usize,
         beta: f32,
-        out: &mut O,
+        out: &mut impl DevicePtrMut<O>,
+        compute: cudarc::cublas::sys::cublasComputeType_t,
     ) -> Res<()> {
         if rows == 0 {
             return Ok(());
         }
-        let cfg = GemmConfig {
-            transa: CUBLAS_OP_N,
-            transb: CUBLAS_OP_N,
-            m: s.o as i32,
-            n: rows as i32,
-            k: s.i as i32,
-            alpha: 1.0,
-            lda: s.o as i32,
-            ldb: s.i as i32,
-            beta,
-            ldc: s.o as i32,
+        let (m, n, k) = (s.o as i32, rows as i32, s.i as i32);
+        let one = 1.0f32;
+        let (a, wt) = if I::HALF {
+            (self.wh.slice(s.w..s.w + s.i * s.o).device_ptr(&self.stream).0, f16::KIND)
+        } else {
+            (self.w.slice(s.w..s.w + s.i * s.o).device_ptr(&self.stream).0, f32::KIND)
         };
-        let w = self.w.slice(s.w..s.w + s.i * s.o);
-        unsafe { self.blas.gemm(cfg, &w, inp, out) }.map_err(err)
-    }
-
-    fn hlin<B: DevicePtr<f16>, O: DevicePtrMut<f16>>(
-        &self,
-        s: Span,
-        inp: &B,
-        rows: usize,
-        beta: f32,
-        out: &mut O,
-    ) -> Res<()> {
-        if rows == 0 {
-            return Ok(());
-        }
-        let (m, n, k) = (s.o, rows, s.i);
-        let w = &self.wh.slice(s.w..s.w + s.i * s.o);
-        let cfg = GemmConfig {
-            transa: CUBLAS_OP_N,
-            transb: CUBLAS_OP_N,
-            m: m as i32,
-            n: n as i32,
-            k: k as i32,
-            alpha: f16::ONE,
-            lda: m as i32,
-            ldb: k as i32,
-            beta: f16::from_f32(beta),
-            ldc: m as i32,
-        };
-        unsafe { self.blas.gemm(cfg, w, inp, out) }.map_err(err)
-    }
-
-    fn hlin32<B: DevicePtr<f16>>(&self, s: Span, inp: &B, rows: usize, out: &mut CudaSlice<f32>) -> Res<()> {
-        if rows == 0 {
-            return Ok(());
-        }
-        let (m, n, k) = (s.o, rows, s.i);
-        let (one, zero) = (1.0f32, 0.0f32);
-        let w = self.wh.slice(s.w..s.w + s.i * s.o);
-        let (a, _ka) = w.device_ptr(&self.stream);
         let (b, _kb) = inp.device_ptr(&self.stream);
         let (c, _kc) = out.device_ptr_mut(&self.stream);
-        use cudarc::cublas::sys::{cudaDataType_t as T, cublasComputeType_t as CT, cublasGemmAlgo_t as A};
         unsafe {
             cudarc::cublas::result::gemm_ex(
-                *self.blas.handle(), CUBLAS_OP_N, CUBLAS_OP_N, m as i32, n as i32, k as i32,
-                (&one) as *const f32 as *const _, a as *const _, T::CUDA_R_16F, m as i32,
-                b as *const _, T::CUDA_R_16F, k as i32, (&zero) as *const f32 as *const _,
-                c as *mut _, T::CUDA_R_32F, m as i32, CT::CUBLAS_COMPUTE_32F, A::CUBLAS_GEMM_DEFAULT,
+                *self.blas.handle(), CUBLAS_OP_N, CUBLAS_OP_N, m, n, k,
+                (&one) as *const f32 as *const _, a as *const _, wt, m,
+                b as *const _, I::KIND, k, (&beta) as *const f32 as *const _,
+                c as *mut _, O::KIND, m, compute,
+                cudarc::cublas::sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT,
             )
         }
         .map_err(err)
+    }
+
+    fn lin(&self, s: Span, inp: &impl DevicePtr<f32>, rows: usize, beta: f32, out: &mut impl DevicePtrMut<f32>) -> Res<()> {
+        self.gemm(s, inp, rows, beta, out, cudarc::cublas::sys::cublasComputeType_t::CUBLAS_COMPUTE_32F)
+    }
+
+    fn hlin(&self, s: Span, inp: &impl DevicePtr<f16>, rows: usize, beta: f32, out: &mut impl DevicePtrMut<f16>) -> Res<()> {
+        self.gemm(s, inp, rows, beta, out, cudarc::cublas::sys::cublasComputeType_t::CUBLAS_COMPUTE_32F)
+    }
+
+    fn hlin32(&self, s: Span, inp: &impl DevicePtr<f16>, rows: usize, out: &mut impl DevicePtrMut<f32>) -> Res<()> {
+        self.gemm(s, inp, rows, 0.0, out, cudarc::cublas::sys::cublasComputeType_t::CUBLAS_COMPUTE_32F)
     }
 
     fn bias(&self, s: Span, rows: usize, out: &mut CudaSlice<f32>) -> Res<()> {
@@ -1164,63 +1170,39 @@ impl Card {
         let xpub = stage.xpub.buf.as_ref().expect("carved");
         let cards = stage.cards.dev.buf.as_ref().expect("staged");
         let card_of_row = stage.card_of_row.dev.buf.as_ref().expect("staged");
-        let cells = n * N_HEXES;
-        let stride = PUBFEAT as i32;
-        let (rows_i, cells_i) = (n as i32, cells as i32);
-        let (nhex, ntype, chan, nslot) = (N_HEXES as i32, NTYPE as i32, C as i32, NSLOT as i32);
         let l = &self.layout;
         let mut sc = self.scratch.lock();
-        sc.piles.room(n * NTYPE * PILE_COUNTS)?;
-        sc.tokens.room(n * NTYPE * TYPE)?;
-        sc.projected.room(n * NTYPE * C)?;
-        sc.type_pool.room(n * C)?;
-        sc.loose.room(n * LOOSE)?;
-        sc.glob.room(n * C)?;
-        sc.facts.room(cells * HEX_FACTS)?;
-        sc.occupant.room(cells)?;
-        sc.x.room(cells * C)?;
-        sc.spatial.room(cells * C)?;
+        sc.spatial.room(n * N_HEXES * C)?;
         sc.token_half.room(n * NTYPE * C)?;
         sc.input.room(n * (2 * C + LOOSE))?;
-        let Scratch {
-            piles, tokens, projected, type_pool, loose, glob, facts, occupant, x, token_half,
-            input, spatial, ..
-        } = &mut *sc;
-        carved!(piles, tokens, projected, type_pool, loose, glob, facts, occupant, x, token_half,
-                input, spatial);
-
-        let (off, width) = (OFF_PILES as i32, (NTYPE * PILE_COUNTS) as i32);
-        launch!(self, window, n * NTYPE * PILE_COUNTS, xpub, &mut *piles, &rows_i, &stride, &off, &width)?;
-        self.lin(l.pile, piles, n * NTYPE, 0.0, &mut *tokens)?;
-        let seat = self.w.slice(l.seat..l.seat + 2 * TYPE);
-        let type_i = TYPE as i32;
-        launch!(self, tokens, n * NTYPE * TYPE, cards, card_of_row, &seat, &mut *tokens, &rows_i, &ntype, &type_i, &nslot)?;
-        self.run(l.tok_stem, tokens, n * NTYPE, &mut *projected)?;
-        launch!(self, type_pool, n * C, &mut *projected, &mut *type_pool, &rows_i, &ntype, &chan)?;
-        let (off, width) = (OFF_LOOSE as i32, LOOSE as i32);
-        launch!(self, window, n * LOOSE, xpub, &mut *loose, &rows_i, &stride, &off, &width)?;
-        self.run(l.glob_stem, loose, n, &mut *glob)?;
-        let (hex_ch, hex_facts) = (HEX_CH as i32, HEX_FACTS as i32);
-        launch!(self, hex_facts, cells * HEX_FACTS, xpub, &mut *facts, &mut *occupant, &rows_i, &stride, &nhex, &hex_ch, &hex_facts, &ntype)?;
-        let hex_w = self.w.slice(l.hex_stem.w..l.hex_stem.w + HEX_FACTS * C);
-        let hex_b = self.b.slice(l.hex_stem.b..l.hex_stem.b + C);
-        let pos = self.w.slice(l.pos..l.pos + N_HEXES * C);
-        launch!(self, stem, cells * C, &*facts, &hex_w, &mut *x, &*projected, &*occupant, &hex_b, &pos, &*glob, &*type_pool, &cells_i, &nhex, &ntype, &chan)?;
+        let Scratch { token_half, input, spatial, .. } = &mut *sc;
+        carved!(token_half, input, spatial);
+        let w = |at: usize, len: usize| self.w.slice(at..at + len).device_ptr(&self.stream).0;
+        let stem = Stem {
+            cards: cards.device_ptr(&self.stream).0,
+            card_of_row: card_of_row.device_ptr(&self.stream).0,
+            w_pile: w(l.pile.w, PILE_COUNTS * TYPE),
+            seat: w(l.seat, 2 * TYPE),
+            w_tok: w(l.tok_stem.w, TYPE * C),
+            w_hex: self.trunk_hex.device_ptr(&self.stream).0,
+            b_hex: self.b.slice(l.hex_stem.b..l.hex_stem.b + C).device_ptr(&self.stream).0,
+            pos: w(l.pos, N_HEXES * C),
+            w_glob: w(l.glob_stem.w, LOOSE * C),
+        };
+        let rows_i = n as i32;
         unsafe {
             self.stream
                 .launch_builder(&self.k.trunk)
-                .arg(&*x).arg(&self.trunk_w).arg(&self.trunk_g).arg(&self.trunk_b)
-                .arg(&self.trunk_ln).arg(&self.near).arg(xpub).arg(&mut *input)
-                .arg(&mut *spatial).arg(&rows_i)
+                .arg(xpub).arg(&stem).arg(&self.trunk_w).arg(&self.trunk_g).arg(&self.trunk_b)
+                .arg(&self.trunk_ln).arg(&self.near).arg(&mut *input)
+                .arg(&mut *spatial).arg(&mut *token_half).arg(&rows_i)
                 .launch_unit(LaunchConfig {
                     grid_dim: (n.div_ceil(TRUNK_BOARDS) as u32, 1, 1),
                     block_dim: (TRUNK_THREADS, 1, 1),
                     shared_mem_bytes: TRUNK_SHARED,
                 })
         }
-        .map_err(err)?;
-        let narrow_n = (n * NTYPE * C) as i32;
-        launch!(self, narrow, n * NTYPE * C, &*projected, &mut *token_half, &narrow_n)
+        .map_err(err)
     }
 
     fn trunk_tile(
@@ -1477,8 +1459,8 @@ impl Card {
                 .arg(part).arg(stage.pair_board.buf()).arg(config).arg(&mut *attn_mix)
                 .arg(stage.pair_start.buf())
                 .launch_unit(LaunchConfig {
-                    grid_dim: (runs as u32, HEADS as u32, 1),
-                    block_dim: (32, ATTN_WARPS as u32, 1),
+                    grid_dim: (runs as u32, 1, 1),
+                    block_dim: (32, HEADS as u32, 1),
                     shared_mem_bytes: 0,
                 })
         }.map_err(err)?;
@@ -1821,15 +1803,9 @@ struct Scratch {
     queries: Arr<f32>,
     public: Arr<f16>,
     kv: Arr<f16>,
-    piles: Arr<f32>,
     tokens: Arr<f32>,
     projected: Arr<f32>,
-    type_pool: Arr<f32>,
-    loose: Arr<f32>,
-    glob: Arr<f32>,
     facts: Arr<f32>,
-    occupant: Arr<i32>,
-    x: Arr<f32>,
     spatial: Arr<f16>,
     attn_mix: Arr<f16>,
     attn_out: Arr<f16>,
@@ -1887,15 +1863,9 @@ impl Plan {
             queries: self.arr(BOARD_TILE * (N_HEXES + NTYPE) * ATTN)?,
             public: self.arr::<f16>(BOARD_TILE * (N_HEXES + NTYPE) * C)?,
             kv: self.arr::<f16>(BOARD_TILE * (N_HEXES + NTYPE) * 2 * ATTN)?,
-            piles: self.arr(TILE * NTYPE * PILE_COUNTS)?,
-            tokens: self.arr(TILE * NTYPE * TYPE)?,
-            projected: self.arr(TILE * NTYPE * C)?,
-            type_pool: self.arr(TILE * C)?,
-            loose: self.arr(TILE * LOOSE)?,
-            glob: self.arr(TILE * C)?,
-            facts: self.arr(TILE * N_HEXES * HEX_FACTS)?,
-            occupant: self.arr(TILE * N_HEXES)?,
-            x: self.arr::<f32>(TILE * N_HEXES * C)?,
+            tokens: self.arr(TILE * NSLOT * (3 + TYPE))?,
+            projected: self.arr(TILE * NSLOT * ATTN)?,
+            facts: self.arr(TILE * D)?,
             spatial: self.arr::<f16>(TILE * N_HEXES * C)?,
             attn_mix: self.arr::<f16>(PAIR_TILE * ATTN)?,
             attn_out: self.arr::<f16>(PAIR_TILE * ATTN)?,
