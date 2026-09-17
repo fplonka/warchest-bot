@@ -64,7 +64,7 @@ impl Card {
                 .launch_builder(&self.k.reach)
                 .arg(b.trees.buf()).arg(&avg)
                 .launch_unit(LaunchConfig {
-                    grid_dim: (b.parts, 1, 1),
+                    grid_dim: (b.parts, 2, 1),
                     block_dim: (CFR_THREADS, 1, 1),
                     shared_mem_bytes: 0,
                 })
@@ -72,25 +72,26 @@ impl Card {
         .map_err(err)
     }
 
-    fn cfr(&self, b: &Batch, sims: usize, puct: f32, avg: i32, k: Cfr) -> Res<()> {
+    fn cfr(&self, b: &Batch, sims: usize, rounds: usize, puct: f32, avg: i32, k: Cfr) -> Res<()> {
         let draws = sims * crate::search::TRIES;
         let mut sc = self.scratch.lock();
         let Scratch { leaves, queries, .. } = &mut *sc;
         carved!(leaves, queries);
-        let (parts_i, sims_i, tries_i, depth_i) =
-            (b.parts as i32, sims as i32, crate::search::TRIES as i32, b.levels as i32);
+        let (parts_i, sims_i, tries_i, depth_i, rounds_i) =
+            (b.parts as i32, sims as i32, crate::search::TRIES as i32, b.levels as i32, rounds as i32);
         unsafe {
             self.stream
                 .launch_builder(&self.k.cfr)
                 .arg(b.trees.buf()).arg(leaves).arg(b.queries.buf()).arg(queries)
-                .arg(&parts_i).arg(&sims_i).arg(&puct).arg(&tries_i).arg(&depth_i).arg(&avg)
+                .arg(&parts_i).arg(&sims_i).arg(&puct).arg(&tries_i).arg(&depth_i).arg(&rounds_i).arg(&avg)
                 .arg(&k.alpha).arg(&k.beta).arg(&k.gamma).arg(&k.predict)
-                .launch_unit(LaunchConfig {
-                    grid_dim: (b.parts, 1, 1),
+                .launch_cooperative(LaunchConfig {
+                    grid_dim: (b.parts, 2, 1),
                     block_dim: (CFR_THREADS, 1, 1),
                     shared_mem_bytes: (4 * draws * (b.levels + 2)) as u32,
                 })
         }
+        .map(|_| ())
         .map_err(err)
     }
 
@@ -137,7 +138,7 @@ impl Card {
         self.scratch.lock().leaves.room((rounds * b.parts as usize * sims).max(1))?;
         self.reach(&b, 0)?;
         self.opinions(&b)?;
-        self.cfr(&b, sims, puct, 0, k)?;
+        self.cfr(&b, sims, rounds, puct, 0, k)?;
         let each = b.parts as usize * sims;
         let host = self.sampled(rounds * each)?;
         let query_host = if query_total == 0 {
@@ -207,7 +208,7 @@ impl Card {
             let b = self.batch.lock();
             self.reach(&b, 1)?;
             self.opinions(&b)?;
-            self.cfr(&b, 0, 0.0, 1, Cfr::LINEAR)?;
+            self.cfr(&b, 0, 1, 0.0, 1, Cfr::LINEAR)?;
         }
         let mut h = self.down_f.lock();
         for &i in mine {

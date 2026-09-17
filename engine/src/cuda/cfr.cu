@@ -1,4 +1,7 @@
 
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
+
 #define KIND_DECISION 0u
 #define CFR_THREADS 1024
 #define SCAN_CAP 8192
@@ -80,9 +83,9 @@ __device__ __forceinline__ float sum8(float v) {
 
 #define CFR_U 4
 
-__device__ void reach_level(CfrShared& s, const Tree& t, int level, const float* strat) {
+__device__ void reach_level(CfrShared& s, const Tree& t, int level, int p, const float* strat) {
     level_items<1, CFR_U>(s, t, t.level_start[level], t.level_start[level + 1],
-        [&](unsigned node) { return t.nc[2 * node] + t.nc[2 * node + 1]; },
+        [&](unsigned node) { return t.nc[2 * node + p]; },
         [&](const unsigned (&node)[CFR_U], const unsigned (&e)[CFR_U], int, const bool (&live)[CFR_U]) {
             float v[CFR_U];
             unsigned dst[CFR_U];
@@ -91,9 +94,7 @@ __device__ void reach_level(CfrShared& s, const Tree& t, int level, const float*
                 v[u] = 0.0f;
                 dst[u] = 0u;
                 if (!live[u]) continue;
-                unsigned n0 = t.nc[2 * node[u]];
-                int p = e[u] < n0 ? 0 : 1;
-                unsigned c = e[u] - (p ? n0 : 0);
+                unsigned c = e[u];
                 unsigned par = t.parent[node[u]];
                 unsigned src = rbase(t, par, p);
                 dst[u] = rbase(t, node[u], p) + c;
@@ -119,14 +120,14 @@ __device__ void reach_level(CfrShared& s, const Tree& t, int level, const float*
         });
 }
 
-__device__ void reach_pass(CfrShared& s, const Tree& t, int avg) {
+__device__ void reach_pass(CfrShared& s, const Tree& t, int p, int avg) {
     const float* strat = avg ? t.avg : t.cur;
-    for (int level = 1; level < (int)t.nlevels; ++level) reach_level(s, t, level, strat);
+    for (int level = 1; level < (int)t.nlevels; ++level) reach_level(s, t, level, p, strat);
 }
 
-__device__ void leaf_values(const Tree& t) {
+__device__ void leaf_values(const Tree& t, unsigned traverser) {
     const int sub = threadIdx.x % 8, group = threadIdx.x / 8, groups = CFR_THREADS / 8;
-    const unsigned rows = 2 * (unsigned)t.nrows, total = rows + 2 * (unsigned)t.nterm;
+    const unsigned rows = (unsigned)t.nrows, total = rows + (unsigned)t.nterm, opp = 1 - traverser;
     for (unsigned base = 0; base < total; base += CFR_U * groups) {
         unsigned node[CFR_U];
         float mass[CFR_U];
@@ -134,9 +135,7 @@ __device__ void leaf_values(const Tree& t) {
         for (int u = 0; u < CFR_U; ++u) {
             unsigned item = base + u * groups + group;
             bool live = item < total;
-            unsigned k = live ? (item < rows ? item : item - rows) >> 1 : 0u;
-            unsigned opp = 1 - (item & 1);
-            node[u] = live ? (item < rows ? t.leaf_node[k] : t.term[k]) : 0u;
+            node[u] = live ? (item < rows ? t.leaf_node[item] : t.term[item - rows]) : 0u;
             unsigned n = live ? t.nc[2 * node[u] + opp] : 0u, ra = live ? rbase(t, node[u], opp) : 0u;
             mass[u] = 0.0f;
             for (unsigned c = sub; c < n; c += 8) mass[u] += t.reach[ra + c];
@@ -146,7 +145,6 @@ __device__ void leaf_values(const Tree& t) {
             unsigned item = base + u * groups + group;
             mass[u] = sum8(mass[u]);
             if (item >= total) continue;
-            unsigned traverser = item & 1;
             unsigned m = t.nc[2 * node[u] + traverser], vo = t.voff[node[u]];
             float* vals = t.vals + traverser * t.nvals;
             if (item < rows) {
@@ -160,16 +158,16 @@ __device__ void leaf_values(const Tree& t) {
     }
 }
 
-__device__ void backprop_level(CfrShared& s, const Tree& t, int level, int avg, int iter,
-                               float alpha, float beta, float gamma, float predict) {
+__device__ void backprop_level(CfrShared& s, const Tree& t, int level, unsigned traverser, int avg,
+                               int iter, float alpha, float beta, float gamma, float predict) {
     float m = (float)(t.step + (unsigned long long)iter) + 1.0f;
     float da = cfr_factor(m, alpha), db = cfr_factor(m, beta);
     float dg = powf((m - 1.0f) / m, gamma);
     const unsigned begin = t.level_start[level], split = t.level_split[level];
+    float* vals = t.vals + traverser * t.nvals;
     level_items<1, CFR_U>(s, t, begin, split,
         [&](unsigned node) {
-            return t.kind[node] == KIND_CHANCE ? t.nc[2 * node] + t.nc[2 * node + 1]
-                                               : t.nc[2 * node + 1 - t.player[node]];
+            return t.kind[node] == KIND_CHANCE || t.player[node] != traverser ? t.nc[2 * node + traverser] : 0u;
         },
         [&](const unsigned (&node)[CFR_U], const unsigned (&e)[CFR_U], int, const bool (&live)[CFR_U]) {
             float v[CFR_U];
@@ -182,9 +180,6 @@ __device__ void backprop_level(CfrShared& s, const Tree& t, int level, int avg, 
                 unsigned c = e[u];
                 unsigned me = t.player[node[u]], vi = t.voff[node[u]];
                 bool chance = t.kind[node[u]] == KIND_CHANCE;
-                unsigned traverser = chance ? (c < t.nc[2 * node[u]] ? 0u : 1u) : 1 - me;
-                if (chance && traverser) c -= t.nc[2 * node[u]];
-                float* vals = t.vals + traverser * t.nvals;
                 dst[u] = vals + vi + c;
                 if (chance) {
                     unsigned cv = t.voff[t.child[t.child_at[node[u]]]];
@@ -206,14 +201,13 @@ __device__ void backprop_level(CfrShared& s, const Tree& t, int level, int avg, 
         });
     const float* strat = avg ? t.avg : t.cur;
     level_items<8, 1>(s, t, begin, split,
-        [&](unsigned node) { return t.kind[node] == KIND_DECISION ? t.nc[2 * node + t.player[node]] : 0u; },
+        [&](unsigned node) { return t.kind[node] == KIND_DECISION && t.player[node] == traverser ? t.nc[2 * node + traverser] : 0u; },
         [&](const unsigned (&nodes)[1], const unsigned (&cs)[1], int sub, const bool (&lives)[1]) {
             const unsigned node = nodes[0], c = cs[0];
             const bool live = lives[0];
-            unsigned me = live ? t.player[node] : 0u;
+            const unsigned me = traverser;
             unsigned so = live ? t.soff[node] : 0u, lb = live ? t.legal_base[node] : 0u;
             unsigned a = live ? t.legal_off[lb + c] : 0u, b = live ? t.legal_off[lb + c + 1] : 0u;
-            float* vals = t.vals + me * t.nvals;
             float base = 0.0f;
             for (unsigned cell = a + sub; cell < b; cell += 8) {
                 unsigned vc = t.cell_val[so + cell];
@@ -440,34 +434,43 @@ __device__ void expand(const Tree& t, unsigned int* path, unsigned int* out, int
 extern "C" __global__ void __launch_bounds__(CFR_THREADS)
 k_reach(const Tree* trees, int avg) {
     __shared__ CfrShared s;
-    reach_pass(s, trees[blockIdx.x], avg);
+    reach_pass(s, trees[blockIdx.x], blockIdx.y, avg);
 }
 
 extern "C" __global__ void __launch_bounds__(CFR_THREADS)
 k_cfr(const Tree* trees, unsigned int* out, const unsigned int* queries, float* query_out,
-      int parts, int sims, float c_puct, int tries, int depth, int avg,
+      int parts, int sims, float c_puct, int tries, int depth, int rounds, int avg,
       float alpha, float beta, float gamma, float predict) {
     __shared__ CfrShared s;
     extern __shared__ unsigned int path[];
-    const int part = blockIdx.x;
+    const int part = blockIdx.x, tr = blockIdx.y;
     const Tree& t = trees[part];
     const int each = parts * sims;
-    for (int iter = 0; iter < (int)t.todo; ++iter) {
-        for (unsigned q = 0; q < (unsigned)t.nquery; ++q) {
-            const unsigned int* pick = queries + 4 * (t.query_at + q);
-            if (pick[0] != (unsigned)iter) continue;
-            for (unsigned i = threadIdx.x; i < pick[2]; i += CFR_THREADS)
-                query_out[pick[3] + i] = t.reach[pick[1] + i];
-        }
-        leaf_values(t);
-        __syncthreads();
-        for (int level = (int)t.nlevels - 1; level >= 0; --level)
-            backprop_level(s, t, level, avg, iter, alpha, beta, gamma, predict);
-        if (sims > 0) {
-            expand(t, path, out, part, sims, c_puct, iter, each, tries, depth);
+    cg::grid_group grid = cg::this_grid();
+    for (int iter = 0; iter < rounds; ++iter) {
+        const bool live = iter < (int)t.todo;
+        if (live && tr == 0)
+            for (unsigned q = 0; q < (unsigned)t.nquery; ++q) {
+                const unsigned int* pick = queries + 4 * (t.query_at + q);
+                if (pick[0] != (unsigned)iter) continue;
+                for (unsigned i = threadIdx.x; i < pick[2]; i += CFR_THREADS)
+                    query_out[pick[3] + i] = t.reach[pick[1] + i];
+            }
+        if (live) {
+            leaf_values(t, tr);
             __syncthreads();
+            for (int level = (int)t.nlevels - 1; level >= 0; --level)
+                backprop_level(s, t, level, tr, avg, iter, alpha, beta, gamma, predict);
         }
-        if (iter + 1 < (int)t.todo) reach_pass(s, t, avg);
+        grid.sync();
+        if (sims > 0) {
+            if (live && tr == 0) expand(t, path, out, part, sims, c_puct, iter, each, tries, depth);
+            grid.sync();
+        }
+        if (iter + 1 < rounds) {
+            if (iter + 1 < (int)t.todo) reach_pass(s, t, tr, avg);
+            grid.sync();
+        }
     }
 }
 
