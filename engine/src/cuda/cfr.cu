@@ -13,44 +13,61 @@ struct CfrShared {
     unsigned warp_sum[CFR_THREADS / 32];
 };
 
+__device__ __forceinline__ unsigned sweep_count(const Tree& t, int sweep, unsigned node) {
+    const int p = sweep & 1;
+    const unsigned n = t.nc[2 * node + p], kind = t.kind[node];
+    const bool own = (int)t.player[node] == p;
+    if (sweep < 2) return n;
+    if (sweep < 4) return kind == KIND_CHANCE || !own ? n : 0u;
+    return kind == KIND_DECISION && own ? n : 0u;
+}
 
-template <int LANES, int U, typename Count, typename Body>
-__device__ void level_items(CfrShared& s, const Tree& t, unsigned begin, unsigned end,
-                            Count count, Body body) {
+extern "C" __global__ void __launch_bounds__(CFR_THREADS)
+k_level_prefix(const Tree* trees) {
+    __shared__ unsigned warp_sum[CFR_THREADS / 32], total;
+    const Tree& t = trees[blockIdx.z];
+    const int level = blockIdx.x, sweep = blockIdx.y;
+    if (level >= (int)t.nlevels) return;
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
-    const int sub = tid % LANES, group = tid / LANES, groups = CFR_THREADS / LANES;
-    for (unsigned chunk = begin; chunk < end; chunk += SCAN_CAP) {
-        const unsigned n = min((unsigned)SCAN_CAP, end - chunk);
-        unsigned local[SCAN_PER], run = 0;
-#pragma unroll
-        for (int i = 0; i < SCAN_PER; ++i) {
-            unsigned k = SCAN_PER * tid + i;
-            local[i] = run;
-            run += k < n ? count(t.level_node[chunk + k]) : 0u;
-        }
-        unsigned inclusive = run;
+    const unsigned begin = t.level_start[level], end = t.level_start[level + 1];
+    unsigned carry = 0;
+    for (unsigned chunk = begin; chunk < end; chunk += CFR_THREADS) {
+        const unsigned k = chunk + tid;
+        const unsigned mine = k < end ? sweep_count(t, sweep, t.level_node[k]) : 0u;
+        unsigned inclusive = mine;
         for (int o = 1; o < 32; o <<= 1) {
             unsigned v = __shfl_up_sync(0xffffffff, inclusive, o);
             if (lane >= o) inclusive += v;
         }
-        if (lane == 31) s.warp_sum[warp] = inclusive;
+        if (lane == 31) warp_sum[warp] = inclusive;
         __syncthreads();
         if (warp == 0) {
-            unsigned v = s.warp_sum[lane], acc = v;
+            unsigned v = warp_sum[lane], acc = v;
             for (int o = 1; o < 32; o <<= 1) {
                 unsigned w = __shfl_up_sync(0xffffffff, acc, o);
                 if (lane >= o) acc += w;
             }
-            s.warp_sum[lane] = acc - v;
+            warp_sum[lane] = acc - v;
+            if (lane == 31) total = acc;
         }
         __syncthreads();
-        const unsigned base = s.warp_sum[warp] + inclusive - run;
-#pragma unroll
-        for (int i = 0; i < SCAN_PER; ++i) {
-            unsigned k = SCAN_PER * tid + i;
-            if (k < n) s.prefix[k] = base + local[i];
-        }
-        if (tid == CFR_THREADS - 1) s.prefix[n] = base + run;
+        if (k < end) t.prefix[6 * k + sweep] = carry + warp_sum[warp] + inclusive - mine;
+        carry += total;
+        __syncthreads();
+    }
+}
+
+template <int LANES, int U, typename Body>
+__device__ void level_items(CfrShared& s, const Tree& t, int sweep, unsigned begin, unsigned end,
+                            Body body) {
+    const int tid = threadIdx.x;
+    const int sub = tid % LANES, group = tid / LANES, groups = CFR_THREADS / LANES;
+    const unsigned* prefix = t.prefix + sweep;
+    for (unsigned chunk = begin; chunk < end; chunk += SCAN_CAP) {
+        const unsigned n = min((unsigned)SCAN_CAP, end - chunk);
+        const unsigned first = prefix[6 * chunk];
+        for (unsigned k = tid; k < n; k += CFR_THREADS) s.prefix[k] = prefix[6 * (chunk + k)] - first;
+        if (tid == 0) s.prefix[n] = prefix[6 * (chunk + n - 1)] - first + sweep_count(t, sweep, t.level_node[chunk + n - 1]);
         __syncthreads();
         const unsigned total = s.prefix[n];
         for (unsigned base = 0; base < total; base += U * groups) {
@@ -84,8 +101,7 @@ __device__ __forceinline__ float sum8(float v) {
 #define CFR_U 4
 
 __device__ void reach_level(CfrShared& s, const Tree& t, int level, int p, const float* strat) {
-    level_items<1, CFR_U>(s, t, t.level_start[level], t.level_start[level + 1],
-        [&](unsigned node) { return t.nc[2 * node + p]; },
+    level_items<1, CFR_U>(s, t, p, t.level_start[level], t.level_start[level + 1],
         [&](const unsigned (&node)[CFR_U], const unsigned (&e)[CFR_U], int, const bool (&live)[CFR_U]) {
             float v[CFR_U];
             unsigned dst[CFR_U];
@@ -165,10 +181,7 @@ __device__ void backprop_level(CfrShared& s, const Tree& t, int level, unsigned 
     float dg = powf((m - 1.0f) / m, gamma);
     const unsigned begin = t.level_start[level], split = t.level_split[level];
     float* vals = t.vals + traverser * t.nvals;
-    level_items<1, CFR_U>(s, t, begin, split,
-        [&](unsigned node) {
-            return t.kind[node] == KIND_CHANCE || t.player[node] != traverser ? t.nc[2 * node + traverser] : 0u;
-        },
+    level_items<1, CFR_U>(s, t, 2 + traverser, begin, split,
         [&](const unsigned (&node)[CFR_U], const unsigned (&e)[CFR_U], int, const bool (&live)[CFR_U]) {
             float v[CFR_U];
             float* dst[CFR_U];
@@ -200,8 +213,7 @@ __device__ void backprop_level(CfrShared& s, const Tree& t, int level, unsigned 
                 if (live[u]) *dst[u] = v[u];
         });
     const float* strat = avg ? t.avg : t.cur;
-    level_items<8, 1>(s, t, begin, split,
-        [&](unsigned node) { return t.kind[node] == KIND_DECISION && t.player[node] == traverser ? t.nc[2 * node + traverser] : 0u; },
+    level_items<8, 1>(s, t, 4 + traverser, begin, split,
         [&](const unsigned (&nodes)[1], const unsigned (&cs)[1], int sub, const bool (&lives)[1]) {
             const unsigned node = nodes[0], c = cs[0];
             const bool live = lives[0];
@@ -480,21 +492,22 @@ k_finish(const Tree* trees, const int* touched) {
     const Tree& t = trees[blockIdx.x];
     int mask = touched[blockIdx.x];
     if (mask < 0) return;
-    level_items<1, 1>(s, t, 0, t.level_start[t.nlevels],
-        [&](unsigned node) { return t.kind[node] == KIND_DECISION ? t.nc[2 * node + t.player[node]] : 0u; },
-        [&](const unsigned (&nodes)[1], const unsigned (&cs)[1], int, const bool (&lives)[1]) {
-            if (!lives[0]) return;
-            const unsigned node = nodes[0], c = cs[0];
-            unsigned me = t.player[node], so = t.soff[node], lb = t.legal_base[node];
-            unsigned a = t.legal_off[lb + c], b = t.legal_off[lb + c + 1];
-            if (!((mask >> me) & 1)) {
-                for (unsigned cell = a; cell < b; ++cell) t.avg[so + cell] = t.cur[so + cell];
-                return;
-            }
-            float sum = 0.0f;
-            for (unsigned cell = a; cell < b; ++cell) sum += t.sum[so + cell];
-            float k = (float)max(b - a, 1u);
-            for (unsigned cell = a; cell < b; ++cell)
-                t.avg[so + cell] = sum > SMOOTH ? t.sum[so + cell] / sum : 1.0f / k;
-        });
+    for (int level = 0; level < (int)t.nlevels; ++level)
+        for (unsigned me = 0; me < 2; ++me)
+            level_items<1, 1>(s, t, 4 + me, t.level_start[level], t.level_start[level + 1],
+                [&](const unsigned (&nodes)[1], const unsigned (&cs)[1], int, const bool (&lives)[1]) {
+                    if (!lives[0]) return;
+                    const unsigned node = nodes[0], c = cs[0];
+                    unsigned so = t.soff[node], lb = t.legal_base[node];
+                    unsigned a = t.legal_off[lb + c], b = t.legal_off[lb + c + 1];
+                    if (!((mask >> me) & 1)) {
+                        for (unsigned cell = a; cell < b; ++cell) t.avg[so + cell] = t.cur[so + cell];
+                        return;
+                    }
+                    float sum = 0.0f;
+                    for (unsigned cell = a; cell < b; ++cell) sum += t.sum[so + cell];
+                    float k = (float)max(b - a, 1u);
+                    for (unsigned cell = a; cell < b; ++cell)
+                        t.avg[so + cell] = sum > SMOOTH ? t.sum[so + cell] / sum : 1.0f / k;
+                });
 }

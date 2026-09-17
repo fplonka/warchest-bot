@@ -92,6 +92,7 @@ kernels! {
     policy_offset,
     reach,
     cfr,
+    level_prefix,
 }
 
 trait LaunchUnit {
@@ -211,11 +212,28 @@ struct Trunk {
 const TRUNK_BOARDS: usize = 3;
 const TRUNK_WARPS: usize = 12;
 const TRUNK_THREADS: u32 = 32 * TRUNK_WARPS as u32;
+const TRUNK_PITCH: usize = N_HEXES.next_multiple_of(16);
 const TRUNK_SHARED: u32 = {
     let rows = (TRUNK_BOARDS * N_HEXES).next_multiple_of(16);
-    (2 * rows * (C + 8) * 2 + TRUNK_BOARDS * (2 * C + 8) * 2 + TRUNK_BOARDS * C * 4 + N_HEXES * 6 * 4)
-        as u32
+    let stem = 2 * (TRUNK_BOARDS * NTYPE * (TYPE + C) + 3 * TRUNK_BOARDS * C + TRUNK_BOARDS * LOOSE);
+    let pitched = TRUNK_BOARDS * TRUNK_PITCH * (C + 8);
+    let buf = if pitched > rows * (C + 8) + stem { pitched } else { rows * (C + 8) + stem };
+    (buf * 2 + TRUNK_BOARDS * (2 * C + 8) * 2 + TRUNK_BOARDS * C * 4 + rows * 12) as u32
 };
+
+fn adjacency() -> Vec<u32> {
+    let rows = (TRUNK_BOARDS * N_HEXES).next_multiple_of(16);
+    let pitched = TRUNK_BOARDS * TRUNK_PITCH;
+    let mut adj = vec![0.0f32; pitched * rows];
+    for b in 0..TRUNK_BOARDS {
+        for (hex, near) in board().neighbors.iter().enumerate() {
+            for &n in near.iter().filter(|&&n| n != NONE) {
+                adj[(b * TRUNK_PITCH + n as usize) * rows + b * N_HEXES + hex] = 1.0;
+            }
+        }
+    }
+    pack_mma_a(&adj, 0, pitched, rows)
+}
 
 const HEX_K: usize = HEX_FACTS.next_multiple_of(16);
 
@@ -450,7 +468,7 @@ struct Card {
     trunk_hex: CudaSlice<u32>,
     b: CudaSlice<f32>,
     ln: CudaSlice<f32>,
-    near: CudaSlice<i32>,
+    adjacency: CudaSlice<u32>,
     card_facts: CudaSlice<f32>,
     locations: CudaSlice<u8>,
     layout: NetLayout,
@@ -867,12 +885,6 @@ impl Card {
         let stream = gpu.ctx.new_stream().map_err(err)?;
         let blas = CudaBlas::new(stream.clone()).map_err(err)?;
         let flat = net.inference_flat();
-        let near: Vec<i32> = board()
-            .neighbors
-            .iter()
-            .flatten()
-            .map(|&n| if n == NONE { -1 } else { n as i32 })
-            .collect();
         let mut card_facts = vec![0.0; N_UNITS * CARD_FEATS];
         for u in 0..N_UNITS {
             write_card_features(
@@ -895,7 +907,7 @@ impl Card {
             w: stream.memcpy_stod(&flat.w).map_err(err)?,
             b: stream.memcpy_stod(&flat.b).map_err(err)?,
             ln: stream.memcpy_stod(&flat.ln).map_err(err)?,
-            near: stream.memcpy_stod(&near).map_err(err)?,
+            adjacency: stream.memcpy_stod(&adjacency()).map_err(err)?,
             card_facts: stream.memcpy_stod(&card_facts).map_err(err)?,
             locations: stream.memcpy_stod(&locations).map_err(err)?,
             stream,
@@ -1194,7 +1206,7 @@ impl Card {
             self.stream
                 .launch_builder(&self.k.trunk)
                 .arg(xpub).arg(&stem).arg(&self.trunk_w).arg(&self.trunk_g).arg(&self.trunk_b)
-                .arg(&self.trunk_ln).arg(&self.near).arg(&mut *input)
+                .arg(&self.trunk_ln).arg(&self.adjacency).arg(&mut *input)
                 .arg(&mut *spatial).arg(&mut *token_half).arg(&rows_i)
                 .launch_unit(LaunchConfig {
                     grid_dim: (n.div_ceil(TRUNK_BOARDS) as u32, 1, 1),
@@ -1395,12 +1407,15 @@ impl Card {
             scratch.kv.room(boards.len() * ntokens * 2 * ATTN)?;
             let Scratch { public, kv, .. } = &mut *scratch;
             carved!(public, kv);
-            let (nb, tokens, c) = (boards.len() as i32, ntokens as i32, C as i32);
             unsafe {
                 stream.launch_builder(&self.k.public_cache)
                     .arg(batch.trees.buf()).arg(stage.board_part.buf()).arg(stage.board_local.buf())
-                    .arg(&mut *public).arg(&nb).arg(&tokens).arg(&c)
-                    .launch_unit(spread(boards.len() * ntokens * C))
+                    .arg(&mut *public)
+                    .launch_unit(LaunchConfig {
+                        grid_dim: (boards.len() as u32, 1, 1),
+                        block_dim: (THREADS, 1, 1),
+                        shared_mem_bytes: 0,
+                    })
             }.map_err(err)?;
             self.hlin(self.layout.attention_kv(), &*public, boards.len() * ntokens, 0.0, kv)?;
         }

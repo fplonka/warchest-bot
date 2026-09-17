@@ -18,6 +18,43 @@ __device__ __forceinline__ float gelu1(float x) {
     return 0.5f * x * (1.0f + tanh_approx(inner));
 }
 
+__device__ __forceinline__ float2 word2(unsigned u) {
+    return make_float2(__half2float(__ushort_as_half((unsigned short)(u & 0xffffu))),
+                       __half2float(__ushort_as_half((unsigned short)(u >> 16))));
+}
+
+__device__ __forceinline__ unsigned pack2(float x, float y) {
+    __half2 h = __floats2half2_rn(x, y);
+    return *(unsigned*)&h;
+}
+
+__device__ __forceinline__ float2 lds2(const __half* p) {
+    return word2(*(const unsigned*)p);
+}
+
+union HalfWord {
+    unsigned u;
+    __half2 h;
+};
+
+__device__ __forceinline__ unsigned gelu_h2(unsigned u) {
+    HalfWord v;
+    v.u = u;
+    const __half2 k = __float2half2_rn(0.7978845608f), c = __float2half2_rn(0.044715f);
+    const __half2 half = __float2half2_rn(0.5f), one = __float2half2_rn(1.0f);
+    __half2 x2 = __hmul2(v.h, v.h);
+    __half2 inner = __hmul2(k, __hfma2(__hmul2(c, x2), v.h, v.h));
+    HalfWord t;
+    asm("tanh.approx.f16x2 %0, %1;" : "=r"(t.u) : "r"(*(unsigned*)&inner));
+    HalfWord out;
+    out.h = __hmul2(__hmul2(half, v.h), __hadd2(one, t.h));
+    return out.u;
+}
+
+__device__ __forceinline__ unsigned gelu_word(float x, float y) {
+    return gelu_h2(pack2(x, y));
+}
+
 extern "C" __global__ void k_expand_rows(const unsigned char* rows, const float* cards,
                               const unsigned char* locations, float* out, int n) {
     int r = blockIdx.x;
@@ -141,16 +178,19 @@ __device__ __forceinline__ void frag_b(const unsigned* w, int k, int slot, int l
 }
 
 
+#define PUBLIC_SPATIAL (N_HEXES * TRUNK_C / 8)
+#define PUBLIC_TOKENS (NTYPE * TRUNK_C / 8)
+static_assert(TRUNK_C % 8 == 0, "a public token row is whole 16-byte words");
+
 extern "C" __global__ void k_public_cache(const Tree* trees, const unsigned int* part,
-                               const unsigned int* board, __half* out, int rows,
-                               int tokens, int c) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= rows * tokens * c) return;
-    int r = i / (tokens * c), t = (i / c) % tokens, j = i % c;
+                               const unsigned int* board, uint4* out) {
+    const int r = blockIdx.x;
     const Tree& tree = trees[part[r]];
-    out[i] = t < N_HEXES
-        ? tree.spatial[((size_t)board[r] * N_HEXES + t) * c + j]
-        : tree.tokens[((size_t)board[r] * NTYPE + t - N_HEXES) * c + j];
+    const uint4* spatial = (const uint4*)(tree.spatial + (size_t)board[r] * N_HEXES * TRUNK_C);
+    const uint4* tokens = (const uint4*)(tree.tokens + (size_t)board[r] * NTYPE * TRUNK_C);
+    uint4* dst = out + (size_t)r * (PUBLIC_SPATIAL + PUBLIC_TOKENS);
+    for (int i = threadIdx.x; i < PUBLIC_SPATIAL + PUBLIC_TOKENS; i += blockDim.x)
+        dst[i] = i < PUBLIC_SPATIAL ? spatial[i] : tokens[i - PUBLIC_SPATIAL];
 }
 
 #define ATTN_TOK (N_HEXES + NTYPE)
@@ -158,7 +198,16 @@ extern "C" __global__ void k_public_cache(const Tree* trees, const unsigned int*
 #define ATTN_KV (2 * ATTN)
 #define ATTN_NT ((ATTN_TOK + 7) / 8)
 #define ATTN_KT ((ATTN_TOK + 15) / 16)
+#define ATTN_LDS (ATTN + 8)
 static_assert(ATTN_W == 32, "k_attention gives one head two mma k-steps and four column tiles");
+static_assert(ATTN % 8 == 0 && ATTN_LDS % 8 == 0, "a value row is whole 16-byte words");
+
+__device__ __forceinline__ void frag_v(const __half* v, int kk, int col, int lane, unsigned (&f)[4]) {
+    const __half* p = v + (size_t)(16 * kk + (lane & 7) + 8 * ((lane >> 3) & 1)) * ATTN_LDS + col + 8 * (lane >> 4);
+    unsigned addr = (unsigned)__cvta_generic_to_shared(p);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
+                 : "=r"(f[0]), "=r"(f[1]), "=r"(f[2]), "=r"(f[3]) : "r"(addr));
+}
 
 __device__ __forceinline__ unsigned halves(__half a, __half b) {
     __half2 h = __halves2half2(a, b);
@@ -176,10 +225,20 @@ extern "C" __global__ void k_attention(const Tree* trees, const __half* kv,
                             const unsigned int* board,
                             const unsigned int* config, __half* out,
                             const unsigned int* starts) {
+    __shared__ __align__(16) __half sv[16 * ATTN_KT * ATTN_LDS];
     const int head = threadIdx.y, lane = threadIdx.x, g = lane >> 2, t = lane & 3;
     const unsigned int begin = starts[blockIdx.x], end = starts[blockIdx.x + 1];
     const __half* bk = kv + (size_t)board[begin] * ATTN_TOK * ATTN_KV + head * ATTN_W;
-    const __half* bv = bk + ATTN;
+    {
+        const uint4* src = (const uint4*)(kv + (size_t)board[begin] * ATTN_TOK * ATTN_KV + ATTN);
+        uint4* dst = (uint4*)sv;
+        constexpr int ROW = ATTN / 8, PITCH = ATTN_LDS / 8;
+        for (int i = threadIdx.y * 32 + lane; i < 16 * ATTN_KT * ROW; i += 32 * HEADS) {
+            const int tok = i / ROW, j = i - tok * ROW;
+            dst[tok * PITCH + j] = tok < ATTN_TOK ? src[(size_t)tok * (ATTN_KV / 8) + j] : make_uint4(0u, 0u, 0u, 0u);
+        }
+    }
+    __syncthreads();
     const float scale = rsqrtf((float)ATTN_W);
     for (unsigned int p0 = begin; p0 < end; p0 += 16) {
         const unsigned int pa = min(p0 + g, end - 1), pb = min(p0 + g + 8, end - 1);
@@ -239,19 +298,12 @@ extern "C" __global__ void k_attention(const Tree* trees, const __half* kv,
                 halves(d[2 * kk + 1][0], d[2 * kk + 1][1]), halves(d[2 * kk + 1][2], d[2 * kk + 1][3]),
             };
 #pragma unroll
-            for (int nt = 0; nt < ATTN_W / 8; ++nt) {
-                const int dim = 8 * nt + g;
-                const int tok = 16 * kk + 2 * t;
-                unsigned int bf[2] = {0u, 0u};
-                if (tok + 1 < ATTN_TOK)
-                    bf[0] = halves(bv[(size_t)tok * ATTN_KV + dim], bv[(size_t)(tok + 1) * ATTN_KV + dim]);
-                else if (tok < ATTN_TOK)
-                    bf[0] = halves(bv[(size_t)tok * ATTN_KV + dim], __float2half(0.0f));
-                if (tok + 9 < ATTN_TOK)
-                    bf[1] = halves(bv[(size_t)(tok + 8) * ATTN_KV + dim], bv[(size_t)(tok + 9) * ATTN_KV + dim]);
-                else if (tok + 8 < ATTN_TOK)
-                    bf[1] = halves(bv[(size_t)(tok + 8) * ATTN_KV + dim], __float2half(0.0f));
-                mma_tile(o[nt], af, bf);
+            for (int nt = 0; nt < ATTN_W / 8; nt += 2) {
+                unsigned int bf[4];
+                frag_v(sv, kk, head * ATTN_W + 8 * nt, lane, bf);
+                const unsigned int b0[2] = {bf[0], bf[1]}, b1[2] = {bf[2], bf[3]};
+                mma_tile(o[nt], af, b0);
+                mma_tile(o[nt + 1], af, b1);
             }
         }
 #pragma unroll
@@ -377,113 +429,195 @@ __device__ __forceinline__ unsigned int rbase(const Tree& t, unsigned int i, int
     return t.roff[i] + (p == 1 ? t.nc[2 * i] : 0);
 }
 
-extern "C" __global__ void k_belief(const Tree* trees, const int* part_of_row,
-                         const int* local_row, __half* out, int rows, int q0) {
-    int seat = blockIdx.x * blockDim.y + threadIdx.y, lane = threadIdx.x;
-    if (seat >= rows) return;
-    int i = seat >> 1;
-    unsigned int player = seat & 1;
-    int r = q0 + i;
-    const Tree& t = trees[part_of_row[r]];
-    unsigned int row = local_row[r], node = t.leaf_node[row];
-    unsigned int count = t.nc[2 * node + player];
-    unsigned int ra = rbase(t, node, player);
+#define ATTN_WORDS (ATTN / 64)
+#define VALUE_TILE 16
+#define BELIEF_FAT 64
+static_assert(ATTN % 64 == 0, "a belief row is a whole number of words a lane");
+
+struct Seat {
+    unsigned count;
+    unsigned ra;
+    unsigned cs;
+    float inv;
+};
+
+__device__ __forceinline__ Seat seat_of(const Tree& t, unsigned row, unsigned player, int lane) {
+    const unsigned node = t.leaf_node[row];
+    Seat seat = { t.nc[2 * node + player], rbase(t, node, player), t.coff[2 * row + player], 0.0f };
     float total = 0.0f;
-    for (unsigned int c = lane; c < count; c += 32) total += t.reach[ra + c];
+    for (unsigned c = lane; c < seat.count; c += 32) total += t.reach[seat.ra + c];
     total = warp_sum(total);
-    float inv = total > SMOOTH ? 1.0f / total : 1.0f / (float)max(count, 1u);
-    unsigned int cs = t.coff[2 * row + player];
-    float acc[ATTN / 32] = {0.0f};
-    for (unsigned int c = 0; c < count; ++c) {
-        float weight = total > SMOOTH ? t.reach[ra + c] * inv : inv;
-        const __half* pp = t.conditioned + (size_t)(cs + c) * ATTN;
-        for (int q = 0; q < ATTN / 32; ++q) acc[q] += weight * __half2float(pp[lane + 32 * q]);
-    }
-    __half* own = out + ((size_t)(2 * i) * 2 + player) * ATTN;
-    __half* other = out + ((size_t)(2 * i + 1) * 2 + (1 - player)) * ATTN;
-    for (int q = 0; q < ATTN / 32; ++q) {
-        __half v = __float2half(acc[q]);
-        own[lane + 32 * q] = v;
-        other[lane + 32 * q] = v;
+    seat.inv = total > SMOOTH ? 1.0f / total : 0.0f;
+    return seat;
+}
+
+__device__ __forceinline__ float seat_weight(const Tree& t, const Seat& seat, unsigned c) {
+    return seat.inv > 0.0f ? t.reach[seat.ra + c] * seat.inv : 1.0f / (float)max(seat.count, 1u);
+}
+
+__device__ __forceinline__ void belief_sum(const Tree& t, const Seat& seat, unsigned from, unsigned to,
+                                           int lane, float (&acc)[ATTN_WORDS][2]) {
+    const unsigned* pp = (const unsigned*)(t.conditioned + (size_t)seat.cs * ATTN) + lane;
+#pragma unroll 4
+    for (unsigned c = from; c < to; ++c) {
+        const float weight = seat_weight(t, seat, c);
+#pragma unroll
+        for (int q = 0; q < ATTN_WORDS; ++q) {
+            const float2 v = word2(pp[(size_t)c * (ATTN / 2) + 32 * q]);
+            acc[q][0] += weight * v.x;
+            acc[q][1] += weight * v.y;
+        }
     }
 }
 
-__device__ __forceinline__ unsigned gelu_pair(const __half* p, float b0, float b1, bool live) {
+__device__ __forceinline__ void belief_store(__half* out, int i, unsigned player, int lane,
+                                             const float (&acc)[ATTN_WORDS][2]) {
+    unsigned* own = (unsigned*)(out + ((size_t)(2 * i) * 2 + player) * ATTN) + lane;
+    unsigned* other = (unsigned*)(out + ((size_t)(2 * i + 1) * 2 + (1 - player)) * ATTN) + lane;
+#pragma unroll
+    for (int q = 0; q < ATTN_WORDS; ++q) {
+        const unsigned v = pack2(acc[q][0], acc[q][1]);
+        own[32 * q] = v;
+        other[32 * q] = v;
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(32 * VALUE_WARPS)
+k_belief(const Tree* trees, const int* part_of_row, const int* local_row, __half* out, int rows, int q0) {
+    __shared__ unsigned counts[VALUE_WARPS];
+    __shared__ float part[VALUE_WARPS][ATTN];
+    const int lane = threadIdx.x, warp = threadIdx.y, k0 = blockIdx.x * VALUE_WARPS;
+    const int mine = k0 + warp;
+    Seat seat = {};
+    if (mine < rows) {
+        const Tree& t = trees[part_of_row[q0 + (mine >> 1)]];
+        seat = seat_of(t, local_row[q0 + (mine >> 1)], mine & 1, lane);
+    }
+    if (lane == 0) counts[warp] = seat.count;
+    __syncthreads();
+    for (int w = 0; w < VALUE_WARPS; ++w) {
+        if (counts[w] <= BELIEF_FAT) continue;
+        const int k = k0 + w;
+        const Tree& t = trees[part_of_row[q0 + (k >> 1)]];
+        const Seat fat = seat_of(t, local_row[q0 + (k >> 1)], k & 1, lane);
+        float acc[ATTN_WORDS][2] = {};
+        belief_sum(t, fat, fat.count * warp / VALUE_WARPS, fat.count * (warp + 1) / VALUE_WARPS, lane, acc);
+#pragma unroll
+        for (int q = 0; q < ATTN_WORDS; ++q) {
+            part[warp][2 * (lane + 32 * q)] = acc[q][0];
+            part[warp][2 * (lane + 32 * q) + 1] = acc[q][1];
+        }
+        __syncthreads();
+        if (warp == 0) {
+            float sum[ATTN_WORDS][2];
+#pragma unroll
+            for (int q = 0; q < ATTN_WORDS; ++q) {
+                sum[q][0] = sum[q][1] = 0.0f;
+#pragma unroll
+                for (int v = 0; v < VALUE_WARPS; ++v) {
+                    sum[q][0] += part[v][2 * (lane + 32 * q)];
+                    sum[q][1] += part[v][2 * (lane + 32 * q) + 1];
+                }
+            }
+            belief_store(out, k >> 1, k & 1, lane, sum);
+        }
+        __syncthreads();
+    }
+    if (mine >= rows || seat.count > BELIEF_FAT) return;
+    const Tree& t = trees[part_of_row[q0 + (mine >> 1)]];
+    float acc[ATTN_WORDS][2] = {};
+    belief_sum(t, seat, 0, seat.count, lane, acc);
+    belief_store(out, mine >> 1, mine & 1, lane, acc);
+}
+
+__device__ __forceinline__ unsigned gelu_pair(const __half* p, const float* __restrict__ bp,
+                                              const float* __restrict__ rp, int col, bool live) {
     float2 v = __half22float2(*(const __half2*)p);
-    __half2 h = __floats2half2_rn(gelu1(v.x + b0), gelu1(v.y + b1));
-    return live ? *(unsigned*)&h : 0u;
+    return live ? pack2(gelu1(v.x + bp[col] + rp[col]), gelu1(v.y + bp[col + 1] + rp[col + 1])) : 0u;
 }
 
-extern "C" __global__ void k_value(const Tree* trees, const int* part_of_row,
-                        const int* local_row, const float* belief_projection,
-                        const unsigned* __restrict__ out_w,
-                        const float* out_b, int rows, int q0) {
-    const int lane = threadIdx.x, warp = threadIdx.y;
-    const int k = blockIdx.x * VALUE_WARPS + warp;
-    if (k >= rows) return;
-    const int r = q0 + (k >> 1);
-    const unsigned int player = k & 1;
-    const Tree& t = trees[part_of_row[r]];
-    unsigned int row = local_row[r], node = t.leaf_node[row];
-    unsigned int count = t.nc[2 * node + player];
-    unsigned int cs = t.coff[2 * row + player];
+__device__ void value_tile(const Tree& t, unsigned row, unsigned player, unsigned c0,
+                           const float* __restrict__ rp, const unsigned* __restrict__ out_w,
+                           const float* out_b, int lane) {
+    const unsigned node = t.leaf_node[row];
+    const unsigned count = t.nc[2 * node + player], cs = t.coff[2 * row + player];
     const float* __restrict__ bp = t.value_board + (size_t)t.board_of[row] * ATTN;
-    const float* __restrict__ rp = belief_projection + (size_t)k * ATTN;
     const __half* __restrict__ cfg = t.value_cfg;
     float* opinion = t.opinion + player * t.nvals + t.voff[node];
     const int g = lane >> 2, tt = lane & 3;
-    float base[ATTN / 16][4];
+    const bool live0 = c0 + g < count, live1 = c0 + g + 8 < count;
+    const __half* p0 = cfg + (size_t)(cs + min(c0 + g, count - 1)) * ATTN + 2 * tt;
+    const __half* p1 = cfg + (size_t)(cs + min(c0 + g + 8, count - 1)) * ATTN + 2 * tt;
+    float d[2][4] = {};
 #pragma unroll
-    for (int kt = 0; kt < ATTN / 16; ++kt)
+    for (int kt = 0; kt < ATTN / 16; ++kt) {
+        const int col = 16 * kt + 2 * tt;
+        unsigned int af[4];
+        af[0] = gelu_pair(p0 + 16 * kt, bp, rp, col, live0);
+        af[1] = gelu_pair(p1 + 16 * kt, bp, rp, col, live1);
+        af[2] = gelu_pair(p0 + 16 * kt + 8, bp, rp, col + 8, live0);
+        af[3] = gelu_pair(p1 + 16 * kt + 8, bp, rp, col + 8, live1);
 #pragma unroll
+        for (int nt = 0; nt < 2; ++nt) {
+            unsigned int bf[2];
+            frag_b(out_w, kt, nt, lane, 2, bf);
+            mma_tile(d[nt], af, bf);
+        }
+    }
+    for (int part = 0; part < 2; ++part) {
+        float v[4] = { d[0][2 * part], d[0][2 * part + 1],
+                       d[1][2 * part], d[1][2 * part + 1] };
+        const int b0 = 2 * tt;
+        float top = -1e30f;
         for (int i = 0; i < 4; ++i) {
-            int col = 16 * kt + 2 * tt + (i & 1) + 8 * (i >> 1);
-            base[kt][i] = bp[col] + rp[col];
+            v[i] += out_b[b0 + (i & 1) + 8 * (i >> 1)];
+            top = fmaxf(top, v[i]);
         }
+        for (int m = 1; m < 4; m <<= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffff, top, m));
+        float norm = 0.0f, mean = 0.0f;
+        for (int i = 0; i < 4; ++i) {
+            int bin = b0 + (i & 1) + 8 * (i >> 1);
+            float e = __expf(v[i] - top);
+            norm += e;
+            mean += e * ((bin + 0.5f) * (2.0f / BINS) - 1.0f);
+        }
+        for (int m = 1; m < 4; m <<= 1) {
+            norm += __shfl_xor_sync(0xffffffff, norm, m);
+            mean += __shfl_xor_sync(0xffffffff, mean, m);
+        }
+        unsigned int c = c0 + g + 8 * part;
+        if (tt == 0 && c < count) opinion[c] = mean / norm;
+    }
+}
 
-    for (unsigned int c0 = 0; c0 < count; c0 += 16) {
-        const bool live0 = c0 + g < count, live1 = c0 + g + 8 < count;
-        const __half* p0 = cfg + (size_t)(cs + min(c0 + g, count - 1)) * ATTN + 2 * tt;
-        const __half* p1 = cfg + (size_t)(cs + min(c0 + g + 8, count - 1)) * ATTN + 2 * tt;
-        float d[2][4] = {};
-#pragma unroll
-        for (int kt = 0; kt < ATTN / 16; ++kt) {
-            unsigned int af[4];
-            af[0] = gelu_pair(p0 + 16 * kt, base[kt][0], base[kt][1], live0);
-            af[1] = gelu_pair(p1 + 16 * kt, base[kt][0], base[kt][1], live1);
-            af[2] = gelu_pair(p0 + 16 * kt + 8, base[kt][2], base[kt][3], live0);
-            af[3] = gelu_pair(p1 + 16 * kt + 8, base[kt][2], base[kt][3], live1);
-#pragma unroll
-            for (int nt = 0; nt < 2; ++nt) {
-                unsigned int bf[2];
-                frag_b(out_w, kt, nt, lane, 2, bf);
-                mma_tile(d[nt], af, bf);
-            }
+extern "C" __global__ void __launch_bounds__(32 * VALUE_WARPS)
+k_value(const Tree* trees, const int* part_of_row, const int* local_row,
+        const float* belief_projection, const unsigned* __restrict__ out_w,
+        const float* out_b, int rows, int q0) {
+    __shared__ unsigned tiles[VALUE_WARPS + 1];
+    const int lane = threadIdx.x, warp = threadIdx.y, k0 = blockIdx.x * VALUE_WARPS;
+    if (lane == 0) {
+        const int k = k0 + warp;
+        unsigned n = 0;
+        if (k < rows) {
+            const Tree& t = trees[part_of_row[q0 + (k >> 1)]];
+            n = (t.nc[2 * t.leaf_node[local_row[q0 + (k >> 1)]] + (k & 1)] + VALUE_TILE - 1) / VALUE_TILE;
         }
-        for (int part = 0; part < 2; ++part) {
-            float v[4] = { d[0][2 * part], d[0][2 * part + 1],
-                           d[1][2 * part], d[1][2 * part + 1] };
-            const int b0 = 2 * tt;
-            float top = -1e30f;
-            for (int i = 0; i < 4; ++i) {
-                v[i] += out_b[b0 + (i & 1) + 8 * (i >> 1)];
-                top = fmaxf(top, v[i]);
-            }
-            for (int m = 1; m < 4; m <<= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffff, top, m));
-            float norm = 0.0f, mean = 0.0f;
-            for (int i = 0; i < 4; ++i) {
-                int bin = b0 + (i & 1) + 8 * (i >> 1);
-                float e = __expf(v[i] - top);
-                norm += e;
-                mean += e * ((bin + 0.5f) * (2.0f / BINS) - 1.0f);
-            }
-            for (int m = 1; m < 4; m <<= 1) {
-                norm += __shfl_xor_sync(0xffffffff, norm, m);
-                mean += __shfl_xor_sync(0xffffffff, mean, m);
-            }
-            unsigned int c = c0 + g + 8 * part;
-            if (tt == 0 && c < count) opinion[c] = mean / norm;
-        }
+        tiles[warp + 1] = n;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0 && warp == 0) {
+        tiles[0] = 0;
+        for (int w = 0; w < VALUE_WARPS; ++w) tiles[w + 1] += tiles[w];
+    }
+    __syncthreads();
+    for (unsigned tile = warp; tile < tiles[VALUE_WARPS]; tile += VALUE_WARPS) {
+        int w = 0;
+        while (tiles[w + 1] <= tile) ++w;
+        const int k = k0 + w;
+        const Tree& t = trees[part_of_row[q0 + (k >> 1)]];
+        value_tile(t, local_row[q0 + (k >> 1)], k & 1, (tile - tiles[w]) * VALUE_TILE,
+                   belief_projection + (size_t)k * ATTN, out_w, out_b, lane);
     }
 }
 
@@ -522,23 +656,17 @@ extern "C" __global__ void k_policy_inputs(const Tree* trees, const unsigned int
     const Tree& t = trees[part[k]];
     unsigned int node = node_of[k], me = t.player[node];
     for (int role = 0; role < 2; ++role) {
-        unsigned int player = role == 0 ? me : 1 - me;
-        unsigned int n = t.nc[2 * node + player], ra = rbase(t, node, player);
-        float total = 0.0f;
-        for (unsigned int c = lane; c < n; c += 32) total += t.reach[ra + c];
-        total = warp_sum(total);
-        float inv = total > SMOOTH ? 1.0f / total : 1.0f / (float)max(n, 1u);
-        unsigned int cs = t.coff[2 * row_of[k] + player];
-        for (int j = lane; j < attn; j += 32) {
-            float acc = 0.0f;
-            for (unsigned int c = 0; c < n; ++c) {
-                float belief = total > SMOOTH ? t.reach[ra + c] * inv : inv;
-                unsigned int pair = cs + c;
-                acc += belief * __half2float(t.conditioned[(size_t)pair * attn + j]);
+        const Seat seat = seat_of(t, row_of[k], role == 0 ? me : 1 - me, lane);
+        float acc[ATTN_WORDS][2] = {};
+        belief_sum(t, seat, 0, seat.count, lane, acc);
+#pragma unroll
+        for (int q = 0; q < ATTN_WORDS; ++q)
+#pragma unroll
+            for (int j = 0; j < 2; ++j) {
+                const int col = 2 * (lane + 32 * q) + j;
+                input[(size_t)k * (d + 2 * attn) + d + role * attn + col] = acc[q][j];
+                belief_out[((size_t)k * 2 + role) * attn + col] = acc[q][j];
             }
-            input[(size_t)k * (d + 2 * attn) + d + role * attn + j] = acc;
-            belief_out[((size_t)k * 2 + role) * attn + j] = acc;
-        }
     }
     unsigned int board = t.board_of[row_of[k]];
     for (int j = lane; j < d; j += 32) {

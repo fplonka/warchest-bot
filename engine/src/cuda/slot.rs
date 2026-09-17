@@ -16,6 +16,7 @@ const CU: &str = "const unsigned int*";
 const CF: &str = "const float*";
 const FM: &str = "float*";
 const CH: &str = "const __half*";
+const UM: &str = "unsigned int*";
 
 struct Col {
     ent: Ent,
@@ -42,7 +43,7 @@ pub fn tree_source() -> String {
     out + "};\n"
 }
 
-const TABLE: [Col; 53] = [
+const TABLE: [Col; 54] = [
     Col { ent: Ent::Node, width: 1, dst: Some(Dst::Kind), name: "kind", ty: CU },
     Col { ent: Ent::Node, width: 1, dst: Some(Dst::Player), name: "player", ty: CU },
     Col { ent: Ent::Node, width: 1, dst: Some(Dst::Exhausted), name: "exhausted", ty: CU },
@@ -76,6 +77,7 @@ const TABLE: [Col; 53] = [
     Col { ent: Ent::Node, width: 1, dst: Some(Dst::LevelStart), name: "level_start", ty: CU },
     Col { ent: Ent::Node, width: 1, dst: Some(Dst::LevelSplit), name: "level_split", ty: CU },
     Col { ent: Ent::Node, width: 1, dst: Some(Dst::LevelNode), name: "level_node", ty: CU },
+    Col { ent: Ent::Node, width: 6, dst: None, name: "prefix", ty: UM },
     Col { ent: Ent::Reach, width: 1, dst: Some(Dst::Reach), name: "reach", ty: FM },
     Col { ent: Ent::Reach, width: 2, dst: None, name: "vals", ty: FM },
     Col { ent: Ent::Reach, width: 2, dst: None, name: "opinion", ty: FM },
@@ -158,7 +160,7 @@ pub const Y_BOARD_OF: usize = lane(Ent::Row, "board_of");
 pub const Y_COFF: usize = lane(Ent::Row, "coff");
 
 const _: () = {
-    assert!(FIELDS[0] == 19);
+    assert!(FIELDS[0] == 25);
     assert!(FIELDS[1] == 13);
     assert!(FIELDS[2] == 9);
     assert!(FIELDS[3] == 4);

@@ -61,6 +61,17 @@ impl Card {
     fn reach(&self, b: &Batch, avg: i32) -> Res<()> {
         unsafe {
             self.stream
+                .launch_builder(&self.k.level_prefix)
+                .arg(b.trees.buf())
+                .launch_unit(LaunchConfig {
+                    grid_dim: (b.levels.max(1) as u32, 6, b.parts),
+                    block_dim: (CFR_THREADS, 1, 1),
+                    shared_mem_bytes: 0,
+                })
+        }
+        .map_err(err)?;
+        unsafe {
+            self.stream
                 .launch_builder(&self.k.reach)
                 .arg(b.trees.buf()).arg(&avg)
                 .launch_unit(LaunchConfig {
