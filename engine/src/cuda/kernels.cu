@@ -530,9 +530,9 @@ k_belief(const Tree* trees, const int* part_of_row, const int* local_row, __half
     belief_store(out, mine >> 1, mine & 1, lane, acc);
 }
 
-__device__ __forceinline__ unsigned gelu_pair(const __half* p, const float* __restrict__ bp,
+__device__ __forceinline__ unsigned gelu_pair(unsigned raw, const float* __restrict__ bp,
                                               const float* __restrict__ rp, int col, bool live) {
-    float2 v = __half22float2(*(const __half2*)p);
+    const float2 v = word2(raw);
     return live ? pack2(gelu1(v.x + bp[col] + rp[col]), gelu1(v.y + bp[col + 1] + rp[col + 1])) : 0u;
 }
 
@@ -546,17 +546,25 @@ __device__ void value_tile(const Tree& t, unsigned row, unsigned player, unsigne
     float* opinion = t.opinion + player * t.nvals + t.voff[node];
     const int g = lane >> 2, tt = lane & 3;
     const bool live0 = c0 + g < count, live1 = c0 + g + 8 < count;
-    const __half* p0 = cfg + (size_t)(cs + min(c0 + g, count - 1)) * ATTN + 2 * tt;
-    const __half* p1 = cfg + (size_t)(cs + min(c0 + g + 8, count - 1)) * ATTN + 2 * tt;
+    const unsigned* p0 = (const unsigned*)(cfg + (size_t)(cs + min(c0 + g, count - 1)) * ATTN) + tt;
+    const unsigned* p1 = (const unsigned*)(cfg + (size_t)(cs + min(c0 + g + 8, count - 1)) * ATTN) + tt;
+    unsigned raw[ATTN / 16][4];
+#pragma unroll
+    for (int kt = 0; kt < ATTN / 16; ++kt) {
+        raw[kt][0] = p0[8 * kt];
+        raw[kt][1] = p1[8 * kt];
+        raw[kt][2] = p0[8 * kt + 4];
+        raw[kt][3] = p1[8 * kt + 4];
+    }
     float d[2][4] = {};
 #pragma unroll
     for (int kt = 0; kt < ATTN / 16; ++kt) {
         const int col = 16 * kt + 2 * tt;
         unsigned int af[4];
-        af[0] = gelu_pair(p0 + 16 * kt, bp, rp, col, live0);
-        af[1] = gelu_pair(p1 + 16 * kt, bp, rp, col, live1);
-        af[2] = gelu_pair(p0 + 16 * kt + 8, bp, rp, col + 8, live0);
-        af[3] = gelu_pair(p1 + 16 * kt + 8, bp, rp, col + 8, live1);
+        af[0] = gelu_pair(raw[kt][0], bp, rp, col, live0);
+        af[1] = gelu_pair(raw[kt][1], bp, rp, col, live1);
+        af[2] = gelu_pair(raw[kt][2], bp, rp, col + 8, live0);
+        af[3] = gelu_pair(raw[kt][3], bp, rp, col + 8, live1);
 #pragma unroll
         for (int nt = 0; nt < 2; ++nt) {
             unsigned int bf[2];
