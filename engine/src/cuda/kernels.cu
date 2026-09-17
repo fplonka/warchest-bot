@@ -429,10 +429,10 @@ __device__ __forceinline__ unsigned int rbase(const Tree& t, unsigned int i, int
     return t.roff[i] + (p == 1 ? t.nc[2 * i] : 0);
 }
 
-#define ATTN_WORDS (ATTN / 64)
+#define BELIEF_LANES (ATTN / 8)
 #define VALUE_TILE 16
 #define BELIEF_FAT 64
-static_assert(ATTN % 64 == 0, "a belief row is a whole number of words a lane");
+static_assert(BELIEF_LANES <= 32 && ATTN % 8 == 0, "a belief row is one 16-byte word a lane");
 
 struct Seat {
     unsigned count;
@@ -456,30 +456,30 @@ __device__ __forceinline__ float seat_weight(const Tree& t, const Seat& seat, un
 }
 
 __device__ __forceinline__ void belief_sum(const Tree& t, const Seat& seat, unsigned from, unsigned to,
-                                           int lane, float (&acc)[ATTN_WORDS][2]) {
-    const unsigned* pp = (const unsigned*)(t.conditioned + (size_t)seat.cs * ATTN) + lane;
+                                           int lane, float (&acc)[8]) {
+    const uint4* pp = (const uint4*)(t.conditioned + (size_t)seat.cs * ATTN) + lane;
 #pragma unroll 4
     for (unsigned c = from; c < to; ++c) {
         const float weight = seat_weight(t, seat, c);
+        if (weight == 0.0f || lane >= BELIEF_LANES) continue;
+        const uint4 w = pp[(size_t)c * (ATTN / 8)];
+        const unsigned words[4] = {w.x, w.y, w.z, w.w};
 #pragma unroll
-        for (int q = 0; q < ATTN_WORDS; ++q) {
-            const float2 v = word2(pp[(size_t)c * (ATTN / 2) + 32 * q]);
-            acc[q][0] += weight * v.x;
-            acc[q][1] += weight * v.y;
+        for (int q = 0; q < 4; ++q) {
+            const float2 v = word2(words[q]);
+            acc[2 * q] += weight * v.x;
+            acc[2 * q + 1] += weight * v.y;
         }
     }
 }
 
 __device__ __forceinline__ void belief_store(__half* out, int i, unsigned player, int lane,
-                                             const float (&acc)[ATTN_WORDS][2]) {
-    unsigned* own = (unsigned*)(out + ((size_t)(2 * i) * 2 + player) * ATTN) + lane;
-    unsigned* other = (unsigned*)(out + ((size_t)(2 * i + 1) * 2 + (1 - player)) * ATTN) + lane;
-#pragma unroll
-    for (int q = 0; q < ATTN_WORDS; ++q) {
-        const unsigned v = pack2(acc[q][0], acc[q][1]);
-        own[32 * q] = v;
-        other[32 * q] = v;
-    }
+                                             const float (&acc)[8]) {
+    if (lane >= BELIEF_LANES) return;
+    const uint4 v = make_uint4(pack2(acc[0], acc[1]), pack2(acc[2], acc[3]),
+                               pack2(acc[4], acc[5]), pack2(acc[6], acc[7]));
+    ((uint4*)(out + ((size_t)(2 * i) * 2 + player) * ATTN))[lane] = v;
+    ((uint4*)(out + ((size_t)(2 * i + 1) * 2 + (1 - player)) * ATTN))[lane] = v;
 }
 
 extern "C" __global__ void __launch_bounds__(32 * VALUE_WARPS)
@@ -500,32 +500,25 @@ k_belief(const Tree* trees, const int* part_of_row, const int* local_row, __half
         const int k = k0 + w;
         const Tree& t = trees[part_of_row[q0 + (k >> 1)]];
         const Seat fat = seat_of(t, local_row[q0 + (k >> 1)], k & 1, lane);
-        float acc[ATTN_WORDS][2] = {};
+        float acc[8] = {};
         belief_sum(t, fat, fat.count * warp / VALUE_WARPS, fat.count * (warp + 1) / VALUE_WARPS, lane, acc);
+        if (lane < BELIEF_LANES)
 #pragma unroll
-        for (int q = 0; q < ATTN_WORDS; ++q) {
-            part[warp][2 * (lane + 32 * q)] = acc[q][0];
-            part[warp][2 * (lane + 32 * q) + 1] = acc[q][1];
-        }
+            for (int q = 0; q < 8; ++q) part[warp][8 * lane + q] = acc[q];
         __syncthreads();
         if (warp == 0) {
-            float sum[ATTN_WORDS][2];
+            float sum[8] = {};
 #pragma unroll
-            for (int q = 0; q < ATTN_WORDS; ++q) {
-                sum[q][0] = sum[q][1] = 0.0f;
+            for (int v = 0; v < VALUE_WARPS; ++v)
 #pragma unroll
-                for (int v = 0; v < VALUE_WARPS; ++v) {
-                    sum[q][0] += part[v][2 * (lane + 32 * q)];
-                    sum[q][1] += part[v][2 * (lane + 32 * q) + 1];
-                }
-            }
+                for (int q = 0; q < 8; ++q) sum[q] += lane < BELIEF_LANES ? part[v][8 * lane + q] : 0.0f;
             belief_store(out, k >> 1, k & 1, lane, sum);
         }
         __syncthreads();
     }
     if (mine >= rows || seat.count > BELIEF_FAT) return;
     const Tree& t = trees[part_of_row[q0 + (mine >> 1)]];
-    float acc[ATTN_WORDS][2] = {};
+    float acc[8] = {};
     belief_sum(t, seat, 0, seat.count, lane, acc);
     belief_store(out, mine >> 1, mine & 1, lane, acc);
 }
@@ -665,15 +658,14 @@ extern "C" __global__ void k_policy_inputs(const Tree* trees, const unsigned int
     unsigned int node = node_of[k], me = t.player[node];
     for (int role = 0; role < 2; ++role) {
         const Seat seat = seat_of(t, row_of[k], role == 0 ? me : 1 - me, lane);
-        float acc[ATTN_WORDS][2] = {};
+        float acc[8] = {};
         belief_sum(t, seat, 0, seat.count, lane, acc);
+        if (lane < BELIEF_LANES)
 #pragma unroll
-        for (int q = 0; q < ATTN_WORDS; ++q)
-#pragma unroll
-            for (int j = 0; j < 2; ++j) {
-                const int col = 2 * (lane + 32 * q) + j;
-                input[(size_t)k * (d + 2 * attn) + d + role * attn + col] = acc[q][j];
-                belief_out[((size_t)k * 2 + role) * attn + col] = acc[q][j];
+            for (int q = 0; q < 8; ++q) {
+                const int col = 8 * lane + q;
+                input[(size_t)k * (d + 2 * attn) + d + role * attn + col] = acc[q];
+                belief_out[((size_t)k * 2 + role) * attn + col] = acc[q];
             }
     }
     unsigned int board = t.board_of[row_of[k]];
