@@ -26,7 +26,7 @@ class Cfg:
     cfgs_per_row: int = 48
     s: int = 1024
     c: float = 8.0
-    round_batch: int = 8
+    round_batch: int = 16
     rounds: int = 1
     p_td1: float = 0.2
     query_rate: float = 0.9

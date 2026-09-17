@@ -14,6 +14,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -813,6 +815,8 @@ def main():
         deadline = t0 + total
         if time.time() >= deadline:
             return
+        torch.cuda.empty_cache()
+        torch.empty(2 * peak, dtype=torch.uint8, device=dev)
         farm = warchest.SolveFarm(
             args.seed + 1_000_003 * progress["farm_runs"],
             args.gen_workers,
