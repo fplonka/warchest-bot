@@ -47,7 +47,7 @@ def pack(run):
                                 weights_only=False)
         net = Net()
         net.load_state_dict(checkpoint["acting"])
-        search = {"s": 512, "c": 8.0, "batch": 8, "rounds": 0,
+        search = {"s": 1024, "c": 8.0, "batch": 16, "rounds": 1,
                   "puct": 1.5, "prior_temp": 1.0, "cfr": "dcfr"}
         final = snap is snapshots[-1]
         stem = Path(snap["file"]).stem.removeprefix("snap_")

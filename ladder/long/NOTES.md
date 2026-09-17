@@ -11,8 +11,10 @@ line is a run name, a branch, and any config overrides. It trains, packs,
 drops every snapshot but the last, pulls the manifests, adds the run here, and
 plays an hour of matches before the next arm.
 
-Every bot plays at s=512, c=8, batch=8, rounds=0 whatever trained it, so the
-ladder compares networks and not search budgets.
+Every bot plays at the deployment budget, s=1024, c=8, batch=16, rounds=1,
+whatever trained it, so the ladder compares networks and not search budgets.
+A match takes two to three times as long as at s=512, so the driver plays
+three hours of matches after each arm.
 
 ## 2026-09-14: the first nine arms
 
@@ -53,3 +55,14 @@ the 150k replay buffer is a window 14 minutes wide.
 A game ends when somebody wins or neither player can act. The harness stops at
 256 main plays and a match scores a stopped game as drawn, so most draws in a
 report are stopped games.
+
+## 2026-09-17: restart on the corrected drafts
+
+The 136 matches of the first campaign and the 28 that followed were played by
+a ladder binary built before the draft dealer was fixed on 2026-09-13, so the
+harness dealt from the old 19-card pool. All of them are gone, and the runs
+list is cut to strength anchors: adam-base and adamw (the current recipe at
+seed 1001), no-directional-ema and combined (the same recipe on the s=512
+kernels), master from before the combined recipe, and pre-changes_s1 as the
+floor. `defaults` is the first arm on the corrected ladder: round_batch=16
+against adamw's 8, otherwise the same run.

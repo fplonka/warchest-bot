@@ -44,5 +44,5 @@ while :; do
     # shellcheck disable=SC2086
     candidate "$name" "$branch" $rest || echo "[$(date +%FT%T)] $name failed"
     tail -n +2 "$queue" > "$queue.tmp" && mv "$queue.tmp" "$queue"
-    "$here/tools/ladder.sh" "$campaign" 1
+    "$here/tools/ladder.sh" "$campaign" 3
 done
