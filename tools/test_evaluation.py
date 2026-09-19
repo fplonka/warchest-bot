@@ -4,15 +4,9 @@ import unittest
 from pathlib import Path
 
 import monitor
-import pack
 
 
 class EvaluationTest(unittest.TestCase):
-
-    def test_geometric_selection_keeps_final(self):
-        snapshots = [{"t": value} for value in range(0, 81, 10)]
-        self.assertEqual([x["t"] for x in pack.selected(snapshots)],
-                         [10, 20, 40, 80])
 
     def test_dashboard_reads_ladder(self):
         with tempfile.TemporaryDirectory() as root:

@@ -7,7 +7,6 @@ import json
 import math
 import os
 import pathlib
-import subprocess
 import sys
 import time
 
@@ -22,7 +21,7 @@ import torch.nn.functional as F
 
 import warchest
 import config
-from export_weights import load as load_checkpoint
+import export_weights
 from value_net import BINS, Net
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -575,7 +574,7 @@ def publish_state(state):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Train one run and pack its snapshots as bots.")
+        description="Train one run, packing every snapshot as a bot.")
     ap.add_argument("over", nargs="*", help="knob=value (production defaults)")
     cli = ap.parse_args()
     over = config.parse(cli.over)
@@ -690,7 +689,7 @@ def main():
     else:
         if args.init_weights:
             for net in (value, acting):
-                net.load_state_dict(load_checkpoint(args.init_weights).state_dict())
+                net.load_state_dict(export_weights.load(args.init_weights).state_dict())
         acting.push()
         target_state = cpu_state(acting)
     print(f"[train] search inference on cuda:{args.gen_devices}, "
@@ -759,6 +758,7 @@ def main():
             os.remove(f"{args.out}/{old['file']}")
         del snaps[:-2]
         write_log(args, snaps)
+        export_weights.bot(args.out, label, acting, args.git, el / 60.0)
         print(f"[t={el:6.1f}s] --- snapshot {snaps[-1]['file']} ({label}) ---", flush=True)
 
     def tick(rec=None, line=None):
@@ -1166,10 +1166,6 @@ def main():
     run_search_pipeline()
 
     snapshot(time.time() - t0, "final")
-    del value, acting, opt, probe, buf
-    torch.cuda.empty_cache()
-    subprocess.run([sys.executable, str(ROOT / "tools" / "pack.py"),
-                    args.out], check=True)
 
 
 if __name__ == "__main__":
