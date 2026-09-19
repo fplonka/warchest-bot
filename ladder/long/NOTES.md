@@ -66,3 +66,37 @@ seed 1001), no-directional-ema and combined (the same recipe on the s=512
 kernels), master from before the combined recipe, and pre-changes_s1 as the
 floor. `defaults` is the first arm on the corrected ladder: round_batch=16
 against adamw's 8, otherwise the same run.
+
+## 2026-09-19: the search budget, one net at a time
+
+The ladder was stopped after 71 matches (8 h column: adam-base +285,
+adamw +281, s256-c1 +280, defaults +232, s256-c05 +97, all +-25). At matched
+optimizer rows every rounds=1 arm is the same bot, so the 8 h ranking is a
+ranking of rows a second, and it cannot say what a deeper target is worth
+once the net is no longer data starved.
+
+`search.jsonl` answers that directly: one fixed net, played against itself
+under different searches, 200 games a match, both seat orders. Elo relative
+to the training search (256 expansions, 256 iterations) on the s256-c1 8 h
+net:
+
+| expansions | iterations | Elo | cost |
+|---|---|---|---|
+| 1024 | 128 | -36 | 2x (the old deployment search) |
+| 64 | 256 | -104 | 0.25x |
+| 128 | 256 | +10 | 0.5x |
+| 512 | 256 | +24 | 2x |
+| 1024 | 256 | +60 | 4x |
+| 128 | 512 | -45 | 1x |
+| 256 | 512 | -17 | 2x |
+| 512 | 512 | +56 | 4x |
+| 256 | 1024 | +7 | 4x |
+
+128 to 256 iterations is worth 50 to 100 Elo on every net tried (s256-c1 at
+1 h and 8 h, adam-base, defaults), 256 to 1024 is worth nothing, and
+expansions pay about 25 Elo a doubling of cost after that. The big tree's
+edge over (256, 256) fell from ~120 Elo on the 1 h net to ~57 on the 8 h
+net, so a better net wants the extra tree less, not more. The four week run
+therefore trains at s=256, c=1 throughout, and bots play at (1024, 4).
+Rerun this grid on the week 1 and week 2 snapshots; a growing edge for the
+big tree is the only signal that would justify switching mid-run.

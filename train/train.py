@@ -556,10 +556,8 @@ def last_epoch(args):
 def write_log(args, snaps):
     path = f"{args.out}/log.json"
     tmp = path + ".tmp"
-    cfg = dataclasses.asdict(args)
-    cfg["resume"] = ""
     with open(tmp, "w") as f:
-        json.dump({"cfg": cfg, "snapshots": snaps}, f, indent=1)
+        json.dump({"cfg": dataclasses.asdict(args), "snapshots": snaps}, f, indent=1)
         f.write("\n")
     os.replace(tmp, path)
 
@@ -582,30 +580,14 @@ def main():
     cli = ap.parse_args()
     over = config.parse(cli.over)
     resume = over.pop("resume", "")
-    name = over.pop("out", None)
-    checkpoint = None
-    if resume:
-        minutes = over.pop("minutes", None)
-        if over:
-            raise SystemExit("resume only accepts a minutes extension")
-        checkpoint = torch.load(resume, map_location="cpu", weights_only=False)
-        args = config.Cfg(**checkpoint["cfg"])
-        if minutes is not None:
-            if minutes < args.minutes:
-                raise SystemExit("resume minutes cannot be reduced")
-            args = dataclasses.replace(args, minutes=minutes)
-        expected = pathlib.Path(args.out)
-        requested = pathlib.Path(name if name and name.startswith("runs/")
-                                 else f"runs/{name}") if name else expected
-        if requested != expected:
-            raise SystemExit(f"resume belongs to {expected}, not {requested}")
-        args.resume = resume
-    else:
-        if not name:
-            raise SystemExit("pass out=<name>")
-        args = dataclasses.replace(config.BASELINE, **over)
-        args.git = config.git_sha()
-        args.out = name if name.startswith("runs/") else f"runs/{name}"
+    checkpoint = torch.load(resume, map_location="cpu", weights_only=False) if resume else None
+    base = config.Cfg(**checkpoint["cfg"]) if checkpoint else config.BASELINE
+    args = dataclasses.replace(base, **over)
+    if not args.out:
+        raise SystemExit("pass out=<name>")
+    if not args.out.startswith("runs/"):
+        args.out = f"runs/{args.out}"
+    args.git = config.git_sha()
     if resume:
         if not os.path.isdir(args.out):
             raise SystemExit(f"resume output {args.out} does not exist")
@@ -719,6 +701,9 @@ def main():
           f"training on {dev}", flush=True)
 
     total = args.minutes * 60.0
+    warm = args.warm_minutes * 60.0
+    if not 0.0 <= warm <= total:
+        raise SystemExit("warm_minutes must be between zero and the run length")
     if args.snapshot_every <= 0:
         raise SystemExit("snapshot_every must be positive minutes")
     snap_gap = args.snapshot_every * 60.0
@@ -734,7 +719,6 @@ def main():
         "optimizer_rows": 0,
         "generated_rows": 0,
         "next_target": None,
-        "lr_duration": None,
         "farm_runs": 0,
         "totals": {},
     }
@@ -743,15 +727,14 @@ def main():
     sog_solves = int(progress["sog_solves"])
     probe = None
 
-    snaps = checkpoint["snapshots"] if checkpoint else []
+    snaps = [s for s in checkpoint["snapshots"]
+             if os.path.exists(f"{args.out}/{s['file']}")] if checkpoint else []
 
-    def snapshot(label, el):
-        path = f"{args.out}/snap_{len(snaps):04d}.pt"
-        entry = {"label": label, "t": round(el, 1),
-                 "file": os.path.basename(path)}
-        snaps.append(entry)
-        cfg = dataclasses.asdict(args)
-        cfg["resume"] = ""
+    def snapshot(el, label=None):
+        n = int(snaps[-1]["file"][5:9]) + 1 if snaps else 0
+        label = label or f"s{n}"
+        path = f"{args.out}/snap_{n:04d}.pt"
+        snaps.append({"label": label, "t": round(el, 1), "file": os.path.basename(path)})
         state = {
             "value": value.state_dict(),
             "acting": acting.state_dict(),
@@ -767,7 +750,7 @@ def main():
             "epoch": epoch,
             "snapshots": snaps,
             "progress": progress,
-            "cfg": cfg,
+            "cfg": dataclasses.asdict(args),
             "t": round(el, 1),
             "label": label,
             "git": args.git,
@@ -776,6 +759,9 @@ def main():
         tmp = path + ".tmp"
         torch.save(state, tmp)
         os.replace(tmp, path)
+        for old in snaps[:-2]:
+            os.remove(f"{args.out}/{old['file']}")
+        del snaps[:-2]
         write_log(args, snaps)
         print(f"[t={el:6.1f}s] --- snapshot {snaps[-1]['file']} ({label}) ---", flush=True)
 
@@ -791,14 +777,14 @@ def main():
             epoch += 1
         now = time.time()
         if now - t0 >= next_snap:
-            snapshot(f"s{len(snaps)}", now - t0)
+            snapshot(now - t0)
             next_snap = now - t0 + snap_gap
 
     def fit(nsteps, deadline=None):
         if sog_t0 is not None:
             for group in opt.param_groups:
                 group["lr"] = scheduled_lr(args.lr, args.lr_final, time.time() - sog_t0,
-                                           progress["lr_duration"], args.lr_stable_frac)
+                                           total - warm, args.lr_stable_frac)
         if nsteps < 1 or len(buf) < args.batch:
             return float("nan"), 0.0, {}
         tt = time.time()
@@ -1137,10 +1123,7 @@ def main():
           f"matmul={torch.get_float32_matmul_precision()}", flush=True)
 
     if not checkpoint:
-        snapshot("init", 0.0)
-    warm = args.warm_minutes * 60.0
-    if not 0.0 <= warm <= total:
-        raise SystemExit("warm_minutes must be between zero and the run length")
+        snapshot(0.0, "init")
     if args.lr <= 0.0 or args.lr_final <= 0.0 or args.lr_final > args.lr:
         raise SystemExit("lr_final must be positive and no greater than lr")
     if not 0.0 <= args.lr_stable_frac <= 1.0:
@@ -1180,10 +1163,9 @@ def main():
         sog_t0 = time.time()
         progress["sog_start"] = sog_t0 - t0
         progress["next_target"] = (sog_t0 - t0) + args.target_every * 60.0
-        progress["lr_duration"] = total - warm
     run_search_pipeline()
 
-    snapshot("final", time.time() - t0)
+    snapshot(time.time() - t0, "final")
     del value, acting, opt, probe, buf
     torch.cuda.empty_cache()
     subprocess.run([sys.executable, str(ROOT / "tools" / "pack.py"),

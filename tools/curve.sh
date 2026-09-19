@@ -23,7 +23,6 @@ candidate() {
     run "$branch" "out=$name" minutes=480 snapshot_every=60 \
         seed=1001 lr_final=0.001 "$@" &&
         "$here/tools/box.sh" "python tools/pack.py runs/$name" &&
-        "$here/tools/box.sh" "ls -1 runs/$name/snap_*.pt | head -n -1 | xargs -r rm -f" &&
         "$here/tools/box.sh" pull "$name" &&
         { grep -qxF "$name" "$campaign/runs" ||
               echo "$name" >> "$campaign/runs"; }

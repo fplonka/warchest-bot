@@ -9,7 +9,7 @@ from dataclasses import dataclass
 class Cfg:
     minutes: float = 30.0
     warm_minutes: float = 3.0
-    snapshot_every: float = 15.0
+    snapshot_every: float = 60.0
     init_weights: str = ""
     resume: str = ""
 
@@ -22,11 +22,11 @@ class Cfg:
     target_every: float = 5.0
     recent_mix: float = 0.5
     recent_frac: float = 0.2
-    cap: int = 150_000
+    cap: int = 1_000_000
     cfgs_per_row: int = 48
-    s: int = 1024
-    c: float = 8.0
-    round_batch: int = 16
+    s: int = 256
+    c: float = 1.0
+    round_batch: int = 8
     rounds: int = 1
     p_td1: float = 0.2
     query_rate: float = 0.9
@@ -34,7 +34,7 @@ class Cfg:
     cfr: str = "sog"
     policy_w: float = 0.18
     q_w: float = 0.05
-    explore: float = 0.1
+    explore: float = 0.03
     temp: float = 2.0
     warm_games: int = 96
     random_draft: bool = True
