@@ -693,10 +693,6 @@ def main():
                 net.load_state_dict(load_checkpoint(args.init_weights).state_dict())
         acting.push()
         target_state = cpu_state(acting)
-    peak = torch.cuda.max_memory_reserved(dev)
-    print(f"[train] torch peak {peak / (1 << 20):.0f} MiB reserved on {dev} "
-          f"(train {args.batch} rows, probe {PROBE_ROWS}); farm carves mem_get_info free",
-          flush=True)
     print(f"[train] search inference on cuda:{args.gen_devices}, "
           f"training on {dev}", flush=True)
 
@@ -801,6 +797,12 @@ def main():
         deadline = t0 + total
         if time.time() >= deadline:
             return
+        if len(buf) >= PROBE_ROWS:
+            probe = batcher(buf.sample(PROBE_ROWS, diag_rng), diag_rng, dev)
+            with torch.no_grad():
+                forward_values(value, probe)
+        peak = torch.cuda.max_memory_reserved(dev)
+        print(f"[train] torch peak {peak >> 20} MiB reserved on {dev}; the farm carves the rest", flush=True)
         torch.cuda.empty_cache()
         torch.empty(2 * peak, dtype=torch.uint8, device=dev)
         farm = warchest.SolveFarm(
@@ -898,7 +900,7 @@ def main():
             if now >= next_target:
                 acting.push()
                 target_state = cpu_state(acting)
-                if len(buf) >= 2048:
+                if len(buf) >= PROBE_ROWS:
                     probe = batcher(buf.sample(PROBE_ROWS, diag_rng), diag_rng, dev)
                 print(
                     f"[t={now - t0:6.1f}s] --- target network refresh ---",
@@ -913,8 +915,6 @@ def main():
             next_report = now + 10.0
             steps = int(window["train_steps"])
             lv = window["loss_sum"] / max(steps, 1)
-            if probe is None and len(buf) >= 2048:
-                probe = batcher(buf.sample(PROBE_ROWS, diag_rng), diag_rng, dev)
             diag = diagnostics(value, buf, probe, args.batch, diag_rng, dev, batcher,
                                args.recent_frac)
             target_n = max(int(window["target_n"]), 1)
