@@ -14,13 +14,16 @@ for run in $(cat "$campaign/runs"); do
 done
 
 offer=$(vast search offers 'verified=true rentable=true num_gpus=2 gpu_name=RTX_3090 cpu_cores_effective>=12 disk_space>=40 inet_down>=200 reliability>0.98' -o dph | field '[0]["id"]')
-id=$(vast create instance "$offer" --image pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel --disk 40 --ssh | field '["new_contract"]')
+id=$(vast create instance "$offer" --image nvidia/cuda:12.8.0-runtime-ubuntu22.04 --disk 20 --ssh | field '["new_contract"]')
 trap 'yes | vast destroy instance "$id"' EXIT
 echo "instance $id on offer $offer"
 until read -r host port < <(vast show instance "$id" | field '["ssh_host"], i["ssh_port"]') && [ "$host" != None ]; do sleep 15; done
 export WARCHEST_BOX_HOST=$host WARCHEST_BOX_PORT=$port WARCHEST_BOX_DIR=/workspace/curve
 for _ in $(seq 80); do "$here/tools/box.sh" true 2>/dev/null && break; sleep 15; done
-"$here/tools/box.sh" setup && "$here/tools/box.sh" sync && "$here/tools/box.sh" build
+"$here/tools/box.sh" "apt-get update -qq && apt-get install -y -qq rsync libjemalloc2 build-essential curl >/dev/null
+curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null"
+"$here/tools/box.sh" sync
+"$here/tools/box.sh" "cd engine && cargo build --release --bin ladder >/tmp/ladder.log 2>&1 || { tail -30 /tmp/ladder.log; exit 1; }"
 (cd "$here" && rsync -azR -e "ssh -i $key -p $port -o StrictHostKeyChecking=no" \
     $(sed 's,.*,runs/&/bots,' "$campaign/runs") "root@$host:/workspace/warchest-engine/")
 "$here/tools/ladder.sh" "$campaign" "$hours"
