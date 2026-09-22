@@ -24,4 +24,5 @@ for _ in $(seq 80); do "$here/tools/box.sh" true 2>/dev/null && break; sleep 15;
 (cd "$here" && rsync -azR -e "ssh -i $key -p $port -o StrictHostKeyChecking=no" \
     $(sed 's,.*,runs/&/bots,' "$campaign/runs") "root@$host:/workspace/warchest-engine/")
 "$here/tools/ladder.sh" "$campaign" "$hours"
+"$here/tools/box.sh" "grep -hv '^{' /workspace/logs/m*.log | tail -30"
 "$here/.venv/bin/python" "$here/tools/ladder.py" "$campaign" report
