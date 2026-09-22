@@ -19,7 +19,7 @@ trap 'yes | vast destroy instance "$id"' EXIT
 echo "instance $id on offer $offer"
 until read -r host port < <(vast show instance "$id" | field '["ssh_host"], i["ssh_port"]') && [ "$host" != None ]; do sleep 15; done
 export WARCHEST_BOX_HOST=$host WARCHEST_BOX_PORT=$port WARCHEST_BOX_DIR=/workspace/curve
-for _ in $(seq 40); do "$here/tools/box.sh" true 2>/dev/null && break; sleep 15; done
+for _ in $(seq 80); do "$here/tools/box.sh" true 2>/dev/null && break; sleep 15; done
 "$here/tools/box.sh" setup && "$here/tools/box.sh" sync && "$here/tools/box.sh" build
 (cd "$here" && rsync -azR -e "ssh -i $key -p $port -o StrictHostKeyChecking=no" \
     $(sed 's,.*,runs/&/bots,' "$campaign/runs") "root@$host:/workspace/warchest-engine/")
