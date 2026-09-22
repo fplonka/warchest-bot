@@ -13,7 +13,7 @@ for run in $(cat "$campaign/runs"); do
         "root@ssh2.vast.ai:/workspace/warchest-engine/runs/$run/bots/" "$here/runs/$run/bots/"
 done
 
-offer=$(vast search offers 'verified=true rentable=true num_gpus=1 gpu_name=RTX_3090 cpu_cores_effective>=12 disk_space>=40 inet_down>=200 reliability>0.95' -o dph | field '[0]["id"]')
+offer=$(vast search offers 'verified=true rentable=true num_gpus=2 gpu_name=RTX_3090 cpu_cores_effective>=12 disk_space>=40 inet_down>=200 reliability>0.95' -o dph | field '[0]["id"]')
 id=$(vast create instance "$offer" --image pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel --disk 40 --ssh | field '["new_contract"]')
 trap 'yes | vast destroy instance "$id"' EXIT
 echo "instance $id on offer $offer"
