@@ -5,11 +5,12 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 hours=${1:?usage: fourweek_ladder.sh <hours>}
 campaign=$here/ladder/fourweek
 key=$HOME/.ssh/id_ed25519_warchest_vast
+ssh-add -q "$key"
 vast() { VAST_API_KEY=$(cat ~/.config/vastai/vast_api_key) uvx --from vastai vastai "$@" --raw; }
 field() { python3 -c "import json,sys; i=json.load(sys.stdin); print(i$1)"; }
 
 for run in $(cat "$campaign/runs"); do
-    rsync -az -e "ssh -i $key -p 17198 -o StrictHostKeyChecking=no" \
+    rsync -az --include '*/' --include bot.json --exclude '*' -e "ssh -i $key -p 17198 -o StrictHostKeyChecking=no" \
         "root@ssh2.vast.ai:/workspace/warchest-engine/runs/$run/bots/" "$here/runs/$run/bots/"
 done
 
@@ -24,8 +25,9 @@ for _ in $(seq 80); do "$here/tools/box.sh" true 2>/dev/null && break; sleep 15;
 curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null"
 "$here/tools/box.sh" sync
 "$here/tools/box.sh" "cd engine && cargo build --release --bin ladder >/tmp/ladder.log 2>&1 || { tail -30 /tmp/ladder.log; exit 1; }"
-(cd "$here" && rsync -azR -e "ssh -i $key -p $port -o StrictHostKeyChecking=no" \
-    $(sed 's,.*,runs/&/bots,' "$campaign/runs") "root@$host:/workspace/warchest-engine/")
+ssh -A -i "$key" -p 17198 -o StrictHostKeyChecking=no root@ssh2.vast.ai \
+    "cd /workspace/warchest-engine && rsync -azR -e 'ssh -p $port -o StrictHostKeyChecking=no' \
+     $(sed 's,.*,runs/&/bots,' "$campaign/runs" | tr '\n' ' ') root@$host:/workspace/warchest-engine/"
 "$here/tools/ladder.sh" "$campaign" "$hours"
 "$here/tools/box.sh" "grep -hv '^{' /workspace/logs/m*.log | tail -30"
 "$here/.venv/bin/python" "$here/tools/ladder.py" "$campaign" report
