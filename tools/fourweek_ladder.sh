@@ -9,7 +9,8 @@ ssh-add -q "$key"
 vast() { VAST_API_KEY=$(cat ~/.config/vastai/vast_api_key) uvx --from vastai vastai "$@" --raw; }
 field() { python3 -c "import json,sys; i=json.load(sys.stdin); print(i$1)"; }
 
-for run in $(cat "$campaign/runs"); do
+runs=$(cut -d/ -f2 "$campaign/bots" | sort -u)
+for run in $runs; do
     rsync -az --include '*/' --include bot.json --exclude '*' -e "ssh -i $key -p 17198 -o StrictHostKeyChecking=no" \
         "root@ssh2.vast.ai:/workspace/warchest-engine/runs/$run/bots/" "$here/runs/$run/bots/"
 done
@@ -29,7 +30,7 @@ curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null"
 read -r ip direct < <(vast show instance "$id" | field '["public_ipaddr"], i["ports"]["22/tcp"][0]["HostPort"]')
 ssh -A -i "$key" -p 17198 -o StrictHostKeyChecking=no root@ssh2.vast.ai \
     "cd /workspace/warchest-engine && rsync -azR -e 'ssh -p $direct -o StrictHostKeyChecking=no' \
-     $(sed 's,.*,runs/&/bots,' "$campaign/runs" | tr '\n' ' ') root@$ip:/workspace/warchest-engine/"
+     $(for run in $runs; do printf 'runs/%s/bots ' "$run"; done) root@$ip:/workspace/warchest-engine/"
 "$here/tools/box.sh" "sed -i 's/\"s\": 1024/\"s\": 256/' /workspace/warchest-engine/runs/*/bots/*/bot.json"
 "$here/tools/ladder.sh" "$campaign" "$hours"
 "$here/tools/box.sh" "grep -hv '^{' /workspace/logs/m*.log | tail -30"

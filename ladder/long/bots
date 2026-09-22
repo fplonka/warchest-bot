@@ -1,0 +1,9 @@
+runs/adam-base/bots/*
+runs/adamw/bots/*
+runs/no-directional-ema/bots/*
+runs/combined-480m_s101/bots/*
+runs/master-480m_s101/bots/*
+runs/pre-changes_s1/bots/*
+runs/defaults/bots/*
+runs/s256-c1/bots/*
+runs/s256-c05/bots/*
