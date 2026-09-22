@@ -8,7 +8,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCALE = math.log(10.0) / 400.0
-GAMES, BLIND, GAUGE = 200, 10, 500.0
+GAMES, BLIND, GAUGE = 100, 10, 500.0
 
 
 def load(path, index):
@@ -171,7 +171,8 @@ def main():
     for run in (campaign / "runs").read_text().split():
         for spec in sorted((ROOT / "runs" / run / "bots").glob("*/bot.json")):
             bot = json.loads(spec.read_text())
-            bots[bot["name"]] = (bot["minutes"], str(spec.parent.relative_to(ROOT)))
+            if round(bot["minutes"] / 60) in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512):
+                bots[bot["name"]] = (bot["minutes"], str(spec.parent.relative_to(ROOT)))
     names = sorted(bots)
     ages = [round(bots[name][0]) for name in names]
     played = load(matches_path, {name: i for i, name in enumerate(names)})

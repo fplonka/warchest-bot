@@ -13,17 +13,14 @@ resumes itself after a crash (`tools/resume_train.sh`).
   weight norm, policy_search_kl.
 - `tools/ladder.py ladder/fourweek report` ranks the bots in `runs` here,
   against s256-c1 and adam-base from the long campaign as anchors (+280 and
-  +285 at 8 h on the old scale, all re-manifested to the (1024, 4) search).
+  +285 at 8 h on the old scale). Only bots whose age is a power of two hours
+  play (1, 2, 4, 8, 16, ... h), 100 games a match, at s=256 rather than the
+  packed 1024: cheap enough to connect the ladder in one session.
 
 ## Playing the ladder
 
-Never on the training box. On a second box:
-
-    export WARCHEST_BOX_HOST=<host> WARCHEST_BOX_PORT=<port>
-    tools/box.sh setup && tools/box.sh sync && tools/box.sh build
-    WARCHEST_BOX_DIR=/workspace/curve tools/box.sh sync && tools/box.sh build
-
-then copy `runs/fourweek/bots`, `runs/s256-c1/bots` and `runs/adam-base/bots`
-from the training box into `/workspace/warchest-engine/runs/` on it, and run
-`tools/ladder.sh ladder/fourweek <hours>` with the same env vars. It pairs
-bots of equal age across runs and appends to `matches.jsonl` here.
+Never on the training box. `tools/fourweek_ladder.sh <hours>` rents a 2x3090
+AMD box (the packed bots are built for the trainer's Zen CPU), builds the
+ladder binary, copies the bots over from the training box, plays the most
+informative pairs for that long, appends to `matches.jsonl` here, prints the
+report and destroys the box. Every session continues the same campaign.

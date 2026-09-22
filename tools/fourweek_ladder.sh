@@ -30,6 +30,7 @@ read -r ip direct < <(vast show instance "$id" | field '["public_ipaddr"], i["po
 ssh -A -i "$key" -p 17198 -o StrictHostKeyChecking=no root@ssh2.vast.ai \
     "cd /workspace/warchest-engine && rsync -azR -e 'ssh -p $direct -o StrictHostKeyChecking=no' \
      $(sed 's,.*,runs/&/bots,' "$campaign/runs" | tr '\n' ' ') root@$ip:/workspace/warchest-engine/"
+"$here/tools/box.sh" "sed -i 's/\"s\": 1024/\"s\": 256/' /workspace/warchest-engine/runs/*/bots/*/bot.json"
 "$here/tools/ladder.sh" "$campaign" "$hours"
 "$here/tools/box.sh" "grep -hv '^{' /workspace/logs/m*.log | tail -30"
 "$here/.venv/bin/python" "$here/tools/ladder.py" "$campaign" report
