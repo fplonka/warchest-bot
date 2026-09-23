@@ -15,7 +15,7 @@ for run in $runs; do
         "root@ssh2.vast.ai:/workspace/warchest-engine/runs/$run/bots/" "$here/runs/$run/bots/"
 done
 
-offer=$(vast search offers 'verified=true rentable=true num_gpus=2 gpu_name=RTX_3090 cpu_cores_effective>=12 disk_space>=40 inet_down>=200 reliability>0.98' -o dph |
+offer=$(vast search offers 'verified=true rentable=true num_gpus=2 gpu_name=RTX_3090 cpu_cores_effective>=12 disk_space>=40 inet_down>=200 reliability>0.98 cuda_vers>=12.8' -o dph |
     python3 -c 'import json,sys; print(next(o["id"] for o in json.load(sys.stdin) if "AMD" in o["cpu_name"]))')
 id=$(vast create instance "$offer" --image nvidia/cuda:12.8.0-devel-ubuntu22.04 --disk 20 --ssh --direct | field '["new_contract"]')
 trap 'yes | vast destroy instance "$id"' EXIT
