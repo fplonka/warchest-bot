@@ -1,20 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-args=("$@")
-options=()
 out=
-minutes=
-for arg in "${args[@]}"; do
-    case "$arg" in
-        --*) options+=("$arg") ;;
-        out=*) out=${arg#out=} ;;
-        minutes=*) minutes=${arg#minutes=} ;;
-    esac
+for arg in "$@"; do
+    case "$arg" in out=*) out=${arg#out=} ;; esac
 done
 [ -n "$out" ] || { echo "resume_train.sh needs out=<name>" >&2; exit 2; }
-run=${out#runs/}
-dir="runs/$run"
+dir="runs/${out#runs/}"
 
 newest_snapshot() {
     ls -1t "$dir"/snap_*.pt 2>/dev/null | head -1
@@ -23,13 +15,7 @@ newest_snapshot() {
 resume=$(newest_snapshot || true)
 failures=0
 while :; do
-    if [ -n "$resume" ]; then
-        command=(python train/train.py "${options[@]}" "out=$out" "resume=$resume")
-        [ -n "$minutes" ] && command+=("minutes=$minutes")
-    else
-        command=(python train/train.py "${args[@]}")
-    fi
-    if "${command[@]}"; then
+    if python train/train.py "$@" ${resume:+"resume=$resume"}; then
         exit 0
     else
         status=$?
