@@ -536,20 +536,12 @@ def append_epoch(args, rec):
         f.write(json.dumps(rec, separators=(",", ":")) + "\n")
 
 
-def last_epoch(args):
-    try:
-        with open(f"{args.out}/epochs.jsonl", "rb") as f:
-            f.seek(0, 2)
-            f.seek(max(0, f.tell() - (64 << 10)))
-            lines = f.read().splitlines()
-    except OSError:
-        return 0
-    for line in reversed(lines):
-        try:
-            return int(json.loads(line)["epoch"]) + 1
-        except (KeyError, TypeError, UnicodeDecodeError, ValueError):
-            pass
-    return 0
+def rewind_epochs(args, epoch):
+    path = f"{args.out}/epochs.jsonl"
+    with open(path) as f:
+        kept = [line for line in f if json.loads(line)["epoch"] < epoch]
+    with open(path, "w") as f:
+        f.writelines(kept)
 
 
 def write_log(args, snaps):
@@ -707,7 +699,7 @@ def main():
     t0 = time.time() - elapsed
     epoch = int(checkpoint["epoch"]) if checkpoint else 0
     if checkpoint:
-        epoch = max(epoch, last_epoch(args))
+        rewind_epochs(args, epoch)
     progress = checkpoint["progress"] if checkpoint else {
         "sog_start": None,
         "sog_solves": 0,
@@ -724,6 +716,7 @@ def main():
 
     snaps = [s for s in checkpoint["snapshots"]
              if os.path.exists(f"{args.out}/{s['file']}")] if checkpoint else []
+    write_log(args, snaps)
 
     def snapshot(el, label=None):
         n = int(snaps[-1]["file"][5:9]) + 1 if snaps else 0
