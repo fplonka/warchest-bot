@@ -1,7 +1,9 @@
 # The four week run
 
 `runs/fourweek` trains at the config.py defaults (s=256, c=1, cap 1M,
-explore 0.03) for 40320 minutes. It packs a bot every four hours into
+explore 0.03) for 40320 minutes. The ladder had it flat from 32 h at lr 1e-3
+while an 8 h branch at 3e-4 gained +36 Elo, so from 80 h (Sep 23) it resumed
+with a cosine 3e-4 -> 3e-5 over the rest of the run. It packs a bot every four hours into
 `runs/fourweek/bots/s<n>`, keeps the last two full checkpoints, and
 resumes itself after a crash (`tools/resume_train.sh`).
 
