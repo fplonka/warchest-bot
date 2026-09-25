@@ -10,3 +10,7 @@ runs/fourweek/bots/s32
 runs/fourweek-lr3/bots/*
 runs/adam-base/bots/*
 runs/s256-c1/bots/*
+runs/fourweek/bots/s20
+runs/fourweek/bots/s24
+runs/fourweek/bots/s28
+runs/fourweek/bots/s31
