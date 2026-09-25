@@ -47,13 +47,11 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let path = args.first().ok_or("usage: bot BOT_DIR --devices 0,1")?;
+    let path = args.first().ok_or("usage: bot BOT_DIR --devices 0,1 [--slots N]")?;
     let packed = Packed::load(path.as_ref())?;
-    let device_text = args
-        .iter()
-        .position(|x| x == "--devices")
-        .and_then(|i| args.get(i + 1))
-        .ok_or("packed bot needs --devices")?;
+    let flag = |name: &str| args.iter().position(|x| x == name).and_then(|i| args.get(i + 1));
+    let device_text = flag("--devices").ok_or("packed bot needs --devices")?;
+    let slots = flag("--slots").map_or(Ok(usize::MAX), |x| x.parse().map_err(|_| format!("invalid slots {x}")))?;
     let devices = device_text
         .split(',')
         .map(|x| x.parse().map_err(|_| format!("invalid device {x}")))
@@ -65,7 +63,7 @@ fn run() -> Result<(), String> {
     let mind = match packed.manifest.search.mind.as_str() {
         "greedy" => Mind::Greedy { temp: cfg.prior_temp },
         "" | "sog" => Mind::Sog(Arc::new(Cards::new(Device::new(
-            &devices, &net, cfg, usize::MAX,
+            &devices, &net, cfg, slots,
         )?))),
         other => return Err(format!("unknown mind {other}")),
     };

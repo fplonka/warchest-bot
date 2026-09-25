@@ -65,5 +65,9 @@ lto = true
 codegen-units = 1
 
 [[test]]
+name = "online"
+path = "tests/online.rs"
+
+[[test]]
 name = "pbs"
 path = "tests/pbs.rs"

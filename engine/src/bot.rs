@@ -128,7 +128,13 @@ impl Session {
             return Err(format!("player {} is not to act", player));
         }
         if player == self.seat {
-            return Err("a bot is told its own moves back".into());
+            let action = Action::decode(key)
+                .filter(|a| self.s.legal_actions().contains(a))
+                .ok_or_else(|| format!("own move {} is not legal here", key))?;
+            let np = brain.policy(&self.s, &self.ctx, self.seat, &self.bel, &mut self.rng);
+            self.bel[self.seat as usize] = np.posterior(&self.bel[self.seat as usize], obs_key(&action));
+            self.s.apply_inplace(action);
+            return Ok(());
         }
         let np = match self.modelled.take() {
             Some(np) => np,

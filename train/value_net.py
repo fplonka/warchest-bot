@@ -190,7 +190,7 @@ class Net(nn.Module):
     def forward(self, xpub, phi, weight, seg, nseg, attention):
         return self.value(self.evaluate(xpub, phi, weight, seg, nseg, attention)[0])
 
-    def flat(self):
+    def tensors(self):
         blocks = [m for i in range(BLOCKS)
                   for m in (self.blk1[i], self.blkg[i], self.blk2[i])]
         mats = [
@@ -207,17 +207,25 @@ class Net(nn.Module):
         ]
         norms = [n for i in range(BLOCKS) for n in (self.ln1[i], self.ln2[i])]
         norms += [self.ln_trunk, self.ln_cfg, self.ln_attn, self.ln_act]
+        w = [m.weight if isinstance(m, nn.Embedding) else m.weight.t() for m in mats]
+        b = [m.bias for m in mats if not isinstance(m, nn.Embedding) and m.bias is not None]
+        ln = [x for n in norms for x in (n.weight, n.bias)]
+        return w, b, ln
 
+    def flat(self):
         def raw(t):
             return t.detach().cpu().contiguous().numpy().ravel()
+        return tuple(np.ascontiguousarray(np.concatenate([raw(t) for t in ts]), np.float32)
+                     for ts in self.tensors())
 
-        w = [raw(m.weight if isinstance(m, nn.Embedding) else m.weight.t())
-             for m in mats]
-        b = [raw(m.bias) for m in mats
-             if not isinstance(m, nn.Embedding) and m.bias is not None]
-        ln = [x for n in norms for x in (raw(n.weight), raw(n.bias))]
-        flatten = lambda xs: np.ascontiguousarray(np.concatenate(xs), np.float32)
-        return flatten(w), flatten(b), flatten(ln)
+    def load_flat(self, arrays):
+        with torch.no_grad():
+            for flat, ts in zip(arrays, self.tensors(), strict=True):
+                sizes = [t.numel() for t in ts]
+                assert sum(sizes) == len(flat), "weights layout mismatch"
+                for t, chunk in zip(ts, torch.from_numpy(flat.copy()).split(sizes)):
+                    t.copy_(chunk.reshape(t.shape))
+        return self
 
     def push(self):
         warchest.set_weights(*self.flat())

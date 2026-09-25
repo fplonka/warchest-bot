@@ -1,3 +1,4 @@
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -7,6 +8,7 @@ use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
 #[cfg(feature = "gpu")]
 use crate::farm::Farm;
 use crate::net::Net;
+use crate::online::{Game, Site};
 use crate::search::{Budget, Cfg, Cfr, Ent};
 use crate::selfplay::{run_static_games, Agent, Collect, Data, GameCfg};
 use numpy::{IntoPyArray, PyReadonlyArray1};
@@ -373,6 +375,81 @@ fn expand_rows_cuda(
     }
 }
 
+type Opening = (Vec<u8>, Vec<u8>, Vec<f32>, [usize; 2]);
+
+#[pyfunction]
+fn opening(white: Vec<u16>, black: Vec<u16>, first: u8) -> PyResult<Opening> {
+    use crate::pbs::{belief_after_draw, config_counts, faceup_counts, pack_row, reserve, Belief, Config, Ctx};
+    let mut s = crate::arena::Draft { white, black, first }
+        .state()
+        .map_err(PyValueError::new_err)?;
+    let ctx = Ctx::new(&s);
+    let mut bel = [Belief::point(Config::default()), Belief::point(Config::default())];
+    while s.is_chance() {
+        let p = s.to_act();
+        bel[p as usize] = belief_after_draw(
+            &bel[p as usize],
+            &reserve(&s, p, &ctx),
+            &faceup_counts(&s, p, &ctx),
+            false,
+        );
+        s.apply_inplace(s.legal_actions()[0]);
+    }
+    let mut row = vec![0u8; crate::pbs::ROW_BYTES];
+    pack_row(&s, &ctx, &mut row);
+    let (mut counts, mut weights) = (Vec::new(), Vec::new());
+    for (p, b) in bel.iter().enumerate() {
+        let res = reserve(&s, p as u8, &ctx);
+        for (c, w) in b.cfg.iter().zip(&b.p) {
+            let mut cnt = [0u8; crate::pbs::CCOUNTS];
+            config_counts(c, &res, &mut cnt);
+            counts.extend_from_slice(&cnt);
+            weights.push(*w);
+        }
+    }
+    Ok((row, counts, weights, [bel[0].len(), bel[1].len()]))
+}
+
+#[pyclass(name = "Game")]
+struct Online(Game);
+
+fn site(json: &str) -> PyResult<Site> {
+    serde_json::from_str(json).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pymethods]
+impl Online {
+    #[new]
+    fn new(journal: &str) -> PyResult<Online> {
+        Game::new(journal).map(Online).map_err(PyValueError::new_err)
+    }
+
+    fn sync(&mut self, json: &str) -> PyResult<()> {
+        self.0.sync(&site(json)?).map_err(PyValueError::new_err)
+    }
+
+    fn command(&self, json: &str) -> PyResult<Option<String>> {
+        let cmd = self.0.command(&site(json)?).map_err(PyValueError::new_err)?;
+        Ok(cmd.map(|c| c.to_string()))
+    }
+
+    fn act(&mut self, code: u32) -> PyResult<()> {
+        self.0.act(code).map_err(PyValueError::new_err)
+    }
+
+    fn ask(&self, told: usize) -> String {
+        self.0.ask(told)
+    }
+
+    fn journal(&self) -> String {
+        self.0.journal()
+    }
+
+    fn __len__(&self) -> usize {
+        self.0.obs().len()
+    }
+}
+
 #[pymodule]
 fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mirror_rows, m)?)?;
@@ -380,6 +457,8 @@ fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(card_features_table, m)?)?;
     m.add_function(wrap_pyfunction!(hex_location_flags, m)?)?;
     m.add_class::<SolveFarm>()?;
+    m.add_class::<Online>()?;
+    m.add_function(wrap_pyfunction!(opening, m)?)?;
     m.add("PUBFEAT", crate::pbs::PUBFEAT)?;
     m.add("CFEAT", crate::pbs::CFEAT)?;
     m.add("CCOUNTS", crate::pbs::CCOUNTS)?;
