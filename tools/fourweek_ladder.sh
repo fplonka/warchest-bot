@@ -15,7 +15,7 @@ for run in $runs; do
         "root@ssh2.vast.ai:/workspace/warchest-engine/runs/$run/bots/" "$here/runs/$run/bots/"
 done
 
-offer=$(vast search offers 'verified=true rentable=true num_gpus=2 gpu_name=RTX_3090 cpu_cores_effective>=12 disk_space>=40 inet_down>=200 reliability>0.98 cuda_vers>=12.8' -o dph |
+offer=$(vast search offers 'verified=true rentable=true num_gpus=2 gpu_name=RTX_3090 cpu_cores_effective>=12 disk_space>=40 inet_down>=200 reliability>0.98 cuda_vers>=12.8 geolocation in [US,CA,GB,DE,FR,NL,SE,FI,NO,PL,EE,CZ,AT,CH]' -o dph |
     python3 -c 'import json,sys; print(next(o["id"] for o in json.load(sys.stdin) if "AMD" in o["cpu_name"]))')
 id=$(vast create instance "$offer" --image nvidia/cuda:12.8.0-devel-ubuntu22.04 --disk 20 --ssh --direct | field '["new_contract"]')
 trap 'yes | vast destroy instance "$id"' EXIT
@@ -30,7 +30,7 @@ curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null"
 read -r ip direct < <(vast show instance "$id" | field '["public_ipaddr"], i["ports"]["22/tcp"][0]["HostPort"]')
 ssh -A -i "$key" -p 17198 -o StrictHostKeyChecking=no root@ssh2.vast.ai \
     "cd /workspace/warchest-engine && rsync -azR -e 'ssh -p $direct -o StrictHostKeyChecking=no' \
-     $(for run in $runs; do printf 'runs/%s/bots ' "$run"; done) root@$ip:/workspace/warchest-engine/"
+     $(tr '\n' ' ' < "$campaign/bots") root@$ip:/workspace/warchest-engine/"
 "$here/tools/box.sh" "sed -i 's/\"s\": 1024/\"s\": 256/' /workspace/warchest-engine/runs/*/bots/*/bot.json"
 "$here/tools/ladder.sh" "$campaign" "$hours"
 "$here/tools/box.sh" "grep -hv '^{' /workspace/logs/m*.log | tail -30"
