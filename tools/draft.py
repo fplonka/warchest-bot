@@ -15,7 +15,7 @@ SNAKE = [0, 1, 1, 0, 0, 1, 1, 0]
 
 
 def load(path):
-    return read_bin(path).eval()
+    return read_bin(path).eval().cuda()
 
 
 def values(net, drafts):
@@ -29,9 +29,10 @@ def values(net, drafts):
     rows, cc, cw, seg = np.stack(rows), np.concatenate(cc), np.concatenate(cw), np.concatenate(seg)
     x = np.asarray(warchest.expand_rows(rows.ravel()), np.float32).reshape(len(drafts), warchest.PUBFEAT)
     slot, width = attention_layout(seg // 2, len(drafts))
+    gpu = lambda a: torch.from_numpy(a).cuda()
     with torch.no_grad():
-        v = net(torch.from_numpy(x), torch.from_numpy(cc.astype(np.float32) / warchest.CNORM), torch.from_numpy(cw),
-                torch.from_numpy(seg.astype(np.int64)), 2 * len(drafts), (torch.from_numpy(slot), width)).numpy()
+        v = net(gpu(x), gpu(cc.astype(np.float32) / warchest.CNORM), gpu(cw), gpu(seg.astype(np.int64)),
+                2 * len(drafts), (gpu(slot), width)).cpu().numpy()
     out = np.zeros((len(drafts), 2))
     np.add.at(out, (seg // 2, seg % 2), v * cw)
     return out
@@ -53,7 +54,7 @@ def plan(net, seat, pool, mine, theirs, eliminated, me_first_picker):
     for m, t in leaves:
         w, b = (sorted(m), sorted(t)) if seat == 0 else (sorted(t), sorted(m))
         drafts += [(w, b, 0), (w, b, 1)]
-    vals = np.concatenate([values(net, drafts[i:i + 512])[:, seat] for i in range(0, len(drafts), 512)])
+    vals = np.concatenate([values(net, drafts[i:i + 2048])[:, seat] for i in range(0, len(drafts), 2048)])
     table = {leaf: (vals[2 * i] + vals[2 * i + 1]) / 2 for i, leaf in enumerate(leaves)}
 
     @lru_cache(maxsize=None)
