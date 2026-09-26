@@ -79,6 +79,10 @@ fn data_to_dict(py: Python<'_>, d: Data) -> PyResult<PyObject> {
     for (name, v) in PLAYS.iter().zip(d.plays) {
         out.set_item(format!("plays_{name}"), v)?;
     }
+    for (name, [chosen, offered]) in crate::actions::KIND_NAMES.iter().zip(d.kinds.0) {
+        out.set_item(format!("chosen_{name}"), chosen)?;
+        out.set_item(format!("offered_{name}"), offered)?;
+    }
     for (name, got, want) in [
         ("config offsets", d.coff.len(), if d.nv == 0 { 0 } else { 2 * d.nv + 1 }),
         ("truth", d.truth.len(), 2 * d.nv),
@@ -468,6 +472,7 @@ fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("N_UNITS", crate::units::N_UNITS)?;
     m.add("NSLOT", crate::pbs::NSLOT)?;
     m.add("N_KINDS", crate::actions::N_KINDS)?;
+    m.add("KIND_NAMES", crate::actions::KIND_NAMES.to_vec())?;
     m.add("ACT_BYTES", crate::search::ACT_BYTES)?;
     m.add("CARD_FEATS", crate::units::CARD_FEATS)?;
     m.add("NTYPE", crate::pbs::NTYPE)?;

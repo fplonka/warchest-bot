@@ -871,7 +871,9 @@ def main():
                     "white_wins", "black_wins", "draws",
                     "plays_attack", "plays_pass", "plays_deploy",
                     "plays_bolster", "plays_maneuver", "plays_recruit",
-                    "plays_claim_initiative", "configs", "query_rows", "dropped"):
+                    "plays_claim_initiative", "configs", "query_rows", "dropped",
+                    *(f"{count}_{kind}" for kind in warchest.KIND_NAMES
+                      for count in ("chosen", "offered"))):
                 amount = int(data.get(name, 0))
                 totals[name] += amount
                 window[name] += amount
@@ -1003,6 +1005,8 @@ def main():
                         "attack", "pass", "deploy", "bolster",
                         "maneuver", "recruit", "claim_initiative")
                 },
+                "kinds": {kind: [totals[f"chosen_{kind}"], totals[f"offered_{kind}"]]
+                          for kind in warchest.KIND_NAMES if totals[f"offered_{kind}"]},
                 "configs": round(window["configs"] / dec, 1),
                 "steps": steps,
                 "optimizer_steps": optimizer_rows // args.batch,

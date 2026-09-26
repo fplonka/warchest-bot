@@ -210,6 +210,24 @@ def panels(eps):
                               / max(e.get("decisions", 1), 1) for e in eps], True)
                       for kind in kinds], zero=True))
 
+    counts = [e.get("kinds") or {} for e in eps]
+
+    def taken(a, b, kind):
+        (c0, o0), (c1, o1) = a.get(kind, (0, 0)), b.get(kind, (0, 0))
+        return 100 * (c1 - c0) / (o1 - o0) if o1 > o0 else None
+
+    def chances(title, kinds):
+        return panel(title, "% of chances taken", m,
+                     [series(kind, [None] + [taken(a, b, kind)
+                                             for a, b in zip(counts, counts[1:])], True)
+                      for kind in kinds], zero=True)
+
+    seen = sorted({kind for c in counts for kind in c})
+    out.append(chances("Tactic use",
+                       [k for k in seen if k.startswith("Tac") and k != "TacCavalryAttack"]))
+    out.append(chances("Optional maneuvers declined",
+                       [k for k in seen if k.endswith(("Decline", "Stop"))]))
+
     censuses = [e.get("stop_census") or {} for e in eps]
     reasons = sorted({reason for census in censuses for stops in census.values()
                       for reason in stops})

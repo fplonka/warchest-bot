@@ -22,6 +22,7 @@ macro_rules! actions {
         #[repr(u32)]
         enum Kind { $($name),* }
 
+        pub const KIND_NAMES: [&str; N_KINDS] = [$(stringify!($name)),*];
         pub const N_KINDS: usize = [$(Kind::$name),*].len();
 
         impl Action {

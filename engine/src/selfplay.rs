@@ -1,4 +1,4 @@
-use crate::actions::{Action, N_PLAYS};
+use crate::actions::{Action, N_KINDS, N_PLAYS};
 use crate::board::NONE;
 use crate::net::Net;
 use crate::pbs::*;
@@ -50,6 +50,14 @@ pub enum Collect {
     Sog,
 }
 
+pub struct KindCounts(pub [[usize; 2]; N_KINDS]);
+
+impl Default for KindCounts {
+    fn default() -> Self {
+        KindCounts([[0; 2]; N_KINDS])
+    }
+}
+
 #[derive(Default)]
 pub struct Data {
     pub rows: Vec<u8>,
@@ -72,6 +80,7 @@ pub struct Data {
     pub query: Vec<u8>,
     pub td1: Vec<u8>,
     pub plays: [usize; N_PLAYS],
+    pub kinds: KindCounts,
 
     pub coff: Vec<u32>,
     pub soff: Vec<u32>,
@@ -108,6 +117,10 @@ impl Data {
         self.decisions += o.decisions;
         for (a, b) in self.plays.iter_mut().zip(o.plays) {
             *a += b;
+        }
+        for (a, b) in self.kinds.0.iter_mut().zip(o.kinds.0) {
+            a[0] += b[0];
+            a[1] += b[1];
         }
         self.wins[0] += o.wins[0];
         self.wins[1] += o.wins[1];
@@ -379,6 +392,11 @@ impl Game {
         if let Some(slot) = self.ready.plays.get_mut(np.acts[chosen].play() as usize) {
             *slot += 1;
         }
+        let offered = np.row(true_ci).fold(0u64, |m, cell| m | 1 << np.acts[np.action_at(cell)].kind());
+        for (k, counts) in self.ready.kinds.0.iter_mut().enumerate() {
+            counts[1] += (offered >> k & 1) as usize;
+        }
+        self.ready.kinds.0[np.acts[chosen].kind()][0] += 1;
         self.s.apply_inplace(np.acts[chosen]);
     }
 
