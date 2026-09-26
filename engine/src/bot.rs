@@ -1,6 +1,8 @@
 use crate::actions::Action;
 use crate::arena::{Draft, Obs};
-use crate::pbs::{belief_after_draw, faceup_counts, obs_key, reserve, set_config, true_config, Belief, Config, Ctx};
+use crate::pbs::{
+    belief_after_draw, faceup_counts, obs_key, reserve, set_config, true_config, uniform_belief, Belief, Config, Ctx,
+};
 use crate::policy::{self, NodePolicy};
 use crate::rng::Rng;
 
@@ -139,6 +141,13 @@ impl Session {
         let np = match self.modelled.take() {
             Some(np) => np,
             None => brain.policy(&self.s, &self.ctx, player, &self.bel, &mut self.rng),
+        };
+        let np = if np.cell_for(key).is_some() {
+            np
+        } else {
+            eprintln!("observation {key} is unreachable from the belief of player {player}; it restarts from the board");
+            self.bel[player as usize] = uniform_belief(&self.s, &self.ctx, player);
+            brain.policy(&self.s, &self.ctx, player, &self.bel, &mut self.rng)
         };
         let (ci, cell) = np
             .cell_for(key)
