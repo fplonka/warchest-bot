@@ -302,7 +302,7 @@ impl State {
     }
 
     #[inline]
-    fn pay_zone(&self) -> usize {
+    pub(crate) fn pay_zone(&self) -> usize {
         match self.pending {
             Cont::WarriorPriestPlay { .. } => Z_INFLIGHT,
             _ => Z_HAND,
