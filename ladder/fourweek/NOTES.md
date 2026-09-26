@@ -29,3 +29,15 @@ AMD box (the packed bots are built for the trainer's Zen CPU), builds the
 ladder binary, copies the bots over from the training box, plays the most
 informative pairs for that long, appends to `matches.jsonl` here, prints the
 report and destroys the box. Every session continues the same campaign.
+
+## 2026-09-26: the footman fix
+
+The second footman's rules changed at 156 h (s40 on): TacFootman is gone, so
+action kinds after 17 shift down one and old binaries speak different codes.
+Every old bot was re-packed on the new binary, its weights converted the way
+the run converted at 156 h: the Footman tactic input row folds into
+`two_footmen`, the TacFootman kind row goes, FootDecline starts as a copy of
+MercDecline. On drafts without a footman nothing that changed is ever used,
+so from here the ladder deals without footmen and old and new bots meet on one
+game. adam-base is a smaller net the new binary cannot load; it left the
+campaign. The original bots are in /workspace/oldbots on the training box.

@@ -104,7 +104,7 @@ fn drafts(seed: u64, count: usize) -> Vec<Draft> {
     let mut rng = Rng::new(seed);
     (0..count)
         .map(|_| {
-            let pool = deal(&mut rng);
+            let pool: Vec<u16> = deal(&mut rng).into_iter().filter(|&u| !warchest::units::def(u as u8).two_footmen).collect();
             Draft {
                 white: pool[..4].to_vec(),
                 black: pool[4..8].to_vec(),
