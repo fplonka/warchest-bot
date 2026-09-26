@@ -1,4 +1,4 @@
-use crate::actions::Action;
+use crate::actions::{Action, N_KINDS};
 use crate::board::{board, NONE, N_HEXES};
 use crate::state::{State, CONT_CAP, PENDING_KINDS, Z_BAG, Z_ELIM, Z_FACEDOWN, Z_FACEUP, Z_HAND, Z_INFLIGHT, Z_SUPPLY};
 use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
@@ -629,6 +629,7 @@ pub fn rules_table_hash() -> u64 {
         h ^= x;
         h = h.wrapping_mul(0x1000_0000_01b3);
     };
+    mix(N_KINDS as u64);
     let bd = board();
     for &l in bd.is_location.iter() {
         mix(l as u64);

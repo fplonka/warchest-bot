@@ -71,7 +71,7 @@ pub enum Cont {
     RoyalGuardChoice { defender: u8, rg_hex: u8 },
     SwordsmanMove { hex: u8 },
     BerserkerChain { hex: u8, v2: bool },
-    FootmanManeuver { hexes: HexSet },
+    FootmanManeuver { hexes: HexSet, optional: bool },
     CavalryAttack { hex: u8 },
     MercenaryManeuver { hex: u8 },
     FootmanInstantDeploy { coin: u8 },
@@ -114,7 +114,7 @@ impl Cont {
             | Cont::BerserkerChain { hex, .. }
             | Cont::CavalryAttack { hex }
             | Cont::MercenaryManeuver { hex } => one(hex),
-            Cont::FootmanManeuver { hexes } => hexes,
+            Cont::FootmanManeuver { hexes, .. } => hexes,
             Cont::WarriorPriestDraw { rg_hex, .. } => one(rg_hex),
             Cont::_AttackPost { atk_hex } => one(atk_hex),
             _ => HexSet::default(),
@@ -139,12 +139,12 @@ impl Cont {
             },
             Cont::SwordsmanMove { hex: h } => Cont::SwordsmanMove { hex: hex(h) },
             Cont::BerserkerChain { hex: h, v2 } => Cont::BerserkerChain { hex: hex(h), v2 },
-            Cont::FootmanManeuver { hexes } => {
+            Cont::FootmanManeuver { hexes, optional } => {
                 let mut out = HexSet::default();
                 for h in hexes.iter() {
                     out.insert(hex(h));
                 }
-                Cont::FootmanManeuver { hexes: out }
+                Cont::FootmanManeuver { hexes: out, optional }
             }
             Cont::CavalryAttack { hex: h } => Cont::CavalryAttack { hex: hex(h) },
             Cont::MercenaryManeuver { hex: h } => Cont::MercenaryManeuver { hex: hex(h) },

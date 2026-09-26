@@ -298,6 +298,24 @@ fn footman_two_units_and_tactic_two_maneuvers() {
     assert!(has(&acts, Action::TacFootman { coin: FOOTMAN }));
     let s2 = s.apply(Action::TacFootman { coin: FOOTMAN });
     assert!(matches!(s2.pending(), Cont::FootmanManeuver { .. }));
+    let acts = s2.legal_actions();
+    assert!(!has(&acts, Action::FootDecline));
+    let first = *acts.iter().find(|a| matches!(a, Action::FootMove { from: W1, .. })).unwrap();
+    let s3 = s2.apply(first);
+    let acts = s3.legal_actions();
+    assert!(has(&acts, Action::FootDecline));
+    assert!(has(&acts, Action::FootAttack { from: CENTER, target: E1 }));
+    assert!(!matches!(s3.apply(Action::FootDecline).pending(), Cont::FootmanManeuver { .. }));
+}
+
+#[test]
+fn footman_tactic_with_one_footman_grants_one_forced_maneuver() {
+    let mut s = one_unit(FOOTMAN, CENTER);
+    s.set_unit(E1, BLACK, FOOTMAN, 1);
+    let s2 = s.apply(Action::TacFootman { coin: FOOTMAN });
+    assert!(!has(&s2.legal_actions(), Action::FootDecline));
+    let s3 = s2.apply(Action::FootAttack { from: CENTER, target: E1 });
+    assert!(!matches!(s3.pending(), Cont::FootmanManeuver { .. }));
 }
 
 #[test]
@@ -523,6 +541,7 @@ fn action_encode_decode_roundtrip() {
         Action::MercDecline,
         Action::FootmanInstantDeploy { hex: 11 },
         Action::FootmanInstantDecline,
+        Action::FootDecline,
     ];
     for a in samples {
         let code = a.encode();

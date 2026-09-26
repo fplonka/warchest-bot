@@ -659,9 +659,12 @@ impl State {
                 self.list_basic_maneuvers(hex as usize, ManVariant::MERC, out);
                 out.push(Action::MercDecline);
             }
-            Cont::FootmanManeuver { hexes } => {
+            Cont::FootmanManeuver { hexes, optional } => {
                 for h in hexes.iter() {
                     self.list_basic_maneuvers(h as usize, ManVariant::FOOTMAN, out);
+                }
+                if optional {
+                    out.push(Action::FootDecline);
                 }
             }
             Cont::CavalryAttack { hex } => {
@@ -776,7 +779,7 @@ impl State {
                 }
                 self.finish();
             }
-            Cont::FootmanManeuver { hexes } => {
+            Cont::FootmanManeuver { hexes, .. } => {
                 self.apply_footman(hexes, action);
             }
             Cont::CavalryAttack { hex } => {
@@ -879,7 +882,7 @@ impl State {
                     hexes.insert(h as u8);
                 }
                 if !hexes.is_empty() {
-                    self.push_cont(Cont::FootmanManeuver { hexes });
+                    self.push_cont(Cont::FootmanManeuver { hexes, optional: false });
                 }
             }
             _ => {}
@@ -922,10 +925,6 @@ impl State {
 
     fn apply_footman(&mut self, hexes: crate::state::HexSet, action: Action) {
         use Action::*;
-        let from = match action {
-            FootMove { from, .. } | FootControl { from } | FootAttack { from, .. } => from,
-            _ => NONE,
-        };
         match action {
             FootMove { from, to } => self.do_move(from as usize, to as usize),
             FootControl { from } => self.do_control(from as usize),
@@ -933,9 +932,9 @@ impl State {
             _ => {}
         }
         let mut rest = hexes;
-        rest.remove(from);
-        if !rest.is_empty() {
-            self.push_cont(Cont::FootmanManeuver { hexes: rest });
+        rest.remove(action.hexes()[0]);
+        if action != FootDecline && !rest.is_empty() {
+            self.push_cont(Cont::FootmanManeuver { hexes: rest, optional: true });
         }
         self.finish();
     }

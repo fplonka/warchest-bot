@@ -108,6 +108,7 @@ actions! {
     MercDecline,
     FootmanInstantDeploy { hex },
     FootmanInstantDecline,
+    FootDecline,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
