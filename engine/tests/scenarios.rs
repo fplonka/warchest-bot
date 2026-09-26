@@ -288,34 +288,27 @@ fn marshal_grants_normal_attack_not_archer() {
 }
 
 #[test]
-fn footman_two_units_and_tactic_two_maneuvers() {
+fn footman_maneuver_paid_with_its_coin_offers_the_other_footman_one() {
     let mut s = State::blank(WHITE);
     s.set_unit(CENTER, WHITE, FOOTMAN, 1);
     s.set_unit(E1, BLACK, FOOTMAN, 1);
     s.set_unit(W1, WHITE, FOOTMAN, 1);
     s.add_zone(WHITE, Z_HAND, FOOTMAN, 1);
-    let acts = s.legal_actions();
-    assert!(has(&acts, Action::TacFootman { coin: FOOTMAN }));
-    let s2 = s.apply(Action::TacFootman { coin: FOOTMAN });
-    assert!(matches!(s2.pending(), Cont::FootmanManeuver { .. }));
+    let first = *s.legal_actions().iter().find(|a| matches!(a, Action::Move { from: W1, .. })).unwrap();
+    let s2 = s.apply(first);
+    assert_eq!(*s2.pending(), Cont::FootmanManeuver { hex: CENTER });
     let acts = s2.legal_actions();
-    assert!(!has(&acts, Action::FootDecline));
-    let first = *acts.iter().find(|a| matches!(a, Action::FootMove { from: W1, .. })).unwrap();
-    let s3 = s2.apply(first);
-    let acts = s3.legal_actions();
     assert!(has(&acts, Action::FootDecline));
     assert!(has(&acts, Action::FootAttack { from: CENTER, target: E1 }));
-    assert!(!matches!(s3.apply(Action::FootDecline).pending(), Cont::FootmanManeuver { .. }));
+    assert!(acts.iter().all(|&a| a == Action::FootDecline || a.hexes()[0] == CENTER));
+    assert!(!matches!(s2.apply(Action::FootDecline).pending(), Cont::FootmanManeuver { .. }));
 }
 
 #[test]
-fn footman_tactic_with_one_footman_grants_one_forced_maneuver() {
+fn a_lone_footman_maneuvers_once() {
     let mut s = one_unit(FOOTMAN, CENTER);
     s.set_unit(E1, BLACK, FOOTMAN, 1);
-    let s2 = s.apply(Action::TacFootman { coin: FOOTMAN });
-    assert!(!has(&s2.legal_actions(), Action::FootDecline));
-    let s3 = s2.apply(Action::FootAttack { from: CENTER, target: E1 });
-    assert!(!matches!(s3.pending(), Cont::FootmanManeuver { .. }));
+    assert!(!matches!(s.apply(Action::Attack { from: CENTER, target: E1 }).pending(), Cont::FootmanManeuver { .. }));
 }
 
 #[test]
@@ -521,7 +514,6 @@ fn action_encode_decode_roundtrip() {
         Action::TacLightCav { from: 17, to: 19 },
         Action::TacMarshal { from: 17, target: 24, },
         Action::TacRoyalGuard { from: 18, to: 20 },
-        Action::TacFootman { coin: FOOTMAN },
         Action::FootMove { from: 18, to: 19 },
         Action::FootControl { from: 11 },
         Action::FootAttack { from: 18, target: 19 },

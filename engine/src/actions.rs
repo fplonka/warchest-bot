@@ -90,7 +90,6 @@ actions! {
     TacLightCav { from, to },
     TacMarshal { from, target },
     TacRoyalGuard { from, to },
-    TacFootman { coin },
     FootMove { from, to },
     FootControl { from },
     FootAttack { from, target },

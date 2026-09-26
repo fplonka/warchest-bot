@@ -114,9 +114,6 @@ TACTICS (played via the Tactic action with that unit's coin):
   intervening space must be empty. (Normal attack also allowed.)
 - Ensign: choose a friendly unit within 2 spaces of the Ensign; it makes a
   normal one-step move that must end within 2 spaces of the Ensign.
-- Footman / Footman V2: perform one maneuver with each Footman unit on the
-  board (the two maneuvers are chosen independently: move/control/attack).
-  With one Footman on board, the tactic still grants its one maneuver.
 - Lancer: move 1 or 2 spaces and then attack, all in one straight line. The
   tactic is legal only if the final attack can actually be made (e.g. cannot
   end adjacent to an unbolstered-attack-immune Knight with no other target in
@@ -161,6 +158,9 @@ ATTRIBUTES (free/triggered effects):
   never joins the hand: it is the coin the forced play pays with, and the
   engine holds it in its own zone until then, so the hand cap is untouched.
 - Warrior Priest V2: same, at most once per turn.
+- Footman / Footman V2 (no tactic): a move, control or attack of a Footman
+  paid with a Footman coin lets the other Footman, if on the board, make one
+  optional move, control or attack.
 - Footman V2 extra attribute: after you RECRUIT a Footman coin while you
   already have a Footman unit deployed, you may immediately deploy the
   recruited coin (normal deploy legality) instead of putting it in discard.

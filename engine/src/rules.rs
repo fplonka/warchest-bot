@@ -166,8 +166,7 @@ impl State {
                 }
                 Some(c) => {
                     self.pending = c;
-                    if matches!(c, Cont::FootmanManeuver { .. } | Cont::CavalryAttack { .. })
-                        && self.legal_actions().is_empty()
+                    if matches!(c, Cont::CavalryAttack { .. }) && self.legal_actions().is_empty()
                     {
                         continue;
                     }
@@ -395,9 +394,6 @@ impl State {
         let b = board();
         match def(unit).tactic {
             Tactic::None => {}
-            Tactic::Footman => {
-                out.push(Action::TacFootman { coin: unit });
-            }
             Tactic::Archer => {
                 for t in 0..N_HEXES {
                     if b.dist[hex][t] == 2 && is_enemy_unit(self, t, me) && attack_allowed_h(self, t, self.hex_height[hex]) {
@@ -659,13 +655,9 @@ impl State {
                 self.list_basic_maneuvers(hex as usize, ManVariant::MERC, out);
                 out.push(Action::MercDecline);
             }
-            Cont::FootmanManeuver { hexes, optional } => {
-                for h in hexes.iter() {
-                    self.list_basic_maneuvers(h as usize, ManVariant::FOOTMAN, out);
-                }
-                if optional {
-                    out.push(Action::FootDecline);
-                }
+            Cont::FootmanManeuver { hex } => {
+                self.list_basic_maneuvers(hex as usize, ManVariant::FOOTMAN, out);
+                out.push(Action::FootDecline);
             }
             Cont::CavalryAttack { hex } => {
                 self.list_basic_maneuvers(hex as usize, ManVariant::CAVALRY_ATTACK, out);
@@ -769,18 +761,16 @@ impl State {
             Cont::BerserkerChain { hex, .. } => {
                 self.apply_berserker(hex, action);
             }
-            Cont::MercenaryManeuver { .. } => {
+            Cont::MercenaryManeuver { .. } | Cont::FootmanManeuver { .. } => {
                 match action {
-                    MercMove { from, to } => self.do_move(from as usize, to as usize),
-                    MercControl { from } => self.do_control(from as usize),
-                    MercAttack { from, target } => self.do_attack(from as usize, target as usize),
-                    MercDecline => {}
+                    MercMove { from, to } | FootMove { from, to } => self.do_move(from as usize, to as usize),
+                    MercControl { from } | FootControl { from } => self.do_control(from as usize),
+                    MercAttack { from, target } | FootAttack { from, target } => {
+                        self.do_attack(from as usize, target as usize)
+                    }
                     _ => {}
                 }
                 self.finish();
-            }
-            Cont::FootmanManeuver { hexes, .. } => {
-                self.apply_footman(hexes, action);
             }
             Cont::CavalryAttack { hex } => {
                 if let TacCavalryAttack { from, target } = action {
@@ -875,16 +865,6 @@ impl State {
                 self.zmove(p, pay, Z_FACEUP, ROYAL_COIN);
                 self.do_move(from as usize, to as usize);
             }
-            TacFootman { coin } => {
-                self.zmove(p, pay, Z_FACEUP, coin);
-                let mut hexes = crate::state::HexSet::default();
-                for h in self.hexes_of(p, coin) {
-                    hexes.insert(h as u8);
-                }
-                if !hexes.is_empty() {
-                    self.push_cont(Cont::FootmanManeuver { hexes, optional: false });
-                }
-            }
             _ => {}
         }
         self.finish();
@@ -894,6 +874,11 @@ impl State {
         let unit = self.hex_type[hex];
         debug_assert!(unit != NONE);
         self.zmove(p, pay, Z_FACEUP, unit);
+        if def(unit).two_footmen {
+            if let Some(other) = self.hexes_of(p, unit).into_iter().find(|&h| h != hex) {
+                self.push_cont(Cont::FootmanManeuver { hex: other as u8 });
+            }
+        }
     }
     fn apply_berserker(&mut self, hex: u8, action: Action) {
         use Action::*;
@@ -923,21 +908,6 @@ impl State {
         self.finish();
     }
 
-    fn apply_footman(&mut self, hexes: crate::state::HexSet, action: Action) {
-        use Action::*;
-        match action {
-            FootMove { from, to } => self.do_move(from as usize, to as usize),
-            FootControl { from } => self.do_control(from as usize),
-            FootAttack { from, target } => self.do_attack(from as usize, target as usize),
-            _ => {}
-        }
-        let mut rest = hexes;
-        rest.remove(action.hexes()[0]);
-        if action != FootDecline && !rest.is_empty() {
-            self.push_cont(Cont::FootmanManeuver { hexes: rest, optional: true });
-        }
-        self.finish();
-    }
     pub fn pending_debug(&self) -> String {
         format!(
             "{:?} active={} round={} hands=[{},{}]",

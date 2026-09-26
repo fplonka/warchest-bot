@@ -175,7 +175,7 @@ pub fn action_coin(a: &Action, s: &State) -> u8 {
     use Action::*;
     match *a {
         Deploy { unit, .. } | Bolster { unit, .. } => unit,
-        ClaimInitiative { coin } | Recruit { coin, .. } | Pass { coin } | TacFootman { coin } => coin,
+        ClaimInitiative { coin } | Recruit { coin, .. } | Pass { coin } => coin,
         TacRoyalGuard { .. } => ROYAL_COIN,
         TacEnsign { .. } => ENSIGN,
         TacMarshal { .. } => MARSHAL,

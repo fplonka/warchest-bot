@@ -28,14 +28,13 @@ pub enum Tactic {
     Cavalry,
     Crossbowman,
     Ensign,
-    Footman,
     Lancer,
     LightCavalry,
     Marshal,
     RoyalGuard,
 }
 
-pub const N_TACTICS: usize = 10;
+pub const N_TACTICS: usize = 9;
 
 impl Tactic {
     #[inline]
@@ -46,11 +45,10 @@ impl Tactic {
             Tactic::Cavalry => 2,
             Tactic::Crossbowman => 3,
             Tactic::Ensign => 4,
-            Tactic::Footman => 5,
-            Tactic::Lancer => 6,
-            Tactic::LightCavalry => 7,
-            Tactic::Marshal => 8,
-            Tactic::RoyalGuard => 9,
+            Tactic::Lancer => 5,
+            Tactic::LightCavalry => 6,
+            Tactic::Marshal => 7,
+            Tactic::RoyalGuard => 8,
         }
     }
 }
@@ -137,7 +135,7 @@ pub static UNITS: [UnitDef; N_UNITS] = {
         def!(3, "Cavalry", 4, Tactic::Cavalry),
         def!(4, "Crossbowman", 5, Tactic::Crossbowman),
         def!(5, "Ensign", 5, Tactic::Ensign),
-        def!(6, "Footman", 5, Tactic::Footman),
+        def!(6, "Footman", 5, Tactic::None),
         def!(7, "Knight", 4, Tactic::None),
         def!(8, "Lancer", 4, Tactic::Lancer),
         def!(9, "Light Cavalry", 5, Tactic::LightCavalry),
@@ -149,7 +147,7 @@ pub static UNITS: [UnitDef; N_UNITS] = {
         def!(18, "Warrior Priest", 4, Tactic::None),
         def!(19, "Royal Guard", 5, Tactic::RoyalGuard),
         def!(52, "Berserker V2", 5, Tactic::None),
-        def!(53, "Footman V2", 5, Tactic::Footman),
+        def!(53, "Footman V2", 5, Tactic::None),
         def!(54, "Warrior Priest V2", 4, Tactic::None),
         def!(13, "Royal Coin", 1, Tactic::None),
     ];

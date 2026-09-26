@@ -17,53 +17,6 @@ pub const N_ZONES: usize = 7;
 pub const WHITE: u8 = 0;
 pub const BLACK: u8 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
-pub struct HexSet(pub u64);
-
-impl HexSet {
-    #[inline]
-    pub fn insert(&mut self, h: u8) {
-        debug_assert!((h as usize) < 64);
-        self.0 |= 1u64 << h;
-    }
-    #[inline]
-    pub fn remove(&mut self, h: u8) {
-        if h < 64 {
-            self.0 &= !(1u64 << h);
-        }
-    }
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.0 == 0
-    }
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.0.count_ones() as usize
-    }
-    #[inline]
-    pub fn iter(self) -> HexSetIter {
-        HexSetIter(self.0)
-    }
-    pub fn to_vec(self) -> Vec<u8> {
-        self.iter().collect()
-    }
-}
-
-pub struct HexSetIter(u64);
-
-impl Iterator for HexSetIter {
-    type Item = u8;
-    #[inline]
-    fn next(&mut self) -> Option<u8> {
-        if self.0 == 0 {
-            return None;
-        }
-        let h = self.0.trailing_zeros() as u8;
-        self.0 &= self.0 - 1;
-        Some(h)
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cont {
     Draw { player: u8 },
@@ -71,7 +24,7 @@ pub enum Cont {
     RoyalGuardChoice { defender: u8, rg_hex: u8 },
     SwordsmanMove { hex: u8 },
     BerserkerChain { hex: u8, v2: bool },
-    FootmanManeuver { hexes: HexSet, optional: bool },
+    FootmanManeuver { hex: u8 },
     CavalryAttack { hex: u8 },
     MercenaryManeuver { hex: u8 },
     FootmanInstantDeploy { coin: u8 },
@@ -100,24 +53,18 @@ impl Cont {
         }
     }
 
-    pub fn owed_hexes(self) -> HexSet {
-        let one = |h: u8| {
-            let mut s = HexSet::default();
-            if (h as usize) < N_HEXES {
-                s.insert(h);
-            }
-            s
-        };
+    pub fn owed_hexes(self) -> u64 {
+        let one = |h: u8| if (h as usize) < N_HEXES { 1u64 << h } else { 0 };
         match self {
             Cont::RoyalGuardChoice { rg_hex, .. } => one(rg_hex),
             Cont::SwordsmanMove { hex }
             | Cont::BerserkerChain { hex, .. }
             | Cont::CavalryAttack { hex }
-            | Cont::MercenaryManeuver { hex } => one(hex),
-            Cont::FootmanManeuver { hexes, .. } => hexes,
+            | Cont::MercenaryManeuver { hex }
+            | Cont::FootmanManeuver { hex } => one(hex),
             Cont::WarriorPriestDraw { rg_hex, .. } => one(rg_hex),
             Cont::_AttackPost { atk_hex } => one(atk_hex),
-            _ => HexSet::default(),
+            _ => 0,
         }
     }
 
@@ -139,13 +86,7 @@ impl Cont {
             },
             Cont::SwordsmanMove { hex: h } => Cont::SwordsmanMove { hex: hex(h) },
             Cont::BerserkerChain { hex: h, v2 } => Cont::BerserkerChain { hex: hex(h), v2 },
-            Cont::FootmanManeuver { hexes, optional } => {
-                let mut out = HexSet::default();
-                for h in hexes.iter() {
-                    out.insert(hex(h));
-                }
-                Cont::FootmanManeuver { hexes: out, optional }
-            }
+            Cont::FootmanManeuver { hex: h } => Cont::FootmanManeuver { hex: hex(h) },
             Cont::CavalryAttack { hex: h } => Cont::CavalryAttack { hex: hex(h) },
             Cont::MercenaryManeuver { hex: h } => Cont::MercenaryManeuver { hex: hex(h) },
             Cont::FootmanInstantDeploy { coin } => Cont::FootmanInstantDeploy { coin },

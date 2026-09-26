@@ -665,7 +665,7 @@ fn stack_bits(s: &State) -> ([u8; CONT_CAP], [u64; CONT_CAP]) {
     for (i, c) in s.stack().into_iter().enumerate() {
         if let Some(c) = c {
             kinds[i] = c.tag();
-            owed[i] = c.owed_hexes().0;
+            owed[i] = c.owed_hexes();
         }
     }
     (kinds, owed)
