@@ -424,7 +424,7 @@ impl Online {
         Game::new(journal).map(Online).map_err(PyValueError::new_err)
     }
 
-    fn sync(&mut self, json: &str) -> PyResult<()> {
+    fn sync(&mut self, json: &str) -> PyResult<usize> {
         self.0.sync(&site(json)?).map_err(PyValueError::new_err)
     }
 
