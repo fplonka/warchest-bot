@@ -30,6 +30,8 @@ pub struct Brain {
     pub mind: Mind,
     pub net: Arc<Net>,
     pub cfg: Cfg,
+    pub opponent_temp: f32,
+    pub opponent_eps: f32,
 }
 
 #[derive(Serialize)]
@@ -56,6 +58,8 @@ impl Brain {
             mind,
             net: Arc::new(net),
             cfg,
+            opponent_temp: packed.manifest.search.opponent_temp,
+            opponent_eps: packed.manifest.search.opponent_eps,
         })
     }
 
@@ -186,7 +190,7 @@ impl Session {
         if self.s.is_terminal() || self.s.is_chance() || self.s.to_act() != player {
             return Err(format!("player {} is not to act", player));
         }
-        let np = match self.modelled.take() {
+        let mut np = match self.modelled.take() {
             Some(np) => np,
             None => brain.policy(&self.s, &self.ctx, player, &self.bel, &mut self.rng),
         };
@@ -198,6 +202,8 @@ impl Session {
             self.s.apply_inplace(action);
             return Ok(());
         }
+        np.temper(brain.opponent_temp);
+        np.mix_uniform(brain.opponent_eps);
         let (ci, cell) = np
             .cell_for(key)
             .ok_or_else(|| format!("observation {} is unreachable from this belief", key))?;
@@ -253,6 +259,8 @@ mod tests {
             mind: Mind::Random,
             net: Arc::new(Net::default()),
             cfg: Cfg::default(),
+            opponent_temp: 1.0,
+            opponent_eps: 0.0,
         }
     }
 

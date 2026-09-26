@@ -17,6 +17,14 @@ pub struct Search {
     pub cfr: String,
     #[serde(default)]
     pub mind: String,
+    #[serde(default = "untempered")]
+    pub opponent_temp: f32,
+    #[serde(default)]
+    pub opponent_eps: f32,
+}
+
+fn untempered() -> f32 {
+    1.0
 }
 
 impl Search {

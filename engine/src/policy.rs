@@ -108,6 +108,21 @@ impl NodePolicy {
         }
     }
 
+    pub fn temper(&mut self, t: f32) {
+        if t == 1.0 {
+            return;
+        }
+        for ci in 0..self.legal_off.len() - 1 {
+            let row = self.row(ci);
+            let probs = &mut self.probs[row];
+            probs.iter_mut().for_each(|p| *p = p.powf(1.0 / t));
+            let sum: f32 = probs.iter().sum();
+            if sum > 0.0 {
+                probs.iter_mut().for_each(|p| *p /= sum);
+            }
+        }
+    }
+
     pub fn posterior(&self, prior: &Belief, obs: u32) -> Belief {
         let mut pairs: Vec<(Config, f32)> = Vec::new();
         for (ci, c) in prior.cfg.iter().enumerate() {
@@ -250,4 +265,32 @@ pub fn greedy(s: &State, ctx: &Ctx, player: u8, cfgs: &[Config], temp: f32) -> N
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::arena::Draft;
+    use crate::pbs::true_config;
+
+    #[test]
+    fn a_tempered_mixed_opponent_can_play_any_legal_move() {
+        let draft = Draft { white: vec![17, 12, 4, 9], black: vec![1, 3, 8, 16], first: 0 };
+        let mut s = draft.state().unwrap();
+        let ctx = Ctx::new(&s);
+        while s.is_chance() {
+            s.apply_inplace(s.legal_actions()[0]);
+        }
+        let cfgs = [true_config(&s, s.to_act(), &ctx)];
+        let mut np = uniform(&s, &ctx, s.to_act(), &cfgs);
+        let row = np.row(0);
+        assert!(row.len() > 1);
+        np.probs[row.clone()].fill(0.0);
+        np.probs[row.start] = 1.0;
+        let sharp = np.probs.clone();
+        np.temper(1.0);
+        np.mix_uniform(0.0);
+        assert_eq!(np.probs, sharp);
+        np.temper(3.0);
+        np.mix_uniform(0.1);
+        assert!(np.probs[row.clone()].iter().all(|&p| p > 0.0));
+        assert!((np.probs[row].iter().sum::<f32>() - 1.0).abs() < 1e-6);
+    }
+}
