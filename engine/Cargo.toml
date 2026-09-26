@@ -44,6 +44,11 @@ path = "src/bin/bot.rs"
 required-features = ["gpu"]
 
 [[bin]]
+name = "review"
+path = "src/bin/review.rs"
+required-features = ["gpu"]
+
+[[bin]]
 name = "ladder"
 path = "src/bin/ladder.rs"
 

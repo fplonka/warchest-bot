@@ -1,13 +1,10 @@
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use rayon::prelude::*;
 use warchest::arena::{Ask, Done, Hello, Reply, Request, PROTOCOL};
-use warchest::bot::{Brain, Mind, Session};
-use warchest::cuda::Device;
-use warchest::farm::Cards;
-use warchest::net::Net;
+use warchest::bot::{Brain, Session};
 use warchest::packed::Packed;
 use warchest::pbs::rules_table_hash;
 
@@ -56,22 +53,7 @@ fn run() -> Result<(), String> {
         .split(',')
         .map(|x| x.parse().map_err(|_| format!("invalid device {x}")))
         .collect::<Result<Vec<_>, _>>()?;
-    let cfg = packed.manifest.search.config()?;
-    let weights = packed.dir.join(&packed.manifest.weights);
-    let net = Net::load_bin(weights.to_str().ok_or("invalid weights path")?)
-        .map_err(|e| format!("{}: {e}", weights.display()))?;
-    let mind = match packed.manifest.search.mind.as_str() {
-        "greedy" => Mind::Greedy { temp: cfg.prior_temp },
-        "" | "sog" => Mind::Sog(Arc::new(Cards::new(Device::new(
-            &devices, &net, cfg, slots,
-        )?))),
-        other => return Err(format!("unknown mind {other}")),
-    };
-    let brain = Brain {
-        mind,
-        net: Arc::new(net),
-        cfg,
-    };
+    let brain = Brain::load(&packed, &devices, slots)?;
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)

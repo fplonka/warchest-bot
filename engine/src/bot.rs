@@ -5,12 +5,17 @@ use crate::policy::{self, NodePolicy};
 use crate::rng::Rng;
 
 #[cfg(feature = "gpu")]
+use crate::cuda::Device;
+#[cfg(feature = "gpu")]
 use crate::farm::Cards;
 use crate::net::Net;
+#[cfg(feature = "gpu")]
+use crate::packed::Packed;
 #[cfg(feature = "gpu")]
 use crate::search::{Solver, Step};
 use crate::search::Cfg;
 use crate::state::{Cont, State};
+use serde::Serialize;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -27,7 +32,33 @@ pub struct Brain {
     pub cfg: Cfg,
 }
 
+#[derive(Serialize)]
+pub struct Verdict {
+    pub player: u8,
+    pub value: f32,
+    pub p: f32,
+    pub loss: f32,
+}
+
 impl Brain {
+    #[cfg(feature = "gpu")]
+    pub fn load(packed: &Packed, devices: &[usize], slots: usize) -> Result<Brain, String> {
+        let cfg = packed.manifest.search.config()?;
+        let weights = packed.dir.join(&packed.manifest.weights);
+        let net = Net::load_bin(weights.to_str().ok_or("invalid weights path")?)
+            .map_err(|e| format!("{}: {e}", weights.display()))?;
+        let mind = match packed.manifest.search.mind.as_str() {
+            "greedy" => Mind::Greedy { temp: cfg.prior_temp },
+            "" | "sog" => Mind::Sog(Arc::new(Cards::new(Device::new(devices, &net, cfg, slots)?))),
+            other => return Err(format!("unknown mind {other}")),
+        };
+        Ok(Brain {
+            mind,
+            net: Arc::new(net),
+            cfg,
+        })
+    }
+
     #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
     pub fn policy(&self, s: &State, ctx: &Ctx, player: u8, bel: &[Belief; 2], rng: &mut Rng) -> NodePolicy {
         let cfgs = &bel[player as usize].cfg;
@@ -90,10 +121,38 @@ impl Session {
     }
 
     pub fn watch(&mut self, brain: &Brain) {
-        if !self.s.is_terminal() && !self.s.is_chance() && self.s.to_act() != self.seat {
+        if !self.s.is_terminal() && !self.s.is_chance() {
             let player = self.s.to_act();
             self.modelled = Some(brain.policy(&self.s, &self.ctx, player, &self.bel, &mut self.rng));
         }
+    }
+
+    pub fn judge(&self, player: u8, key: u32) -> Result<Verdict, String> {
+        let np = self.modelled.as_ref().ok_or("a verdict needs the node modelled first")?;
+        let bel = &self.bel[player as usize];
+        let own = player == self.seat;
+        let rows: Vec<(usize, f32)> = if own {
+            let truth = true_config(&self.s, player, &self.ctx);
+            vec![(bel.index_of(&truth).ok_or("the belief dropped this seat's config")?, 1.0)]
+        } else {
+            bel.p.iter().copied().enumerate().collect()
+        };
+        let played = |a: &Action| if own { a.encode() == key } else { obs_key(a) == key };
+        let (mut value, mut p, mut loss, mut reach) = (0.0, 0.0, 0.0, 0.0);
+        for (ci, w) in rows {
+            let row = np.row(ci);
+            let best = row.clone().map(|cell| np.q[cell]).fold(f32::NEG_INFINITY, f32::max);
+            let hits: Vec<usize> = row.clone().filter(|&cell| played(&np.acts[np.action_at(cell)])).collect();
+            value += w * row.map(|cell| np.probs[cell] * np.q[cell]).sum::<f32>();
+            for &cell in &hits {
+                p += w * np.probs[cell];
+                loss += w * (best - np.q[cell]) / hits.len() as f32;
+            }
+            if !hits.is_empty() {
+                reach += w;
+            }
+        }
+        Ok(Verdict { player, value, p, loss: loss / reach })
     }
 
     pub fn observe(&mut self, obs: &Obs, brain: &Brain) -> Result<(), String> {
@@ -127,19 +186,18 @@ impl Session {
         if self.s.is_terminal() || self.s.is_chance() || self.s.to_act() != player {
             return Err(format!("player {} is not to act", player));
         }
-        if player == self.seat {
-            let action = Action::decode(key)
-                .filter(|a| self.s.legal_actions().contains(a))
-                .ok_or_else(|| format!("own move {} is not legal here", key))?;
-            let np = brain.policy(&self.s, &self.ctx, self.seat, &self.bel, &mut self.rng);
-            self.bel[self.seat as usize] = np.posterior(&self.bel[self.seat as usize], obs_key(&action));
-            self.s.apply_inplace(action);
-            return Ok(());
-        }
         let np = match self.modelled.take() {
             Some(np) => np,
             None => brain.policy(&self.s, &self.ctx, player, &self.bel, &mut self.rng),
         };
+        if player == self.seat {
+            let action = Action::decode(key)
+                .filter(|a| self.s.legal_actions().contains(a))
+                .ok_or_else(|| format!("own move {} is not legal here", key))?;
+            self.bel[self.seat as usize] = np.posterior(&self.bel[self.seat as usize], obs_key(&action));
+            self.s.apply_inplace(action);
+            return Ok(());
+        }
         let (ci, cell) = np
             .cell_for(key)
             .ok_or_else(|| format!("observation {} is unreachable from this belief", key))?;

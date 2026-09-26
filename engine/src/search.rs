@@ -486,7 +486,7 @@ pub struct Solver {
     pub root_belief: [Belief; 2],
     pub cur: Vec<f32>,
     pub avg: Vec<f32>,
-    root_q: Vec<f32>,
+    pub(crate) root_q: Vec<f32>,
     pub grown: Vec<u32>,
     pub(crate) avg_touched: [bool; 2],
     pub counts: Counts,

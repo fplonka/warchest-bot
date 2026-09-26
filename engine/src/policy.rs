@@ -14,6 +14,7 @@ pub struct NodePolicy {
     legal_off: Vec<u32>,
     legal_action: Vec<u32>,
     pub probs: Vec<f32>,
+    pub q: Vec<f32>,
 }
 
 impl NodePolicy {
@@ -39,6 +40,7 @@ impl NodePolicy {
             legal_off,
             legal_action,
             probs: vec![0.0; cells],
+            q: vec![f32::NAN; cells],
         }
     }
 
@@ -71,7 +73,7 @@ impl NodePolicy {
             for cell in self.row(ci) {
                 out.act.push(self.action_at(cell) as u16);
                 out.p.push(self.probs[cell]);
-                out.q.push(f32::NAN);
+                out.q.push(self.q[cell]);
             }
             out.off.push(out.act.len() as u32);
         }
@@ -156,6 +158,7 @@ pub fn root(sv: &Solver) -> NodePolicy {
         legal_off: n.legal_off.clone(),
         legal_action: n.legal_action.clone(),
         probs: vec![0.0; n.legal_action.len()],
+        q: sv.root_q.clone(),
     };
     for config in 0..cfgs.len() {
         let row = policy.row(config);
