@@ -432,6 +432,10 @@ impl Online {
         self.0.sync(&site(json)?).map_err(PyValueError::new_err)
     }
 
+    fn rewind(&mut self, lines: usize) -> PyResult<()> {
+        self.0.rewind(lines).map_err(PyValueError::new_err)
+    }
+
     fn command(&self, json: &str) -> PyResult<Option<String>> {
         let cmd = self.0.command(&site(json)?).map_err(PyValueError::new_err)?;
         Ok(cmd.map(|c| c.to_string()))
