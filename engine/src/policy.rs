@@ -115,7 +115,8 @@ impl NodePolicy {
         for ci in 0..self.legal_off.len() - 1 {
             let row = self.row(ci);
             let probs = &mut self.probs[row];
-            probs.iter_mut().for_each(|p| *p = p.powf(1.0 / t));
+            let max = probs.iter().copied().fold(f32::MIN_POSITIVE, f32::max);
+            probs.iter_mut().for_each(|p| *p = (*p / max).powf(1.0 / t));
             let sum: f32 = probs.iter().sum();
             if sum > 0.0 {
                 probs.iter_mut().for_each(|p| *p /= sum);
@@ -291,6 +292,8 @@ mod tests {
         np.temper(3.0);
         np.mix_uniform(0.1);
         assert!(np.probs[row.clone()].iter().all(|&p| p > 0.0));
-        assert!((np.probs[row].iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!((np.probs[row.clone()].iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        np.temper(0.0);
+        assert_eq!(np.probs[row.start], 1.0);
     }
 }
