@@ -621,14 +621,6 @@ pub fn expand_rows_torch(rows: u64, cards: u64, locations: u64, out: u64, n: usi
     if n == 0 {
         return Ok(());
     }
-    let torch_ctx = result::ctx::get_current().map_err(err)?.ok_or("PyTorch has no current CUDA context")?;
-    let device = result::device::get(ordinal).map_err(err)?;
-    let primary = unsafe { result::primary_ctx::retain(device) }.map_err(err)?;
-    let same_context = primary == torch_ctx;
-    unsafe { result::primary_ctx::release(device) }.map_err(err)?;
-    if !same_context {
-        return Err("PyTorch does not use the device primary CUDA context".into());
-    }
     let m = Module::get(ordinal as usize)?;
     let before = m.ctx.new_event(None).map_err(err)?;
     unsafe {

@@ -13,7 +13,7 @@ class Cfg:
     init_weights: str = ""
     resume: str = ""
 
-    batch: int = 256
+    batch: int = 1024
     lr: float = 1e-3
     wd: float = 0.01
     lr_final: float = 1e-4
@@ -35,8 +35,7 @@ class Cfg:
     collect_rows: int = 2048
 
     device: str = "cuda:1"
-    gen_devices: str = "0,1"
-    train_stream_priority: int = -1
+    gen_devices: str = "0"
 
     out: str = ""
     seed: int = 1

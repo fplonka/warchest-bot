@@ -269,10 +269,6 @@ def main():
     rng = np.random.default_rng(args.seed)
     dev = torch.device(args.device)
     torch.cuda.set_device(dev)
-    if args.train_stream_priority < 0:
-        stream = torch.cuda.Stream(device=dev, priority=args.train_stream_priority)
-        stream.wait_stream(torch.cuda.current_stream(dev))
-        torch.cuda.set_stream(stream)
 
     import gpu_batch
     torch.manual_seed(args.seed)
