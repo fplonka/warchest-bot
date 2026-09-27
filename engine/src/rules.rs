@@ -296,10 +296,6 @@ impl State {
         std::array::from_fn(|u| z[Z_BAG][u] + z[Z_FACEUP][u] + z[Z_FACEDOWN][u])
     }
 
-    pub(crate) fn first_drawable(&self, p: u8) -> Option<u8> {
-        self.draw_pool(p).iter().position(|&c| c > 0).map(|u| u as u8)
-    }
-
     #[inline]
     pub(crate) fn pay_zone(&self) -> usize {
         match self.pending {

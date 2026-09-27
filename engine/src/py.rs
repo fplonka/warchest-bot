@@ -1,272 +1,124 @@
-use pyo3::exceptions::PyValueError;
+use std::sync::{Arc, LazyLock};
+
+use numpy::{IntoPyArray, PyReadonlyArray1};
+use parking_lot::RwLock;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::board::board;
-use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
-
-#[cfg(feature = "gpu")]
-use crate::farm::Farm;
+use crate::bot::{Brain, Mind};
 use crate::net::Net;
 use crate::online::{Game, Site};
-use crate::search::{Budget, Cfg, Cfr, Ent};
-use crate::selfplay::{run_static_games, Agent, Collect, Data, GameCfg};
-use numpy::{IntoPyArray, PyReadonlyArray1};
-use parking_lot::RwLock;
-use std::sync::{Arc, LazyLock};
+use crate::pbs::{expand_row, mirror_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
+use crate::selfplay::Data;
+use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
 
-static NETS: LazyLock<RwLock<Arc<Net>>> = LazyLock::new(|| RwLock::new(Arc::new(Net::default())));
+static NET: LazyLock<RwLock<Option<Arc<Net>>>> = LazyLock::new(|| RwLock::new(None));
 
-pub(crate) fn nets() -> &'static RwLock<Arc<Net>> {
-    &NETS
+#[cfg(feature = "gpu")]
+fn net() -> PyResult<Arc<Net>> {
+    NET.read().clone().ok_or_else(|| PyValueError::new_err("no weights pushed"))
 }
 
 #[pyfunction]
 fn set_weights(w: PyReadonlyArray1<f32>, b: PyReadonlyArray1<f32>, ln: PyReadonlyArray1<f32>) -> PyResult<()> {
-    let value = Net::from_flat(w.as_slice()?, b.as_slice()?, ln.as_slice()?)
-        .map_err(pyo3::exceptions::PyValueError::new_err)?;
-    *nets().write() = Arc::new(value);
+    let net = Net::from_flat(w.as_slice()?, b.as_slice()?, ln.as_slice()?).map_err(PyValueError::new_err)?;
+    *NET.write() = Some(Arc::new(net));
     Ok(())
-}
-
-#[cfg(feature = "gpu")]
-fn check_nets() -> PyResult<()> {
-    if nets().read().is_empty() {
-        return Err(pyo3::exceptions::PyValueError::new_err("no weights pushed"));
-    }
-    Ok(())
-}
-
-fn cfr_of(name: &str) -> PyResult<Cfr> {
-    Cfr::named(name).ok_or_else(|| {
-        pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown cfr '{}': one of {}",
-            name,
-            Cfr::NAMED.map(|(n, _)| n).join(", ")
-        ))
-    })
-}
-
-fn rate(name: &str, value: f32) -> PyResult<f32> {
-    if value.is_finite() && (0.0..=1.0).contains(&value) {
-        Ok(value)
-    } else {
-        Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "{name} must be finite and in [0, 1], got {value}"
-        )))
-    }
 }
 
 fn data_to_dict(py: Python<'_>, d: Data) -> PyResult<PyObject> {
     let out = PyDict::new_bound(py);
-    const PLAYS: [&str; 7] = [
-        "attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative",
-    ];
+    const PLAYS: [&str; 7] = ["attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative"];
     for (name, v) in [
-        ("nv", d.nv),
         ("games", d.games),
         ("decisions", d.decisions),
         ("white_wins", d.wins[0]),
         ("black_wins", d.wins[1]),
         ("draws", d.draws),
         ("timeouts", d.timeouts),
-        ("configs", d.configs),
-        ("query_rows", d.queries),
-        ("dropped", d.dropped),
     ] {
         out.set_item(name, v)?;
     }
     for (name, v) in PLAYS.iter().zip(d.plays) {
         out.set_item(format!("plays_{name}"), v)?;
     }
-    for (name, [chosen, offered]) in crate::actions::KIND_NAMES.iter().zip(d.kinds.0) {
-        out.set_item(format!("chosen_{name}"), chosen)?;
-        out.set_item(format!("offered_{name}"), offered)?;
-    }
-    for (name, got, want) in [
-        ("config offsets", d.coff.len(), if d.nv == 0 { 0 } else { 2 * d.nv + 1 }),
-        ("truth", d.truth.len(), 2 * d.nv),
-        ("outcomes", d.outcome.len(), 2 * d.nv),
-        ("creation times", d.created.len(), d.nv),
-        ("query labels", d.query.len(), d.nv),
-        ("TD(1) labels", d.td1.len(), d.nv),
-    ] {
-        assert_eq!(got, want, "{name} do not match the row count");
-    }
-    let n_solves = d.soff.len();
-    let mut soff = d.soff.clone();
-    soff.push(d.nv as u32);
-    assert_eq!(soff[0], 0, "solve offsets must start at row 0");
-    assert!(
-        soff.windows(2).all(|w| w[0] < w[1]),
-        "solve offsets must be strictly increasing"
-    );
-    macro_rules! arrays {
-        ($($name:ident = $value:expr),* $(,)?) => {
-            $( out.set_item(stringify!($name), $value.into_pyarray_bound(py))?; )*
-        };
-    }
-    arrays! {
-        rows = d.rows, cc = d.cc, cw = d.cw, cy = d.cy, coff = d.coff,
-        pa = d.pa, paoff = d.paoff, pcoff = d.pcoff, pci = d.pci,
-        pcell = d.pcell, pprob = d.pprob, pq = d.pq, truth = d.truth, outcome = d.outcome,
-        created = d.created, query = d.query, td1 = d.td1, soff = soff,
-    }
-    out.set_item("row_bytes", crate::pbs::ROW_BYTES)?;
-    out.set_item("solves", n_solves)?;
+    out.set_item("rows", d.q.rows.into_pyarray_bound(py))?;
+    out.set_item("desc", d.q.desc.into_pyarray_bound(py))?;
+    out.set_item("off", d.q.off.into_pyarray_bound(py))?;
+    out.set_item("target", d.target.into_pyarray_bound(py))?;
+    out.set_item("z", d.z.into_pyarray_bound(py))?;
     Ok(out.into())
 }
 
-#[pyclass]
-struct SolveFarm {
-    #[cfg(feature = "gpu")]
-    farm: Farm,
+#[pyfunction]
+#[pyo3(signature = (games, seed, temp=2.0))]
+fn warm(py: Python<'_>, games: usize, seed: u64, temp: f32) -> PyResult<PyObject> {
+    let brain = Brain { mind: Mind::Greedy, temp, cut: 0.0 };
+    let d = py.allow_threads(|| crate::selfplay::warm(&brain, games, seed));
+    data_to_dict(py, d)
 }
 
+#[cfg(feature = "gpu")]
+#[pyclass]
+struct Farm {
+    gpu: Arc<crate::cuda::Gpu>,
+    farm: crate::selfplay::Farm,
+    net: Arc<Net>,
+}
+
+#[cfg(feature = "gpu")]
 #[pymethods]
-impl SolveFarm {
+impl Farm {
     #[new]
-    #[pyo3(signature = (seed, workers, s=1024, c=8.0, batch=8, rounds=1, explore=0.1, random_draft=true, cfr="sog", p_td1=0.2, query_rate=0.9, recursive_rate=0.1, devices=vec![0], slots=0))]
+    #[pyo3(signature = (seed, games, devices, sims=128, batch=16, puct=1.5, explore=0.25))]
     #[allow(clippy::too_many_arguments)]
-    fn new(
-        seed: u64,
-        workers: usize,
-        s: u32,
-        c: f32,
-        batch: usize,
-        rounds: u8,
-        explore: f32,
-        random_draft: bool,
-        cfr: &str,
-        p_td1: f32,
-        query_rate: f32,
-        recursive_rate: f32,
-        devices: Vec<usize>,
-        slots: usize,
-    ) -> PyResult<SolveFarm> {
-        let query_rate = rate("query_rate", query_rate)?;
-        let recursive_rate = rate("recursive_rate", recursive_rate)?;
-        let cfg = Cfg {
-            s,
-            c,
-            batch,
-            rounds,
-            cfr: cfr_of(cfr)?,
-            budget: Budget::for_s(s),
-            ..Default::default()
-        };
-        let gc = GameCfg {
-            agents: [Agent::Sog { cfg }; 2],
-            collect: Collect::Sog,
-            explore,
-            random_draft,
-            p_td1,
-            query_rate,
-            recursive_rate,
-        };
-        #[cfg(feature = "gpu")]
-        {
-            let net = Arc::clone(&nets().read());
-            let device = device_for(&devices, &net, cfg, slots)?;
-            Ok(SolveFarm {
-                farm: Farm::new(seed, workers, gc, net, device),
-            })
-        }
-        #[cfg(not(feature = "gpu"))]
-        {
-            let _ = (seed, workers, gc, devices, cfg, slots);
-            Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "built without the `gpu` feature: there is no CUDA solve farm",
-            ))
-        }
+    fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32, batch: u32, puct: f32, explore: f32) -> PyResult<Farm> {
+        let net = net()?;
+        let gpu = Arc::new(crate::cuda::Gpu::new(&devices, &net).map_err(PyRuntimeError::new_err)?);
+        let search = crate::search::Search { sims, batch, puct, explore };
+        let brain = Brain { mind: Mind::Search { search, oracle: gpu.clone() }, temp: 1.0, cut: 0.0 };
+        let farm = crate::selfplay::Farm::new(seed, games, Arc::new(brain));
+        Ok(Farm { gpu, farm, net })
     }
 
-    #[pyo3(signature = (solves=1))]
-    fn collect(&mut self, py: Python<'_>, solves: usize) -> PyResult<PyObject> {
-        #[cfg(feature = "gpu")]
-        {
-            if solves == 0 {
-                return Err(pyo3::exceptions::PyValueError::new_err("solves must be positive"));
-            }
-            check_nets()?;
-            self.farm
-                .publish(Arc::clone(&nets().read()))
-                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
-            let d = py.allow_threads(|| self.farm.drive(solves));
-            if self.farm.broken() {
-                return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "a card could not answer a round; the solves it held are gone. \
-                     The driver prints the reason, and out of memory is the usual \
-                     one.",
-                ));
-            }
-            let out = data_to_dict(py, d)?;
-            let dict = out.bind(py).downcast::<PyDict>()?.clone();
-            let s = self.farm.stats();
-            let read = |a: &std::sync::atomic::AtomicU64| {
-                a.load(std::sync::atomic::Ordering::Relaxed)
-            };
-            dict.set_item("rounds", read(&s.rounds))?;
-            dict.set_item("round_calls", read(&s.calls))?;
-            dict.set_item("round_rows", read(&s.rows))?;
-            dict.set_item("round_nanos", read(&s.nanos))?;
-            dict.set_item("host_nanos", read(&s.host_nanos))?;
-            dict.set_item("grow_nanos", crate::search::GROW_NANOS.load(std::sync::atomic::Ordering::Relaxed))?;
-            dict.set_item("slots", read(&s.slots))?;
-            dict.set_item("slots_used", read(&s.slots))?;
-            dict.set_item("slots_per_card", read(&s.slots_per_card))?;
-            dict.set_item("slot_bytes", read(&s.slot_bytes))?;
-            dict.set_item("budget_hits", read(&s.budget_hits))?;
-            dict.set_item("entity_hits", s.entity_hits())?;
-            dict.set_item("shapes", s.take_shapes())?;
-            Ok(out)
+    fn collect(&mut self, py: Python<'_>, rows: usize) -> PyResult<PyObject> {
+        let next = net()?;
+        if !Arc::ptr_eq(&next, &self.net) {
+            self.gpu.set_weights(&next).map_err(PyRuntimeError::new_err)?;
+            self.net = next;
         }
-        #[cfg(not(feature = "gpu"))]
-        {
-            let _ = (py, solves);
-            Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "built without the `gpu` feature: there is no CUDA solve farm",
-            ))
+        let farm = &self.farm;
+        let d = py.allow_threads(|| loop {
+            if farm.rows() >= rows || !farm.alive() {
+                return farm.take();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        });
+        if !self.farm.alive() {
+            return Err(PyRuntimeError::new_err("a self-play game died; the log says why"));
         }
+        let out = data_to_dict(py, d)?;
+        let dict = out.bind(py).downcast::<PyDict>()?.clone();
+        let read = |a: &std::sync::atomic::AtomicU64| a.load(std::sync::atomic::Ordering::Relaxed);
+        let s = &self.gpu.stats;
+        dict.set_item("gpu_calls", read(&s.calls))?;
+        dict.set_item("gpu_rows", read(&s.rows))?;
+        dict.set_item("gpu_actions", read(&s.actions))?;
+        dict.set_item("gpu_nanos", read(&s.nanos))?;
+        Ok(out)
     }
 }
 
 #[cfg(feature = "gpu")]
-fn device_for(
-    devices: &[usize],
-    value: &crate::net::Net,
-    cfg: Cfg,
-    slots: usize,
-) -> PyResult<crate::cuda::Device> {
-    let max_slots = match slots {
-        0 => crate::farm::host_slots(cfg.budget),
-        n => n,
-    };
-    crate::cuda::Device::new(devices, value, cfg, max_slots).map_err(pyo3::exceptions::PyRuntimeError::new_err)
-}
-
 #[pyfunction]
-#[pyo3(signature = (games, seed, explore=0.25, random_draft=true, temp=2.0))]
-fn gen_data(
-    py: Python<'_>,
-    games: usize,
-    seed: u64,
-    explore: f32,
-    random_draft: bool,
-    temp: f32,
-) -> PyResult<PyObject> {
-    let gc = GameCfg {
-        agents: [Agent::Greedy { temp }; 2],
-        collect: Collect::Static,
-        explore,
-        random_draft,
-        p_td1: 0.0,
-        query_rate: 0.0,
-        recursive_rate: 0.0,
-    };
-    let n = Arc::clone(&nets().read());
-    let d = py.allow_threads(|| run_static_games(games, seed, &n, &gc));
-    data_to_dict(py, d)
+fn evaluate(rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>, device: usize) -> PyResult<(Vec<f32>, Vec<f32>)> {
+    use crate::search::Oracle;
+    let net = net()?;
+    let gpu = crate::cuda::Gpu::new(&[device], &net).map_err(PyRuntimeError::new_err)?;
+    let answer = gpu.eval(&crate::search::Query { rows, desc, off });
+    Ok((answer.value, answer.prior))
 }
 
 #[pyfunction]
@@ -293,12 +145,10 @@ fn hex_mirror() -> Vec<u8> {
     (0..crate::board::N_HEXES).map(|h| crate::state::mirror_hex(h) as u8).collect()
 }
 
-
 #[pyfunction]
-fn sample_rows(games: usize, seed: u64) -> Vec<u8> {
-    use crate::pbs::{pack_row, Ctx, ROW_BYTES};
+fn sample_positions(games: usize, seed: u64) -> (Vec<u8>, Vec<u8>, Vec<u32>) {
     let mut rng = crate::rng::Rng::new(seed);
-    let mut out = Vec::new();
+    let mut q = crate::search::Query::default();
     for _ in 0..games {
         let mut s = crate::selfplay::make_game(&mut rng, true);
         let ctx = Ctx::new(&s);
@@ -306,24 +156,21 @@ fn sample_rows(games: usize, seed: u64) -> Vec<u8> {
             if s.is_terminal() {
                 break;
             }
-            if s.is_valued() {
-                let at = out.len();
-                out.resize(at + ROW_BYTES, 0);
-                pack_row(&s, &ctx, &mut out[at..at + ROW_BYTES]);
-            }
             let acts = s.legal_actions();
+            if !s.is_chance() {
+                q.push(&s, &ctx, &acts);
+            }
             s.apply_inplace(acts[rng.below(acts.len())]);
         }
     }
-    out
+    (q.rows, q.desc, q.off)
 }
 
 #[pyfunction]
 fn mirror_rows(rows: PyReadonlyArray1<u8>) -> PyResult<Vec<u8>> {
-    use crate::pbs::{mirror_row, ROW_BYTES};
     let rows = rows.as_slice()?;
     if rows.len() % ROW_BYTES != 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err("rows are not whole"));
+        return Err(PyValueError::new_err("rows are not whole"));
     }
     let mut out = vec![0u8; rows.len()];
     for (src, dst) in rows.chunks_exact(ROW_BYTES).zip(out.chunks_exact_mut(ROW_BYTES)) {
@@ -339,79 +186,39 @@ fn rules_table_hash() -> u64 {
 
 #[pyfunction]
 fn expand_rows(rows: PyReadonlyArray1<u8>) -> PyResult<Vec<f32>> {
-    use crate::pbs::{expand_row, PUBFEAT, ROW_BYTES};
     let rows = rows.as_slice()?;
-    let n = rows.len() / ROW_BYTES;
-    if rows.len() != n * ROW_BYTES {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "rows is not a multiple of ROW_BYTES",
-        ));
+    if rows.len() % ROW_BYTES != 0 {
+        return Err(PyValueError::new_err("rows is not a multiple of ROW_BYTES"));
     }
-    let mut out = vec![0.0f32; n * PUBFEAT];
-    for r in 0..n {
-        let row = &rows[r * ROW_BYTES..(r + 1) * ROW_BYTES];
-        expand_row(row, &mut out[r * PUBFEAT..(r + 1) * PUBFEAT]);
+    let mut out = vec![0.0f32; rows.len() / ROW_BYTES * PUBFEAT];
+    for (row, x) in rows.chunks_exact(ROW_BYTES).zip(out.chunks_exact_mut(PUBFEAT)) {
+        expand_row(row, x);
     }
     Ok(out)
 }
 
 #[pyfunction]
-fn expand_rows_cuda(
-    rows: u64,
-    cards: u64,
-    locations: u64,
-    out: u64,
-    n: usize,
-    stream: usize,
-    device: i32,
-) -> PyResult<()> {
+fn expand_rows_cuda(rows: u64, cards: u64, locations: u64, out: u64, n: usize, stream: usize, device: i32) -> PyResult<()> {
     #[cfg(feature = "gpu")]
     {
-        crate::cuda::expand_rows_torch(rows, cards, locations, out, n, stream, device)
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+        crate::cuda::expand_rows_torch(rows, cards, locations, out, n, stream, device).map_err(PyRuntimeError::new_err)
     }
     #[cfg(not(feature = "gpu"))]
     {
         let _ = (rows, cards, locations, out, n, stream, device);
-        Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "warchest was built without CUDA",
-        ))
+        Err(PyRuntimeError::new_err("warchest was built without CUDA"))
     }
 }
 
-type Opening = (Vec<u8>, Vec<u8>, Vec<f32>, [usize; 2]);
-
 #[pyfunction]
-fn opening(white: Vec<u16>, black: Vec<u16>, first: u8) -> PyResult<Opening> {
-    use crate::pbs::{belief_after_draw, config_counts, faceup_counts, pack_row, reserve, Belief, Config, Ctx};
-    let mut s = crate::arena::Draft { white, black, first }
-        .state()
-        .map_err(PyValueError::new_err)?;
-    let ctx = Ctx::new(&s);
-    let mut bel = [Belief::point(Config::default()), Belief::point(Config::default())];
+fn opening(white: Vec<u16>, black: Vec<u16>, first: u8) -> PyResult<Vec<u8>> {
+    let mut s = crate::arena::Draft { white, black, first }.state().map_err(PyValueError::new_err)?;
     while s.is_chance() {
-        let p = s.to_act();
-        bel[p as usize] = belief_after_draw(
-            &bel[p as usize],
-            &reserve(&s, p, &ctx),
-            &faceup_counts(&s, p, &ctx),
-            false,
-        );
         s.apply_inplace(s.legal_actions()[0]);
     }
-    let mut row = vec![0u8; crate::pbs::ROW_BYTES];
-    pack_row(&s, &ctx, &mut row);
-    let (mut counts, mut weights) = (Vec::new(), Vec::new());
-    for (p, b) in bel.iter().enumerate() {
-        let res = reserve(&s, p as u8, &ctx);
-        for (c, w) in b.cfg.iter().zip(&b.p) {
-            let mut cnt = [0u8; crate::pbs::CCOUNTS];
-            config_counts(c, &res, &mut cnt);
-            counts.extend_from_slice(&cnt);
-            weights.push(*w);
-        }
-    }
-    Ok((row, counts, weights, [bel[0].len(), bel[1].len()]))
+    let mut row = vec![0u8; ROW_BYTES];
+    pack_row(&s, &Ctx::new(&s), &mut row);
+    Ok(row)
 }
 
 #[pyclass(name = "Game")]
@@ -460,52 +267,45 @@ impl Online {
 
 #[pymodule]
 fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(mirror_rows, m)?)?;
-    m.add_function(wrap_pyfunction!(sample_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(set_weights, m)?)?;
+    m.add_function(wrap_pyfunction!(warm, m)?)?;
+    #[cfg(feature = "gpu")]
+    {
+        m.add_class::<Farm>()?;
+        m.add_function(wrap_pyfunction!(evaluate, m)?)?;
+        m.add("PIPELINE", crate::cuda::PIPELINE)?;
+    }
     m.add_function(wrap_pyfunction!(card_features_table, m)?)?;
     m.add_function(wrap_pyfunction!(hex_location_flags, m)?)?;
-    m.add_class::<SolveFarm>()?;
-    m.add_class::<Online>()?;
+    m.add_function(wrap_pyfunction!(hex_neighbours, m)?)?;
+    m.add_function(wrap_pyfunction!(hex_mirror, m)?)?;
+    m.add_function(wrap_pyfunction!(sample_positions, m)?)?;
+    m.add_function(wrap_pyfunction!(mirror_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(rules_table_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(expand_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(expand_rows_cuda, m)?)?;
     m.add_function(wrap_pyfunction!(opening, m)?)?;
-    m.add("PUBFEAT", crate::pbs::PUBFEAT)?;
-    m.add("CFEAT", crate::pbs::CFEAT)?;
-    m.add("CCOUNTS", crate::pbs::CCOUNTS)?;
-    m.add("CNORM", crate::pbs::CNORM)?;
+    m.add_class::<Online>()?;
+    m.add("PUBFEAT", PUBFEAT)?;
+    m.add("ROW_BYTES", ROW_BYTES)?;
+    m.add("ACT_BYTES", crate::search::ACT_BYTES)?;
     m.add("N_HEXES", crate::board::N_HEXES)?;
     m.add("N_LOCATIONS", crate::board::N_LOCATIONS)?;
-    m.add("N_UNITS", crate::units::N_UNITS)?;
-    m.add("NSLOT", crate::pbs::NSLOT)?;
+    m.add("N_UNITS", N_UNITS)?;
     m.add("N_KINDS", crate::actions::N_KINDS)?;
     m.add("KIND_NAMES", crate::actions::KIND_NAMES.to_vec())?;
-    m.add("ACT_BYTES", crate::search::ACT_BYTES)?;
-    m.add("CARD_FEATS", crate::units::CARD_FEATS)?;
+    m.add("CARD_FEATS", CARD_FEATS)?;
+    m.add("NSLOT", crate::pbs::NSLOT)?;
     m.add("NTYPE", crate::pbs::NTYPE)?;
     m.add("HEX_CH", crate::pbs::HEX_CH)?;
     m.add("HEX_FACTS", crate::pbs::HEX_FACTS)?;
-    m.add("HEX_BLOCK", crate::pbs::HEX_BLOCK)?;
     m.add("PILE_COUNTS", crate::pbs::PILE_COUNTS)?;
-    m.add("PLAYER_SCALARS", crate::pbs::PLAYER_SCALARS)?;
-    m.add("GLOBAL_SCALARS", crate::pbs::GLOBAL_SCALARS)?;
-    m.add("PENDING_KINDS", crate::state::PENDING_KINDS)?;
-    m.add("CONT_CAP", crate::state::CONT_CAP)?;
     m.add("LOOSE", crate::pbs::LOOSE)?;
     m.add("OFF_PILES", crate::pbs::OFF_PILES)?;
     m.add("OFF_CARDS", crate::pbs::OFF_CARDS)?;
     m.add("OFF_LOOSE", crate::pbs::OFF_LOOSE)?;
-    m.add_function(wrap_pyfunction!(expand_rows, m)?)?;
-    m.add_function(wrap_pyfunction!(expand_rows_cuda, m)?)?;
-    m.add("ROW_BYTES", crate::pbs::ROW_BYTES)?;
     m.add("ROW_HEX_OWNER", crate::pbs::ROW_HEX_OWNER)?;
     m.add("ROW_HEX_SLOT", crate::pbs::ROW_HEX_SLOT)?;
     m.add("ROW_HEX_MARKER", crate::pbs::ROW_HEX_MARKER)?;
-    m.add_function(wrap_pyfunction!(rules_table_hash, m)?)?;
-    m.add_function(wrap_pyfunction!(hex_neighbours, m)?)?;
-    m.add_function(wrap_pyfunction!(hex_mirror, m)?)?;
-    m.add_function(wrap_pyfunction!(set_weights, m)?)?;
-    m.add_function(wrap_pyfunction!(gen_data, m)?)?;
-    m.add("ENT_NAMES", Ent::NAME.to_vec())?;
-    m.add("ENT_CAPS_512", crate::search::BUDGET_512.0.to_vec())?;
-    m.add("STOP_NAMES", crate::search::STOP_NAMES.to_vec())?;
-    m.add("SOLVE_KIND_NAMES", crate::selfplay::SolveKind::NAMES.to_vec())?;
     Ok(())
 }

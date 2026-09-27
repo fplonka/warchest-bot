@@ -149,7 +149,7 @@ fn step(
         bot.send(request)?;
     }
     for (index, (bot, request)) in bots.iter_mut().zip(&requests).enumerate() {
-        table.accept(index, bot.receive(request.go.len() + request.watch.len())?)?;
+        table.accept(index, bot.receive(request.go.len())?)?;
     }
     Ok(())
 }

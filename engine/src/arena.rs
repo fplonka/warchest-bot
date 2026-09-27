@@ -8,7 +8,7 @@ use crate::selfplay::resolve_chance;
 use crate::state::{Cont, State, BLACK, WHITE};
 use crate::units::index_of_id;
 
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Hello {
@@ -78,8 +78,6 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub go: Vec<Ask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub watch: Vec<Ask>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drop: Vec<u32>,
 }
 
@@ -105,7 +103,6 @@ struct Bout {
     pending: [Vec<Obs>; 2],
     start: [Option<Start>; 2],
     asked: [bool; 2],
-    watched: [bool; 2],
     over: bool,
     main_plays: u16,
 }
@@ -150,7 +147,6 @@ impl Table {
                 pending: [Vec::new(), Vec::new()],
                 start: [start(WHITE), start(BLACK)],
                 asked: [false, false],
-                watched: [false, false],
                 over: false,
                 main_plays: 0,
             },
@@ -167,7 +163,6 @@ impl Table {
             while !b.s.is_terminal() && b.s.is_chance() {
                 let player = b.s.to_act();
                 let drawn = resolve_chance(&mut b.s, player, &mut b.rng);
-                b.watched = [false, false];
                 b.pending[player as usize].push(Obs::Draw {
                     player,
                     code: Some(drawn.encode()),
@@ -212,7 +207,6 @@ impl Table {
         let player = b.s.to_act();
         b.main_plays += matches!(b.s.pending(), Cont::MainPlay) as u16;
         b.s.apply_inplace(action);
-        b.watched = [false, false];
         b.pending[1 - player as usize].push(Obs::Act {
             player,
             key: crate::pbs::obs_key(&action),
@@ -225,7 +219,7 @@ impl Table {
     }
 
     pub fn request(&mut self, bot: usize) -> Request {
-        let (mut go, mut watch) = (Vec::new(), Vec::new());
+        let mut go = Vec::new();
         for (&id, b) in self.bouts.iter_mut() {
             if crate::finished(&b.s, b.main_plays) || b.s.is_chance() {
                 continue;
@@ -233,26 +227,18 @@ impl Table {
             let Some(seat) = b.bots.iter().position(|&x| x == bot) else {
                 continue;
             };
-            let acting = seat == b.s.to_act() as usize;
-            if b.asked[seat] || (!acting && b.watched[seat]) {
+            if b.asked[seat] || seat != b.s.to_act() as usize {
                 continue;
             }
             b.asked[seat] = true;
-            let ask = Ask {
+            go.push(Ask {
                 id,
                 start: b.start[seat].take(),
                 obs: std::mem::take(&mut b.pending[seat]),
-            };
-            if acting {
-                go.push(ask);
-            } else {
-                b.watched[seat] = true;
-                watch.push(ask);
-            }
+            });
         }
         Request {
             go,
-            watch,
             drop: self.dropped.remove(&bot).unwrap_or_default(),
         }
     }

@@ -23,27 +23,19 @@ class Cfg:
     recent_mix: float = 0.5
     recent_frac: float = 0.2
     cap: int = 1_000_000
-    cfgs_per_row: int = 48
-    s: int = 256
-    c: float = 1.0
-    round_batch: int = 8
-    rounds: int = 1
-    p_td1: float = 0.2
-    query_rate: float = 0.9
-    recursive_rate: float = 0.1
-    cfr: str = "sog"
-    policy_w: float = 0.18
-    q_w: float = 0.05
-    explore: float = 0.03
-    temp: float = 2.0
+    policy_w: float = 1.0
     warm_games: int = 96
-    random_draft: bool = True
+    temp: float = 2.0
+
+    sims: int = 128
+    search_batch: int = 16
+    puct: float = 1.5
+    explore: float = 0.25
+    games: int = 512
+    collect_rows: int = 2048
 
     device: str = "cuda:1"
     gen_devices: str = "0,1"
-    gen_solves: int = 8
-    gen_slots: int = 0
-    gen_workers: int = 0
     train_stream_priority: int = -1
 
     out: str = ""
@@ -73,33 +65,6 @@ def knobs(cfg):
     for f in dataclasses.fields(Cfg):
         v = d.get(f.name, base[f.name])
         yield f.name, v, f.name in base and v != base[f.name]
-
-
-def physical_cpus():
-    cpus = set()
-    root = "/sys/devices/system/cpu"
-    if not os.path.isdir(root):
-        return []
-    for name in os.listdir(root):
-        if not name.startswith("cpu") or not name[3:].isdigit():
-            continue
-        path = os.path.join(root, name, "topology", "thread_siblings_list")
-        try:
-            first = open(path).read().strip().split(",", 1)[0].split("-", 1)[0]
-            cpus.add(int(first))
-        except (OSError, ValueError):
-            pass
-    return sorted(cpus)
-
-
-def workers(n):
-    if n:
-        return n
-    return len(physical_cpus()) or (
-        len(os.sched_getaffinity(0))
-        if hasattr(os, "sched_getaffinity")
-        else (os.cpu_count() or 1)
-    )
 
 
 def git_sha():

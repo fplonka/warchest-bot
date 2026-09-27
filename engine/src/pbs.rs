@@ -1,15 +1,12 @@
 use crate::actions::{Action, N_KINDS};
 use crate::board::{board, NONE, N_HEXES};
+use crate::rng::Rng;
+use crate::search::Query;
 use crate::state::{State, CONT_CAP, PENDING_KINDS, Z_BAG, Z_ELIM, Z_FACEDOWN, Z_FACEUP, Z_HAND, Z_INFLIGHT, Z_SUPPLY};
 use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
 
 pub const NSLOT: usize = 5;
 pub const HAND_CAP: usize = 3;
-pub const MAX_CONFIG_SUPPORT: usize = 4_628;
-
-pub const CCOUNTS: usize = 3 * NSLOT;
-pub const CFEAT: usize = CCOUNTS;
-pub const CNORM: f32 = 5.0;
 
 #[derive(Clone, Copy, Default)]
 pub struct Ctx {
@@ -72,36 +69,12 @@ impl Config {
     pub fn key(&self) -> u64 {
         let mut k = 0u64;
         for i in 0..NSLOT {
-            debug_assert!(self.hand[i] < 4, "hand slot over the key width");
             k = (k << 2) | self.hand[i] as u64;
         }
         for i in 0..NSLOT {
-            debug_assert!(self.fd[i] < 32, "face-down slot over the key width");
             k = (k << 5) | self.fd[i] as u64;
         }
-        debug_assert!(self.inflight.map_or(0, |p| p as u64 + 1) < 8);
-        k = (k << 3) | self.inflight.map_or(0, |p| p as u64 + 1);
-        k
-    }
-}
-
-#[inline]
-pub fn config_counts(c: &Config, reserve: &[u8; NSLOT], out: &mut [u8; CCOUNTS]) {
-    for k in 0..NSLOT {
-        let inflight = u8::from(c.inflight == Some(k as u8));
-        out[k] = c.hand[k];
-        out[NSLOT + k] = c.fd[k];
-        out[2 * NSLOT + k] = reserve[k].saturating_sub(c.hand[k] + c.fd[k] + inflight);
-    }
-}
-
-#[inline]
-pub fn write_config_feats(c: &Config, reserve: &[u8; NSLOT], out: &mut [f32]) {
-    debug_assert_eq!(out.len(), CFEAT);
-    let mut cnt = [0u8; CCOUNTS];
-    config_counts(c, reserve, &mut cnt);
-    for k in 0..CCOUNTS {
-        out[k] = cnt[k] as f32 / CNORM;
+        (k << 3) | self.inflight.map_or(0, |p| p as u64 + 1)
     }
 }
 
@@ -211,8 +184,6 @@ pub struct Belief {
     pub p: Vec<f32>,
 }
 
-pub(crate) const SMOOTH: f32 = 1e-30;
-
 impl Belief {
     pub fn point(c: Config) -> Belief {
         Belief {
@@ -224,83 +195,60 @@ impl Belief {
     pub fn len(&self) -> usize {
         self.cfg.len()
     }
+
     pub fn is_empty(&self) -> bool {
         self.cfg.is_empty()
     }
 
     pub fn from_pairs(mut pairs: Vec<(Config, f32)>) -> Belief {
         pairs.sort_unstable_by_key(|a| a.0);
-        let mut cfg: Vec<Config> = Vec::with_capacity(pairs.len());
-        let mut p: Vec<f32> = Vec::with_capacity(pairs.len());
+        let mut b = Belief::default();
         for (c, w) in pairs {
-            if w < 0.0 {
+            if w <= 0.0 {
                 continue;
             }
-            if cfg.last() == Some(&c) {
-                *p.last_mut().unwrap() += w;
+            if b.cfg.last() == Some(&c) {
+                *b.p.last_mut().unwrap() += w;
             } else {
-                cfg.push(c);
-                p.push(w);
+                b.cfg.push(c);
+                b.p.push(w);
             }
         }
-        let mut b = Belief { cfg, p };
         b.normalize();
         b
     }
 
-    pub fn normalize(&mut self) {
+    fn normalize(&mut self) {
         let s: f32 = self.p.iter().sum();
-        if s > SMOOTH {
-            for v in self.p.iter_mut() {
-                *v /= s;
+        for v in self.p.iter_mut() {
+            *v /= s;
+        }
+    }
+
+    pub fn prune(&mut self, keep: usize, floor: f32) {
+        let mut order: Vec<usize> = (0..self.len()).collect();
+        order.sort_unstable_by(|&a, &b| self.p[b].total_cmp(&self.p[a]));
+        let top = self.p[order[0]];
+        order.truncate(keep);
+        order.retain(|&i| self.p[i] >= floor * top);
+        order.sort_unstable();
+        *self = Belief {
+            cfg: order.iter().map(|&i| self.cfg[i]).collect(),
+            p: order.iter().map(|&i| self.p[i]).collect(),
+        };
+        self.normalize();
+    }
+
+    pub fn sample(&self, rng: &mut Rng) -> Config {
+        let mut u = rng.unit_f64() as f32;
+        for (c, &w) in self.cfg.iter().zip(&self.p) {
+            if u < w {
+                return *c;
             }
-        } else {
-            let n = self.p.len().max(1) as f32;
-            for v in self.p.iter_mut() {
-                *v = 1.0 / n;
-            }
+            u -= w;
         }
+        *self.cfg.last().expect("a belief has support")
     }
-
-    pub fn index_of(&self, c: &Config) -> Option<usize> {
-        self.cfg.binary_search(c).ok()
-    }
-}
-
-#[inline]
-pub fn action_legal(c: &Config, slot: i8) -> bool {
-    match c.inflight {
-        Some(p) => slot == p as i8,
-        None => slot < 0 || c.hand[slot as usize] > 0,
-    }
-}
-
-#[inline]
-pub fn advance_config(c: &Config, slot: i8, facedown: bool) -> Option<Config> {
-    if let Some(k) = c.inflight {
-        if slot != k as i8 {
-            return None;
-        }
-        let mut n = *c;
-        n.inflight = None;
-        if facedown {
-            n.fd[k as usize] += 1;
-        }
-        return Some(n);
-    }
-    if slot < 0 {
-        return Some(*c);
-    }
-    let k = slot as usize;
-    if c.hand[k] == 0 {
-        return None;
-    }
-    let mut n = *c;
-    n.hand[k] -= 1;
-    if facedown {
-        n.fd[k] += 1;
-    }
-    Some(n)
 }
 
 fn draw_children(
@@ -343,212 +291,36 @@ pub fn belief_after_draw(b: &Belief, reserve: &[u8; NSLOT], faceup: &[u8; NSLOT]
     Belief::from_pairs(pairs)
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct DrawMap {
-    pub start: Vec<u32>,
-    pub to: Vec<u32>,
-    pub p: Vec<f32>,
-}
-
-impl DrawMap {
-    #[inline]
-    pub fn row(&self, ci: usize) -> (&[u32], &[f32]) {
-        let (a, b) = (self.start[ci] as usize, self.start[ci + 1] as usize);
-        (&self.to[a..b], &self.p[a..b])
-    }
-    pub fn rows(&self) -> usize {
-        self.start.len().saturating_sub(1)
-    }
-    pub fn len(&self) -> usize {
-        self.to.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.to.is_empty()
-    }
-}
-
-pub const IDX_BITS: u32 = 24;
-pub const IDX_MASK: u64 = (1 << IDX_BITS) - 1;
-
-#[derive(Default)]
-pub struct DrawScratch {
-    kid: Vec<Config>,
-    prob: Vec<f32>,
-    order: Vec<u64>,
-    acc: Vec<f32>,
-    hit: Vec<bool>,
-    touched: Vec<u32>,
-}
-
-impl DrawScratch {
-    pub fn transition(
-        &mut self,
-        cfg: &[Config],
-        reserve: &[u8; NSLOT],
-        faceup: &[u8; NSLOT],
-        support: &mut Vec<Config>,
-        map: &mut DrawMap,
-        set_pending: bool,
-    ) {
-        self.kid.clear();
-        self.prob.clear();
-        map.start.clear();
-        map.start.push(0);
-        let (kid, prob) = (&mut self.kid, &mut self.prob);
-        for c in cfg.iter() {
-            draw_children(c, reserve, faceup, set_pending, |n, p| {
-                kid.push(n);
-                prob.push(p);
-            });
-            map.start.push(kid.len() as u32);
+pub fn posterior(
+    s: &State,
+    ctx: &Ctx,
+    player: u8,
+    prior: &Belief,
+    key: u32,
+    likelihood: impl FnOnce(&Query) -> Vec<f32>,
+) -> (Belief, State) {
+    let mut q = Query::default();
+    let mut worlds = Vec::new();
+    for (c, &w) in prior.cfg.iter().zip(&prior.p) {
+        let mut world = *s;
+        set_config(&mut world, player, ctx, c);
+        let acts = world.legal_actions();
+        if acts.iter().any(|a| obs_key(a) == key) {
+            q.push(&world, ctx, &acts);
+            worlds.push((world, acts, w));
         }
-        self.pack(support, map);
     }
-
-    pub fn run(
-        &mut self,
-        cfg: &[Config],
-        reserve: &[u8; NSLOT],
-        faceup: &[u8; NSLOT],
-        k: u8,
-        support: &mut Vec<Config>,
-        map: &mut DrawMap,
-    ) {
-        self.kid.clear();
-        self.prob.clear();
-        map.start.clear();
-        map.start.push(0);
-        let k = k as u32;
-        for c in cfg.iter() {
-            let bag = c.bag(reserve);
-            let b: u32 = bag.iter().map(|&x| x as u32).sum();
-            if b >= k {
-                self.deal(&bag, k, *c);
-            } else {
-                let mut base = *c;
-                base.fd = [0; NSLOT];
-                for s in 0..NSLOT {
-                    base.hand[s] += bag[s];
-                }
-                let refill: [u8; NSLOT] = std::array::from_fn(|s| faceup[s] + c.fd[s]);
-                let total: u32 = refill.iter().map(|&x| x as u32).sum();
-                let left = k - b;
-                if total > left {
-                    self.deal(&refill, left, base);
-                } else {
-                    for s in 0..NSLOT {
-                        base.hand[s] += refill[s];
-                    }
-                    self.kid.push(base);
-                    self.prob.push(1.0);
-                }
-            }
-            map.start.push(self.kid.len() as u32);
-        }
-        self.pack(support, map);
-    }
-
-    fn deal(&mut self, src: &[u8; NSLOT], k: u32, base: Config) {
-        fn choose(n: u32, k: u32) -> f64 {
-            (0..k).map(|i| (n - i) as f64 / (i + 1) as f64).product()
-        }
-        fn rec(
-            src: &[u8; NSLOT],
-            slot: usize,
-            left: u32,
-            num: f64,
-            c: Config,
-            denom: f64,
-            kid: &mut Vec<Config>,
-            prob: &mut Vec<f32>,
-        ) {
-            if slot == NSLOT {
-                if left == 0 {
-                    debug_assert!(c.hand_size() as usize <= HAND_CAP);
-                    kid.push(c);
-                    prob.push((num / denom) as f32);
-                }
-                return;
-            }
-            for x in 0..=left.min(src[slot] as u32) {
-                let mut c2 = c;
-                c2.hand[slot] += x as u8;
-                rec(
-                    src,
-                    slot + 1,
-                    left - x,
-                    num * choose(src[slot] as u32, x),
-                    c2,
-                    denom,
-                    kid,
-                    prob,
-                );
+    let lik = likelihood(&q);
+    let (mut pairs, mut next) = (Vec::new(), *s);
+    for (i, (world, acts, w)) in worlds.iter().enumerate() {
+        for (a, &l) in acts.iter().zip(&lik[q.actions(i)]) {
+            if obs_key(a) == key {
+                next = world.apply(*a);
+                pairs.push((true_config(&next, player, ctx), w * l));
             }
         }
-        let total: u32 = src.iter().map(|&x| x as u32).sum();
-        rec(src, 0, k, 1.0, base, choose(total, k), &mut self.kid, &mut self.prob);
     }
-
-    fn pack(&mut self, support: &mut Vec<Config>, map: &mut DrawMap) {
-        assert!(self.kid.len() < 1 << IDX_BITS, "draw fan-out over the index width");
-        self.order.clear();
-        self.order.extend(
-            self.kid
-                .iter()
-                .enumerate()
-                .map(|(i, c)| (c.key() << IDX_BITS) | i as u64),
-        );
-        self.order.sort_unstable();
-        support.clear();
-        map.to.clear();
-        map.to.resize(self.kid.len(), 0);
-        map.p.clear();
-        map.p.extend_from_slice(&self.prob);
-        let mut prev = u64::MAX;
-        for &packed in self.order.iter() {
-            let (k, i) = (packed >> IDX_BITS, (packed & IDX_MASK) as usize);
-            if k != prev {
-                prev = k;
-                support.push(self.kid[i]);
-            }
-            map.to[i] = (support.len() - 1) as u32;
-        }
-    }
-
-    pub fn compose(&mut self, a: &DrawMap, b: &DrawMap, n_child: usize, out: &mut DrawMap) {
-        if self.acc.len() < n_child {
-            self.acc.resize(n_child, 0.0);
-            self.hit.resize(n_child, false);
-        }
-        let rows = a.rows();
-        out.start.clear();
-        out.start.push(0);
-        out.to.clear();
-        out.p.clear();
-        for i in 0..rows {
-            self.touched.clear();
-            let (mid, pm) = a.row(i);
-            for k in 0..mid.len() {
-                let (to, pt) = b.row(mid[k] as usize);
-                for j in 0..to.len() {
-                    let t = to[j] as usize;
-                    if !self.hit[t] {
-                        self.hit[t] = true;
-                        self.touched.push(to[j]);
-                    }
-                    self.acc[t] += pm[k] * pt[j];
-                }
-            }
-            self.touched.sort_unstable();
-            for &t in &self.touched {
-                out.to.push(t);
-                out.p.push(self.acc[t as usize]);
-                self.acc[t as usize] = 0.0;
-                self.hit[t as usize] = false;
-            }
-            out.start.push(out.to.len() as u32);
-        }
-    }
+    (Belief::from_pairs(pairs), next)
 }
 
 fn draw_source(c: &Config, reserve: &[u8; NSLOT], faceup: &[u8; NSLOT]) -> ([u8; NSLOT], Config) {
@@ -573,14 +345,6 @@ pub fn faceup_counts(s: &State, p: u8, ctx: &Ctx) -> [u8; NSLOT] {
     out
 }
 
-#[inline]
-pub fn is_facedown_play(a: &Action) -> bool {
-    matches!(
-        a,
-        Action::Pass { .. } | Action::ClaimInitiative { .. } | Action::Recruit { .. }
-    )
-}
-
 pub fn obs_key(a: &Action) -> u32 {
     let code = a.encode();
     match a {
@@ -597,7 +361,7 @@ pub const NTYPE: usize = 2 * NSLOT;
 pub const HEX_FACTS: usize = 2 + 1 + 2 + 1 + CONT_CAP;
 pub const HEX_CH: usize = HEX_FACTS + NTYPE;
 pub const HEX_BLOCK: usize = N_HEXES * HEX_CH;
-pub const PILE_COUNTS: usize = 4;
+pub const PILE_COUNTS: usize = 7;
 pub const PLAYER_SCALARS: usize = 6;
 pub const GLOBAL_SCALARS: usize = 3 + CONT_CAP * PENDING_KINDS;
 
@@ -646,19 +410,6 @@ pub fn rules_table_hash() -> u64 {
 
 pub const PUBFEAT: usize = OFF_LOOSE + LOOSE;
 
-pub fn normalize_weights(w: &[f32], out: &mut [f32]) {
-    debug_assert_eq!(w.len(), out.len());
-    let tot: f32 = w.iter().sum();
-    let (scale, flat) = if tot > SMOOTH {
-        (1.0 / tot, 0.0)
-    } else {
-        (0.0, 1.0 / w.len().max(1) as f32)
-    };
-    for (o, x) in out.iter_mut().zip(w.iter()) {
-        *o = *x * scale + flat;
-    }
-}
-
 fn stack_bits(s: &State) -> ([u8; CONT_CAP], [u64; CONT_CAP]) {
     let mut kinds = [0xffu8; CONT_CAP];
     let mut owed = [0u64; CONT_CAP];
@@ -697,15 +448,22 @@ pub fn pack_row(s: &State, ctx: &Ctx, out: &mut [u8]) {
         out[ROW_HEX_HEIGHT + h] = s.hex_height[h];
         out[ROW_HEX_MARKER + h] = s.loc_marker[h];
     }
+    let actor = s.to_act() as usize;
     for p in 0..2usize {
         let res = reserve(s, p as u8, ctx);
+        let seen = u8::from(p == actor);
         for k in 0..NSLOT {
             let u = ctx.slots[p][k] as usize;
-            let at = ROW_PILES + (p * NSLOT + k) * PILE_COUNTS;
-            out[at] = res[k];
-            out[at + 1] = s.zones[p][Z_FACEUP][u];
-            out[at + 2] = s.zones[p][Z_SUPPLY][u];
-            out[at + 3] = s.zones[p][Z_ELIM][u];
+            let z = &s.zones[p];
+            out[ROW_PILES + (p * NSLOT + k) * PILE_COUNTS..][..PILE_COUNTS].copy_from_slice(&[
+                res[k],
+                seen * z[Z_HAND][u],
+                seen * z[Z_FACEDOWN][u],
+                seen * z[Z_INFLIGHT][u],
+                z[Z_FACEUP][u],
+                z[Z_SUPPLY][u],
+                z[Z_ELIM][u],
+            ]);
         }
         out[ROW_HAND_SIZE + p] = s.hand_size(p as u8);
         out[ROW_FD_SIZE + p] = s.zones[p][Z_FACEDOWN].iter().sum();
@@ -768,14 +526,12 @@ pub fn mirror_row(src: &[u8], dst: &mut [u8]) {
 
 pub fn expand_row(row: &[u8], out: &mut [f32]) {
     debug_assert_eq!(row.len(), ROW_BYTES);
+    debug_assert_eq!(out.len(), PUBFEAT);
     let hex = |at: usize| -> &[u8; N_HEXES] { row[at..at + N_HEXES].try_into().unwrap() };
     let (hex_owner, hex_slot) = (hex(ROW_HEX_OWNER), hex(ROW_HEX_SLOT));
     let (hex_height, hex_marker) = (hex(ROW_HEX_HEIGHT), hex(ROW_HEX_MARKER));
     let piles = &row[ROW_PILES..ROW_PILES + 2 * NSLOT * PILE_COUNTS];
     let ids = &row[ROW_IDS..ROW_IDS + 2 * NSLOT];
-    let hand_size: &[u8] = &row[ROW_HAND_SIZE..ROW_HAND_SIZE + 2];
-    let fd_size: &[u8] = &row[ROW_FD_SIZE..ROW_FD_SIZE + 2];
-    let bag_size: &[u8] = &row[ROW_BAG_SIZE..ROW_BAG_SIZE + 2];
     let mut markers_hand = [6u8; 2];
     for h in 0..N_HEXES {
         if hex_marker[h] != NONE {
@@ -783,14 +539,7 @@ pub fn expand_row(row: &[u8], out: &mut [f32]) {
         }
     }
     let initiative = if row[ROW_INITIATIVE] > 1 { 0 } else { row[ROW_INITIATIVE] };
-    let initiative_moved = row[ROW_INIT_MOVED] != 0;
-    let to_act = row[ROW_TO_ACT];
-    let wp_v2_triggered = row[ROW_WP] != 0;
     let (kinds, owed) = stack_from_row(row);
-    let (kinds, owed) = (&kinds, &owed);
-    debug_assert_eq!(out.len(), PUBFEAT);
-    debug_assert_eq!(piles.len(), 2 * NSLOT * PILE_COUNTS);
-    debug_assert_eq!(ids.len(), 2 * NSLOT);
     out.fill(0.0);
     let bd = board();
 
@@ -815,200 +564,37 @@ pub fn expand_row(row: &[u8], out: &mut [f32]) {
         }
         i += HEX_CH;
     }
-    debug_assert_eq!(i, OFF_PILES);
 
-    for t in 0..2 * NSLOT {
-        let at = t * PILE_COUNTS;
-        out[i] = piles[at] as f32 / 5.0;
-        out[i + 1] = piles[at + 1] as f32 / 5.0;
-        out[i + 2] = piles[at + 2] as f32 / 5.0;
-        out[i + 3] = piles[at + 3] as f32 / 5.0;
-        i += PILE_COUNTS;
+    for &x in piles {
+        out[i] = x as f32 / 5.0;
+        i += 1;
     }
-    debug_assert_eq!(i, OFF_CARDS);
 
     for t in 0..2 * NSLOT {
         write_card_features(ids[t], &mut out[i..i + CARD_FEATS]);
         i += CARD_FEATS;
     }
-    debug_assert_eq!(i, OFF_LOOSE);
 
     for p in 0..2usize {
         out[i] = markers_hand[p] as f32 / 6.0;
         out[i + 1] = (6 - markers_hand[p]) as f32 / 6.0;
-        out[i + 2] = hand_size[p] as f32 / 3.0;
-        out[i + 3] = fd_size[p] as f32 / MAX_COINS;
-        out[i + 4] = bag_size[p] as f32 / MAX_COINS;
+        out[i + 2] = row[ROW_HAND_SIZE + p] as f32 / 3.0;
+        out[i + 3] = row[ROW_FD_SIZE + p] as f32 / MAX_COINS;
+        out[i + 4] = row[ROW_BAG_SIZE + p] as f32 / MAX_COINS;
         out[i + 5] = (initiative == p as u8) as u8 as f32;
         i += PLAYER_SCALARS;
     }
 
-    out[i] = wp_v2_triggered as u8 as f32;
-    out[i + 1] = initiative_moved as u8 as f32;
-    out[i + 2] = (to_act == 0) as u8 as f32;
+    out[i] = row[ROW_WP] as f32;
+    out[i + 1] = row[ROW_INIT_MOVED] as f32;
+    out[i + 2] = (row[ROW_TO_ACT] == 0) as u8 as f32;
     for d in 0..CONT_CAP {
         let k = kinds[d];
         if (k as usize) < PENDING_KINDS {
             out[i + 3 + d * PENDING_KINDS + k as usize] = 1.0;
         }
     }
-    i += GLOBAL_SCALARS;
-    debug_assert_eq!(i, PUBFEAT);
-}
-
-#[cfg(test)]
-mod draw_tests {
-    use super::*;
-
-    fn composed(cfg: &[Config], res0: &[u8; NSLOT], fu0: &[u8; NSLOT], k: u8) -> (Vec<Config>, DrawMap) {
-        let mut sc = DrawScratch::default();
-        let (mut res, mut fu) = (*res0, *fu0);
-        let mut cur = cfg.to_vec();
-        let mut next = Vec::new();
-        let (mut draw, mut step, mut acc) = (DrawMap::default(), DrawMap::default(), DrawMap::default());
-        for j in 0..k {
-            let empty = cur[0].bag(&res).iter().all(|&x| x == 0);
-            sc.transition(&cur, &res, &fu, &mut next, &mut step, false);
-            if j == 0 {
-                std::mem::swap(&mut draw, &mut step);
-            } else {
-                sc.compose(&draw, &step, next.len(), &mut acc);
-                std::mem::swap(&mut draw, &mut acc);
-            }
-            std::mem::swap(&mut cur, &mut next);
-            if empty {
-                for s in 0..NSLOT {
-                    res[s] += fu[s];
-                    fu[s] = 0;
-                }
-            }
-        }
-        (cur, draw)
-    }
-
-    fn assert_same(cfg: &[Config], res: &[u8; NSLOT], fu: &[u8; NSLOT], k: u8, what: &str) {
-        let (want_sup, want) = composed(cfg, res, fu, k);
-        let mut sc = DrawScratch::default();
-        let (mut sup, mut map) = (Vec::new(), DrawMap::default());
-        sc.run(cfg, res, fu, k, &mut sup, &mut map);
-        assert_eq!(sup, want_sup, "{what}: support");
-        assert_eq!(map.rows(), want.rows(), "{what}: rows");
-        for i in 0..map.rows() {
-            let (gt, gp) = map.row(i);
-            let (wt, wp) = want.row(i);
-            let mut got: Vec<(u32, f32)> = gt.iter().copied().zip(gp.iter().copied()).collect();
-            let mut wnt: Vec<(u32, f32)> = wt.iter().copied().zip(wp.iter().copied()).collect();
-            got.sort_by_key(|e| e.0);
-            wnt.sort_by_key(|e| e.0);
-            assert_eq!(
-                got.iter().map(|e| e.0).collect::<Vec<_>>(),
-                wnt.iter().map(|e| e.0).collect::<Vec<_>>(),
-                "{what}: row {i} children"
-            );
-            for (g, w) in got.iter().zip(&wnt) {
-                assert!((g.1 - w.1).abs() < 1e-5, "{what}: row {i} prob {} vs {}", g.1, w.1);
-            }
-            let tot: f32 = gp.iter().sum();
-            assert!((tot - 1.0).abs() < 1e-5, "{what}: row {i} sums to {tot}");
-        }
-    }
-
-    fn spread(rng: &mut crate::rng::Rng, total: u8, cap: &[u8; NSLOT], used: &[u8; NSLOT]) -> Option<[u8; NSLOT]> {
-        let mut out = [0u8; NSLOT];
-        'outer: for _ in 0..total {
-            for _ in 0..32 {
-                let s = (rng.next_u64() % NSLOT as u64) as usize;
-                if used[s] + out[s] < cap[s] {
-                    out[s] += 1;
-                    continue 'outer;
-                }
-            }
-            return None;
-        }
-        Some(out)
-    }
-
-    #[test]
-    fn run_matches_composition() {
-        let c = |hand: [u8; NSLOT], fd: [u8; NSLOT]| Config {
-            hand,
-            fd,
-            inflight: None,
-        };
-
-        assert_same(
-            &[c([0; NSLOT], [1, 1, 0, 0, 0]), c([0; NSLOT], [0, 0, 1, 1, 0])],
-            &[5, 4, 3, 2, 5],
-            &[1, 0, 2, 0, 0],
-            3,
-            "plenty",
-        );
-        assert_same(
-            &[
-                c([0; NSLOT], [2, 1, 0, 0, 0]),
-                c([0; NSLOT], [2, 0, 1, 0, 0]),
-                c([0; NSLOT], [1, 1, 1, 0, 0]),
-            ],
-            &[2, 1, 1, 0, 0],
-            &[1, 2, 0, 0, 0],
-            3,
-            "refill",
-        );
-        assert_same(
-            &[c([1, 0, 0, 0, 0], [0; NSLOT])],
-            &[2, 0, 0, 0, 0],
-            &[0; NSLOT],
-            2,
-            "empty refill",
-        );
-        assert_same(
-            &[c([0; NSLOT], [0; NSLOT])],
-            &[0; NSLOT],
-            &[2, 0, 0, 0, 0],
-            3,
-            "shortage",
-        );
-        assert_same(
-            &[c([0; NSLOT], [0; NSLOT])],
-            &[1, 1, 0, 0, 0],
-            &[1, 0, 0, 0, 0],
-            3,
-            "exact dry",
-        );
-
-        let mut rng = crate::rng::Rng::new(0xD12A);
-        let mut done = 0;
-        while done < 300 {
-            let mut res = [0u8; NSLOT];
-            for s in 0..NSLOT {
-                res[s] = (rng.next_u64() % 4) as u8;
-            }
-            let mut fu = [0u8; NSLOT];
-            for s in 0..NSLOT {
-                fu[s] = (rng.next_u64() % 2) as u8;
-            }
-            let ht = (rng.next_u64() % 3) as u8;
-            let fdt = (rng.next_u64() % 4) as u8;
-            let k = 3 - ht;
-            let mut cfgs = Vec::new();
-            for _ in 0..6 {
-                let Some(hand) = spread(&mut rng, ht, &res, &[0; NSLOT]) else {
-                    continue;
-                };
-                let Some(fd) = spread(&mut rng, fdt, &res, &hand) else {
-                    continue;
-                };
-                cfgs.push(c(hand, fd));
-            }
-            if cfgs.is_empty() {
-                continue;
-            }
-            cfgs.sort_by_key(|x| x.key());
-            cfgs.dedup();
-            assert_same(&cfgs, &res, &fu, k, "fuzz");
-            done += 1;
-        }
-    }
+    debug_assert_eq!(i + GLOBAL_SCALARS, PUBFEAT);
 }
 
 #[cfg(test)]

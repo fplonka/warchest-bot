@@ -16,16 +16,14 @@ OFF_PILES = warchest.OFF_PILES
 OFF_CARDS = warchest.OFF_CARDS
 OFF_LOOSE = warchest.OFF_LOOSE
 LOOSE = warchest.LOOSE
+N_KINDS = warchest.N_KINDS
 
 TYPE = 64
 C = 192
 BLOCKS = 12
 D = 384
-ATTN = 192
-HEADS = 6
-HEAD = ATTN // HEADS
+HIDDEN = 192
 BINS = 16
-N_KINDS = warchest.N_KINDS
 
 
 def gelu(x):
@@ -54,43 +52,25 @@ class Net(nn.Module):
         self.ln_trunk = nn.LayerNorm(C)
         self.board_out = nn.Linear(2 * C + LOOSE, D)
 
-        self.cfg_in = nn.Linear(3 + TYPE, ATTN)
-        self.cfg_seat = nn.Embedding(2, ATTN)
-        self.ln_cfg = nn.LayerNorm(ATTN)
-        self.token_in = nn.Linear(C, ATTN)
-        self.attn_q = nn.Linear(ATTN, ATTN, bias=False)
-        self.attn_k = nn.Linear(ATTN, ATTN, bias=False)
-        self.attn_v = nn.Linear(ATTN, ATTN, bias=False)
-        self.attn_out = nn.Linear(ATTN, ATTN, bias=False)
-        self.ln_attn = nn.LayerNorm(ATTN)
-
-        context = 3 * ATTN + D
-        self.value_hidden = nn.Linear(context, ATTN)
-        self.value_out = nn.Linear(ATTN, BINS)
+        self.value_hidden = nn.Linear(D, HIDDEN)
+        self.value_out = nn.Linear(HIDDEN, BINS)
         nn.init.zeros_(self.value_out.weight)
         nn.init.zeros_(self.value_out.bias)
-        self.cfg_policy = nn.Linear(3 * ATTN, D)
-        self.cfg_q = nn.Linear(3 * ATTN, D)
-        self.head_policy = nn.Linear(2 * ATTN + D, D)
         self.act_kind = nn.Embedding(N_KINDS, C)
         self.act_role = nn.Embedding(5, C)
         self.act_board = nn.Linear(D, C, bias=False)
-        self.act_h = nn.Linear(D, C, bias=False)
         self.ln_act = nn.LayerNorm(C)
-        self.act_out = nn.Linear(C, D)
+        self.act_out = nn.Linear(C, 1)
         nn.init.normal_(self.act_kind.weight, std=C ** -0.5)
         nn.init.ones_(self.act_role.weight)
 
         nb = torch.as_tensor(warchest.hex_neighbours(), dtype=torch.long)
         self.register_buffer("nb", nb.view(N_HEXES, 6), persistent=False)
-        self.register_buffer("seat_of", torch.arange(NTYPE) // NSLOT,
-                             persistent=False)
-        self.register_buffer("centres", (torch.arange(BINS) + 0.5) / (BINS / 2) - 1,
-                             persistent=False)
+        self.register_buffer("seat_of", torch.arange(NTYPE) // NSLOT, persistent=False)
+        self.register_buffer("centres", (torch.arange(BINS) + 0.5) / (BINS / 2) - 1, persistent=False)
 
     def cards(self, xpub):
-        facts = xpub[:, OFF_CARDS:OFF_CARDS + NTYPE * CARD_FEATS]
-        facts = facts.reshape(-1, NTYPE, CARD_FEATS)
+        facts = xpub[:, OFF_CARDS:OFF_CARDS + NTYPE * CARD_FEATS].reshape(-1, NTYPE, CARD_FEATS)
         return self.card2(gelu(self.card1(facts)))
 
     def tokens(self, xpub, cards):
@@ -116,97 +96,42 @@ class Net(nn.Module):
             x = x + self.blk2[i](gelu(self.ln2[i](y)))
         return gelu(self.ln_trunk(x))
 
-    def position(self, xpub, cards):
-        projected = self.tok_stem(self.tokens(xpub, cards))
+    def evaluate(self, xpub):
+        projected = self.tok_stem(self.tokens(xpub, self.cards(xpub)))
         spatial = self.trunk(xpub, projected)
         loose = xpub[:, OFF_LOOSE:OFF_LOOSE + LOOSE]
-        board = self.board_out(torch.cat([
-            spatial.mean(1), spatial.amax(1), loose], -1))
-        return board, projected, spatial
+        board = self.board_out(torch.cat([spatial.mean(1), spatial.amax(1), loose], -1))
+        return self.value_out(gelu(self.value_hidden(board))), (board, projected, spatial)
 
-    def configs(self, phi, own, seg):
-        counts = phi.reshape(-1, 3, NSLOT).transpose(1, 2)
-        query = gelu(self.cfg_in(torch.cat([counts, own[seg]], -1))).sum(1)
-        return gelu(self.ln_cfg(query + self.cfg_seat(seg % 2)))
-
-    def attend(self, query, tokens, board_of, attention):
-        boards, ntokens = tokens.shape[:2]
-        slot, width = attention
-        q = query.new_zeros(boards, width, ATTN)
-        q[board_of, slot] = self.attn_q(query)
-        q = q.reshape(boards, width, HEADS, HEAD).transpose(1, 2)
-        k = self.attn_k(tokens).reshape(boards, ntokens, HEADS, HEAD).transpose(1, 2)
-        v = self.attn_v(tokens).reshape(boards, ntokens, HEADS, HEAD).transpose(1, 2)
-        mixed = F.scaled_dot_product_attention(q, k, v)
-        mixed = mixed.transpose(1, 2).reshape(boards, width, ATTN)
-        mixed = self.attn_out(mixed[board_of, slot])
-        return self.ln_attn(query + mixed)
-
-    def belief_context(self, conditioned, weight, seg, nseg):
-        pooled = conditioned.new_zeros(nseg, ATTN)
-        pooled.index_add_(0, seg, conditioned * weight.unsqueeze(1))
-        other = pooled.reshape(nseg // 2, 2, ATTN).flip(1).reshape_as(pooled)
-        return torch.cat([pooled, other], -1)
-
-    def actions(self, desc, boards, heads, cards, spatial, board_of, head_of):
-        row = board_of
-        zero_card = cards.new_zeros(cards.shape[0], 1, C)
-        card = torch.cat([cards, zero_card], 1)
+    def actions(self, desc, pieces, row):
+        board, projected, spatial = pieces
+        card = torch.cat([projected, projected.new_zeros(projected.shape[0], 1, C)], 1)
+        hexes = torch.cat([spatial, spatial.new_zeros(spatial.shape[0], 1, C)], 1)
         coin = desc[:, 1:3].long().clamp_max(NTYPE)
-        zero_hex = spatial.new_zeros(spatial.shape[0], 1, C)
-        hexes = torch.cat([spatial, zero_hex], 1)
         where = desc[:, 3:6].long().clamp_max(N_HEXES)
         entity = torch.stack([
             card[row, coin[:, 0]], card[row, coin[:, 1]],
-            hexes[row, where[:, 0]], hexes[row, where[:, 1]],
-            hexes[row, where[:, 2]],
+            hexes[row, where[:, 0]], hexes[row, where[:, 1]], hexes[row, where[:, 2]],
         ], 1)
         present = desc[:, 1:6].lt(255).unsqueeze(-1)
         local = (entity * self.act_role.weight * present).sum(1)
-        z = (self.act_kind(desc[:, 0].long()) + local
-             + self.act_board(boards)[row] + self.act_h(heads)[head_of])
-        return self.act_out(gelu(self.ln_act(z)))
-
-    def evaluate(self, xpub, phi, weight, seg, nseg, attention):
-        cards = self.cards(xpub)
-        board, projected, spatial = self.position(xpub, cards)
-        own = cards.reshape(-1, 2, NSLOT, TYPE).flatten(0, 1)
-        query = self.configs(phi, own, seg)
-        public = self.token_in(torch.cat([spatial, projected], 1))
-        conditioned = self.attend(query, public, seg // 2, attention)
-        belief = self.belief_context(conditioned, weight, seg, nseg)
-        config = torch.cat([conditioned, belief[seg]], -1)
-        context = torch.cat([conditioned, board[seg // 2], belief[seg]], -1)
-        logits = self.value_out(gelu(self.value_hidden(context)))
-        fp = self.cfg_policy(config)
-        fq = self.cfg_q(config)
-        head = self.head_policy(torch.cat([
-            board.repeat_interleave(2, 0), belief], -1))
-        return logits, (cards, board, projected, spatial, fp, fq, head)
+        z = self.act_kind(desc[:, 0].long()) + local + self.act_board(board)[row]
+        return self.act_out(gelu(self.ln_act(z))).squeeze(-1)
 
     def value(self, logits):
         return logits.softmax(-1) @ self.centres
 
-    def forward(self, xpub, phi, weight, seg, nseg, attention):
-        return self.value(self.evaluate(xpub, phi, weight, seg, nseg, attention)[0])
-
     def tensors(self):
-        blocks = [m for i in range(BLOCKS)
-                  for m in (self.blk1[i], self.blkg[i], self.blk2[i])]
+        blocks = [m for i in range(BLOCKS) for m in (self.blk1[i], self.blkg[i], self.blk2[i])]
         mats = [
             self.card1, self.card2, self.pile, self.seat,
             self.hex_stem, self.tok_stem, self.pos, self.glob_stem,
             *blocks,
-            self.board_out,
-            self.cfg_in, self.cfg_seat, self.token_in,
-            self.attn_q, self.attn_k, self.attn_v, self.attn_out,
-            self.value_hidden, self.value_out,
-            self.cfg_policy, self.head_policy,
+            self.board_out, self.value_hidden, self.value_out,
             self.act_kind, self.act_role, self.act_board, self.act_out,
-            self.act_h,
         ]
         norms = [n for i in range(BLOCKS) for n in (self.ln1[i], self.ln2[i])]
-        norms += [self.ln_trunk, self.ln_cfg, self.ln_attn, self.ln_act]
+        norms += [self.ln_trunk, self.ln_act]
         w = [m.weight if isinstance(m, nn.Embedding) else m.weight.t() for m in mats]
         b = [m.bias for m in mats if not isinstance(m, nn.Embedding) and m.bias is not None]
         ln = [x for n in norms for x in (n.weight, n.bias)]

@@ -289,7 +289,7 @@ __device__ __forceinline__ void layer_norm(TrunkShared& s, const float (&v)[TMT]
 
 struct Stem {
     const float* cards;
-    const int* card_of_row;
+    const unsigned char* ids;
     const float* w_pile;
     const float* seat;
     const float* w_tok;
@@ -311,7 +311,7 @@ __device__ void stem(TrunkShared& s, const Stem& st, const float* __restrict__ x
     for (int i = tid; i < nboards * NTYPE * TOKEN_W; i += 32 * TWARPS) {
         int b = i / (NTYPE * TOKEN_W), t = (i / TOKEN_W) % NTYPE, j = i % TOKEN_W;
         const float* xp = xpub + (size_t)(first + b) * PUBFEAT + OFF_PILES + t * PILE_COUNTS;
-        float acc = st.cards[((size_t)st.card_of_row[first + b] * NTYPE + t) * TOKEN_W + j]
+        float acc = st.cards[(size_t)st.ids[(size_t)(first + b) * ROW_BYTES + ROW_IDS + t] * TOKEN_W + j]
                   + st.seat[(size_t)(t / NSLOT) * TOKEN_W + j];
         for (int k = 0; k < PILE_COUNTS; ++k) acc += xp[k] * st.w_pile[(size_t)k * TOKEN_W + j];
         tk[i] = acc;

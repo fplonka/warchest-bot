@@ -9,7 +9,6 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "train"))
 import warchest
 from export_weights import read_bin
-from gpu_batch import attention_layout
 
 SNAKE = [0, 1, 1, 0, 0, 1, 1, 0]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -20,22 +19,14 @@ def load(path):
 
 
 def values(net, drafts):
-    rows, cc, cw, seg = [], [], [], []
-    for b, (white, black, first) in enumerate(drafts):
-        row, c, w, (n0, n1) = warchest.opening(list(white), list(black), first)
-        rows.append(np.frombuffer(bytes(row), np.uint8))
-        cc.append(np.frombuffer(bytes(c), np.uint8).reshape(-1, warchest.CCOUNTS))
-        cw.append(np.asarray(w, np.float32))
-        seg.append(np.repeat([2 * b, 2 * b + 1], [n0, n1]))
-    rows, cc, cw, seg = np.stack(rows), np.concatenate(cc), np.concatenate(cw), np.concatenate(seg)
+    rows = np.stack([np.frombuffer(bytes(warchest.opening(list(w), list(b), f)), np.uint8) for w, b, f in drafts])
     x = np.asarray(warchest.expand_rows(rows.ravel()), np.float32).reshape(len(drafts), warchest.PUBFEAT)
-    slot, width = attention_layout(seg // 2, len(drafts))
-    gpu = lambda a: torch.from_numpy(a).to(DEVICE)
     with torch.no_grad():
-        v = net(gpu(x), gpu(cc.astype(np.float32) / warchest.CNORM), gpu(cw), gpu(seg.astype(np.int64)),
-                2 * len(drafts), (gpu(slot), width)).cpu().numpy()
+        v = net.value(net.evaluate(torch.from_numpy(x).to(DEVICE))[0]).cpu().numpy()
+    first = np.asarray([f for _, _, f in drafts])
     out = np.zeros((len(drafts), 2))
-    np.add.at(out, (seg // 2, seg % 2), v * cw)
+    out[np.arange(len(drafts)), first] = v
+    out[np.arange(len(drafts)), 1 - first] = -v
     return out
 
 
