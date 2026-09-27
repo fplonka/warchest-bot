@@ -11,6 +11,7 @@ field() { python3 -c "import json,sys; i=json.load(sys.stdin); print(i$1)"; }
 
 runs=$(cut -d/ -f2 "$campaign/bots" | sort -u)
 for run in $runs; do
+    mkdir -p "$here/runs/$run/bots"
     rsync -az --include '*/' --include bot.json --exclude '*' -e "ssh -i $key -p 17198 -o StrictHostKeyChecking=no" \
         "root@ssh2.vast.ai:/workspace/warchest-engine/runs/$run/bots/" "$here/runs/$run/bots/"
 done
