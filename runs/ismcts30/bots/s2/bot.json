@@ -1,0 +1,19 @@
+{
+ "format": 1,
+ "name": "ismcts30.s2",
+ "sha": "91d412b",
+ "binary": "d5dc0ce23f9e895d294e08cac80649bb5d6d6c95f7d48508d4d1a646bafb0aa5",
+ "weights": "weights.bin",
+ "weights_sha": "0817d3d931625ffd7ae54bd39b610c935fc67050aeb2fe661f1f964600799ae4",
+ "search": {
+  "mind": "search",
+  "sims": 256,
+  "batch": 16,
+  "puct": 1.5,
+  "explore": 0.0,
+  "temp": 0.5,
+  "cut": 0.1
+ },
+ "minutes": 20.213,
+ "note": "ismcts30 s2, 20 min"
+}
