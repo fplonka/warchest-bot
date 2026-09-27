@@ -438,7 +438,7 @@ impl Online {
 
     fn command(&self, json: &str) -> PyResult<Option<String>> {
         let cmd = self.0.command(&site(json)?).map_err(PyValueError::new_err)?;
-        Ok(cmd.map(|c| c.to_string()))
+        Ok(cmd.map(|c| serde_json::to_string(&c).expect("a command serializes")))
     }
 
     fn act(&mut self, code: u32) -> PyResult<()> {
