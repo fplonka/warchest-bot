@@ -19,6 +19,8 @@ pub struct Search {
     pub mind: String,
     #[serde(default = "untempered")]
     pub temp: f32,
+    #[serde(default)]
+    pub cut: f32,
     #[serde(default = "untempered")]
     pub opponent_temp: f32,
     #[serde(default)]

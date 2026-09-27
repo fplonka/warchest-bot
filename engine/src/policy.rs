@@ -124,6 +124,19 @@ impl NodePolicy {
         }
     }
 
+    pub fn cut(&mut self, frac: f32) {
+        for ci in 0..self.legal_off.len() - 1 {
+            let row = self.row(ci);
+            let probs = &mut self.probs[row];
+            let floor = frac * probs.iter().copied().fold(0.0, f32::max);
+            probs.iter_mut().filter(|p| **p < floor).for_each(|p| *p = 0.0);
+            let sum: f32 = probs.iter().sum();
+            if sum > 0.0 {
+                probs.iter_mut().for_each(|p| *p /= sum);
+            }
+        }
+    }
+
     pub fn posterior(&self, prior: &Belief, obs: u32) -> Belief {
         let mut pairs: Vec<(Config, f32)> = Vec::new();
         for (ci, c) in prior.cfg.iter().enumerate() {
@@ -293,6 +306,9 @@ mod tests {
         np.mix_uniform(0.1);
         assert!(np.probs[row.clone()].iter().all(|&p| p > 0.0));
         assert!((np.probs[row.clone()].iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        np.cut(1.0);
+        assert_eq!(np.probs[row.start], 1.0);
+        np.mix_uniform(0.5);
         np.temper(0.0);
         assert_eq!(np.probs[row.start], 1.0);
     }
