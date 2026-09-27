@@ -22,7 +22,7 @@ fn work(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain) -> Res
     }
     let action = session.decide(brain)?;
     sessions.lock().unwrap().insert(ask.id, session);
-    Ok(Done { id: ask.id, action: Some(action) })
+    Ok(Done { id: ask.id, action })
 }
 
 const THINKERS: usize = 256;

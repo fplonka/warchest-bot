@@ -53,7 +53,6 @@ fn data_to_dict(py: Python<'_>, d: Data) -> PyResult<PyObject> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (games, seed, temp=2.0))]
 fn warm(py: Python<'_>, games: usize, seed: u64, temp: f32) -> PyResult<PyObject> {
     let brain = Brain { mind: Mind::Greedy, temp, cut: 0.0 };
     let d = py.allow_threads(|| crate::selfplay::warm(&brain, games, seed));
@@ -72,7 +71,6 @@ struct Farm {
 #[pymethods]
 impl Farm {
     #[new]
-    #[pyo3(signature = (seed, games, devices, sims=128, batch=16, puct=1.5, explore=0.25))]
     #[allow(clippy::too_many_arguments)]
     fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32, batch: u32, puct: f32, explore: f32) -> PyResult<Farm> {
         let net = net()?;
@@ -117,7 +115,7 @@ fn evaluate(rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>, device: usize) -> PyRes
     use crate::search::Oracle;
     let net = net()?;
     let gpu = crate::cuda::Gpu::new(&[device], &net).map_err(PyRuntimeError::new_err)?;
-    let answer = gpu.eval(&crate::search::Query { rows, desc, off });
+    let answer = gpu.eval(crate::search::Query { rows, desc, off });
     Ok((answer.value, answer.prior))
 }
 
@@ -150,7 +148,7 @@ fn sample_positions(games: usize, seed: u64) -> (Vec<u8>, Vec<u8>, Vec<u32>) {
     let mut rng = crate::rng::Rng::new(seed);
     let mut q = crate::search::Query::default();
     for _ in 0..games {
-        let mut s = crate::selfplay::make_game(&mut rng, true);
+        let mut s = crate::selfplay::game(&mut rng);
         let ctx = Ctx::new(&s);
         for _ in 0..160 {
             if s.is_terminal() {

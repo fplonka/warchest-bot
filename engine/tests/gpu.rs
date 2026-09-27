@@ -8,13 +8,13 @@ use warchest::net::Net;
 use warchest::pbs::Ctx;
 use warchest::rng::Rng;
 use warchest::search::{Oracle, Query, Search};
-use warchest::selfplay::{make_game, Farm};
+use warchest::selfplay::{game, Farm};
 
 fn positions(games: u64) -> Query {
     let mut q = Query::default();
     for g in 0..games {
         let mut rng = Rng::new(g + 1);
-        let mut s = make_game(&mut rng, true);
+        let mut s = game(&mut rng);
         let ctx = Ctx::new(&s);
         for _ in 0..120 {
             if s.is_terminal() {
@@ -33,7 +33,7 @@ fn positions(games: u64) -> Query {
 #[test]
 fn priors_are_distributions_and_values_are_bounded() {
     let q = positions(40);
-    let a = Gpu::new(&[0], &Net::random(7)).unwrap().eval(&q);
+    let a = Gpu::new(&[0], &Net::random(7)).unwrap().eval(q.clone());
     assert_eq!(a.value.len(), q.len());
     assert_eq!(a.prior.len(), q.off[q.len()] as usize);
     assert!(a.value.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
@@ -49,14 +49,14 @@ fn priors_are_distributions_and_values_are_bounded() {
 fn a_position_evaluates_the_same_alone_or_in_a_crowd() {
     let q = positions(60);
     let gpu = Gpu::new(&[0], &Net::random(11)).unwrap();
-    let crowd = gpu.eval(&q);
+    let crowd = gpu.eval(q.clone());
     for i in (0..q.len()).step_by(97) {
         let mut one = Query::default();
         one.rows.extend_from_slice(&q.rows[i * warchest::pbs::ROW_BYTES..(i + 1) * warchest::pbs::ROW_BYTES]);
         let r = q.actions(i);
         one.desc.extend_from_slice(&q.desc[r.start * warchest::search::ACT_BYTES..r.end * warchest::search::ACT_BYTES]);
         one.off.push(r.len() as u32);
-        let alone = gpu.eval(&one);
+        let alone = gpu.eval(one);
         assert!((alone.value[0] - crowd.value[i]).abs() < 1e-4, "row {i} value");
         for (x, y) in alone.prior.iter().zip(&crowd.prior[r]) {
             assert!((x - y).abs() < 1e-4, "row {i} prior {x} vs {y}");

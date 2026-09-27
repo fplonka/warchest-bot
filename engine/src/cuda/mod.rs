@@ -720,12 +720,13 @@ pub struct Gpu {
 }
 
 fn drive(queue: &Queue<Job>, lane: &Mutex<Card>, stats: &Stats) {
+    let mut merged = Query::default();
     loop {
         let jobs = queue.take(MERGE);
         if jobs.is_empty() {
             return;
         }
-        let mut merged = Query::default();
+        merged.clear();
         for (q, _) in &jobs {
             merged.append(q);
         }
@@ -788,10 +789,10 @@ impl Gpu {
 }
 
 impl Oracle for Gpu {
-    fn eval(&self, q: &Query) -> Answer {
+    fn eval(&self, q: Query) -> Answer {
         let (back, answer) = mpsc::channel();
         let g = self.next.fetch_add(1, Ordering::Relaxed) % self.queues.len();
-        self.queues[g].push((q.clone(), back));
+        self.queues[g].push((q, back));
         answer.recv().expect("a gpu lane failed; its driver printed why")
     }
 }

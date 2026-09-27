@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use warchest::pbs::*;
 use warchest::rng::Rng;
 use warchest::search::uniform;
-use warchest::selfplay::make_game;
+use warchest::selfplay::game;
 use warchest::state::{Cont, State, Z_BAG, Z_FACEDOWN, Z_FACEUP};
 use warchest::units::{write_card_features, CARD_FEATS};
 use warchest::Action;
@@ -59,7 +59,7 @@ fn features(s: &State, ctx: &Ctx) -> Vec<f32> {
 fn a_row_shows_the_actor_its_hand_and_hides_the_other_hand() {
     let (mut rng, mut hidden, mut shown) = (Rng::new(99), 0, 0);
     for g in 0..12u64 {
-        let mut s = make_game(&mut Rng::new(g + 1), true);
+        let mut s = game(&mut Rng::new(g + 1));
         let ctx = Ctx::new(&s);
         for _ in 0..150 {
             if s.is_terminal() {
@@ -163,7 +163,7 @@ fn run_one_draft(seed: u64, white: &[u16], black: &[u16]) {
         }
         worlds = next;
 
-        bel[p as usize] = posterior(&s, &ctx, p, &bel[p as usize], obs, uniform).0;
+        bel[p as usize] = posterior(&s, &ctx, p, &bel[p as usize], obs, |q| uniform(&q)).0;
 
         s.apply_inplace(acts[chosen]);
         compare(&worlds, &bel, seed, steps, "decision");
@@ -254,7 +254,7 @@ fn a_mirrored_row_is_the_mirrored_state_packed() {
     let mut checked = 0usize;
     for seed in 0..40u64 {
         let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9) | 1);
-        let mut s = make_game(&mut rng, true);
+        let mut s = game(&mut rng);
         let ctx = Ctx::new(&s);
         for _ in 0..120 {
             if s.is_terminal() {

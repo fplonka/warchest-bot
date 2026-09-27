@@ -297,7 +297,7 @@ pub fn posterior(
     player: u8,
     prior: &Belief,
     key: u32,
-    likelihood: impl FnOnce(&Query) -> Vec<f32>,
+    likelihood: impl FnOnce(Query) -> Vec<f32>,
 ) -> (Belief, State) {
     let mut q = Query::default();
     let mut worlds = Vec::new();
@@ -310,10 +310,12 @@ pub fn posterior(
             worlds.push((world, acts, w));
         }
     }
-    let lik = likelihood(&q);
-    let (mut pairs, mut next) = (Vec::new(), *s);
-    for (i, (world, acts, w)) in worlds.iter().enumerate() {
-        for (a, &l) in acts.iter().zip(&lik[q.actions(i)]) {
+    let lik = likelihood(q);
+    let (mut pairs, mut next, mut at) = (Vec::new(), *s, 0);
+    for (world, acts, w) in &worlds {
+        let seen = &lik[at..at + acts.len()];
+        at += acts.len();
+        for (a, &l) in acts.iter().zip(seen) {
             if obs_key(a) == key {
                 next = world.apply(*a);
                 pairs.push((true_config(&next, player, ctx), w * l));

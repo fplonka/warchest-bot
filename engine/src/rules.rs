@@ -682,6 +682,7 @@ impl State {
 
     pub fn apply_inplace(&mut self, action: Action) {
         use Action::*;
+        self.plays += matches!(self.pending, Cont::MainPlay) as u16;
         match self.pending {
             Cont::Draw { player } => {
                 if let DrawCoin { unit } = action {

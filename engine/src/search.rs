@@ -74,6 +74,12 @@ impl Query {
         self.off.extend(o.off[1..].iter().map(|x| x + base));
     }
 
+    pub fn clear(&mut self) {
+        self.rows.clear();
+        self.desc.clear();
+        self.off.truncate(1);
+    }
+
     pub fn len(&self) -> usize {
         self.off.len() - 1
     }
@@ -102,7 +108,7 @@ pub struct Answer {
 }
 
 pub trait Oracle: Send + Sync {
-    fn eval(&self, q: &Query) -> Answer;
+    fn eval(&self, q: Query) -> Answer;
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -110,7 +116,6 @@ pub struct Search {
     pub sims: u32,
     pub batch: u32,
     pub puct: f32,
-    #[serde(default)]
     pub explore: f32,
 }
 
@@ -185,6 +190,11 @@ impl Tree {
         }));
     }
 
+    fn edges(&self, node: u32) -> &[Edge] {
+        let n = &self.nodes[node as usize];
+        &self.edges[n.first as usize..(n.first + n.len) as usize]
+    }
+
     fn select(&self, node: u32, puct: f32) -> u32 {
         let n = &self.nodes[node as usize];
         let scale = puct * (n.n.max(1) as f32).sqrt();
@@ -192,7 +202,7 @@ impl Tree {
             let q = if e.n > 0 { e.w / e.n as f32 } else { 0.0 };
             q + scale * e.prior / (1 + e.n) as f32
         };
-        let edges = &self.edges[n.first as usize..(n.first + n.len) as usize];
+        let edges = self.edges(node);
         let best = (0..edges.len())
             .max_by(|&a, &b| score(&edges[a]).total_cmp(&score(&edges[b])))
             .expect("an expanded node has an edge");
@@ -200,8 +210,19 @@ impl Tree {
     }
 
     fn descend(&mut self, w: &mut State, ctx: &Ctx, rng: &mut Rng, puct: f32, path: &mut Vec<Step>) -> Leaf {
-        let (mut node, mut h) = (0u32, 0u64);
+        let mut h = 0u64;
         loop {
+            let p = w.to_act();
+            let key = mix(mix(h, p as u64), true_config(w, p, ctx).key());
+            let node = match self.index.get(&key) {
+                Some(&node) if self.nodes[node as usize].len > 0 => node,
+                Some(_) => return Leaf::Busy,
+                None => {
+                    let fresh = self.node(p);
+                    self.index.insert(key, fresh);
+                    return Leaf::Fresh(fresh);
+                }
+            };
             let edge = self.select(node, puct);
             self.nodes[node as usize].n += 1;
             let e = &mut self.edges[edge as usize];
@@ -215,19 +236,8 @@ impl Tree {
             while w.is_chance() {
                 resolve_chance(w, w.to_act(), rng);
             }
-            if w.is_terminal() {
+            if crate::finished(w) {
                 return Leaf::Ended;
-            }
-            let p = w.to_act();
-            let key = mix(mix(h, p as u64), true_config(w, p, ctx).key());
-            match self.index.get(&key) {
-                Some(&next) if self.nodes[next as usize].len > 0 => node = next,
-                Some(_) => return Leaf::Busy,
-                None => {
-                    let fresh = self.node(p);
-                    self.index.insert(key, fresh);
-                    return Leaf::Fresh(fresh);
-                }
             }
         }
     }
@@ -252,47 +262,48 @@ impl Tree {
 impl Search {
     pub fn think(&self, oracle: &dyn Oracle, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> Vec<f32> {
         let me = root.to_act();
-        let acts = root.legal_actions();
         let mut tree = Tree::default();
-        let top = tree.node(me);
-        let mut q = Query::default();
-        q.push(root, ctx, &acts);
-        tree.expand(top, &acts, &oracle.eval(&q).prior, self.explore);
+        let (mut path, mut acts, mut legal, mut fresh) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut left = self.sims;
         while left > 0 {
             let mut q = Query::default();
-            let mut fresh = Vec::new();
-            for _ in 0..self.batch.min(left) {
-                left -= 1;
-                let mut w = *root;
+            while fresh.len() < self.batch as usize && left > 0 {
+                let (mut w, start) = (*root, path.len());
                 set_config(&mut w, 1 - me, ctx, &opp.sample(rng));
-                let mut path = Vec::new();
                 match tree.descend(&mut w, ctx, rng, self.puct, &mut path) {
-                    Leaf::Ended => tree.backup(&path, w.utility(0)),
-                    Leaf::Busy => tree.undo(&path),
+                    Leaf::Ended => {
+                        tree.backup(&path[start..], crate::score(&w, 0));
+                        path.truncate(start);
+                    }
+                    Leaf::Busy => {
+                        tree.undo(&path[start..]);
+                        path.truncate(start);
+                        break;
+                    }
                     Leaf::Fresh(node) => {
-                        let acts = w.legal_actions();
-                        q.push(&w, ctx, &acts);
-                        fresh.push((node, path, acts));
+                        w.legal_actions_into(&mut legal);
+                        q.push(&w, ctx, &legal);
+                        fresh.push((node, start..path.len(), acts.len()..acts.len() + legal.len()));
+                        acts.extend_from_slice(&legal);
                     }
                 }
+                left -= 1;
             }
             if q.is_empty() {
                 continue;
             }
-            let answer = oracle.eval(&q);
-            for (i, (node, path, acts)) in fresh.into_iter().enumerate() {
-                tree.expand(node, &acts, &answer.prior[q.actions(i)], 0.0);
+            let answer = oracle.eval(q);
+            for (i, (node, steps, moves)) in fresh.drain(..).enumerate() {
+                let explore = if node == 0 { self.explore } else { 0.0 };
+                tree.expand(node, &acts[moves.clone()], &answer.prior[moves], explore);
                 let v = answer.value[i];
-                tree.backup(&path, if tree.nodes[node as usize].player == 0 { v } else { -v });
+                tree.backup(&path[steps], if tree.nodes[node as usize].player == 0 { v } else { -v });
             }
+            path.clear();
+            acts.clear();
         }
-        let root = &tree.nodes[top as usize];
-        let edges = &tree.edges[root.first as usize..(root.first + root.len) as usize];
-        let total = edges.iter().map(|e| e.n).sum::<u32>();
-        match total {
-            0 => edges.iter().map(|e| e.prior).collect(),
-            n => edges.iter().map(|e| e.n as f32 / n as f32).collect(),
-        }
+        let edges = tree.edges(0);
+        let total = edges.iter().map(|e| e.n).sum::<u32>() as f32;
+        edges.iter().map(|e| e.n as f32 / total).collect()
     }
 }

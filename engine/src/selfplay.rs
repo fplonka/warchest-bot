@@ -14,9 +14,6 @@ use crate::rng::Rng;
 use crate::search::Query;
 use crate::state::{Cont, State, BLACK, WHITE};
 
-const STARTER_WHITE: [u16; 4] = [17, 12, 4, 9];
-const STARTER_BLACK: [u16; 4] = [1, 3, 8, 16];
-
 pub const DRAFT_POOL: [[u16; 2]; 16] = [
     [1, 1], [2, 52], [3, 3], [4, 4], [5, 5], [6, 53], [7, 7], [8, 8],
     [9, 9], [10, 10], [11, 11], [12, 12], [16, 16], [17, 17], [18, 54], [19, 19],
@@ -36,12 +33,8 @@ fn dealt(rng: &mut Rng) -> Draft {
     Draft { white: pool[..4].to_vec(), black: pool[4..8].to_vec(), first }
 }
 
-pub fn make_game(rng: &mut Rng, random: bool) -> State {
-    if random {
-        return dealt(rng).state().expect("a dealt draft is legal");
-    }
-    let first = if rng.next_u64() & 1 == 0 { WHITE } else { BLACK };
-    State::from_draft(&STARTER_WHITE, &STARTER_BLACK, first)
+pub fn game(rng: &mut Rng) -> State {
+    dealt(rng).state().expect("a dealt draft is legal")
 }
 
 #[derive(Default)]
@@ -86,7 +79,7 @@ pub fn play(brain: &Brain, rng: &mut Rng, stop: &AtomicBool) -> Option<Data> {
     let draft = dealt(rng);
     let mut s = draft.state().expect("a dealt draft is legal");
     let mut seats = [WHITE, BLACK].map(|p| Session::new(&draft, p, rng.next_u64()).expect("a dealt draft is legal"));
-    let (mut d, mut actors, mut main_plays) = (Data::default(), Vec::new(), 0u16);
+    let (mut d, mut actors) = (Data::default(), Vec::new());
     loop {
         while s.is_chance() {
             let p = s.to_act();
@@ -96,7 +89,7 @@ pub fn play(brain: &Brain, rng: &mut Rng, stop: &AtomicBool) -> Option<Data> {
                 sess.observe(&obs, brain).expect("a seat follows every draw");
             }
         }
-        if crate::finished(&s, main_plays) {
+        if crate::finished(&s) {
             break;
         }
         if stop.load(Ordering::Relaxed) {
@@ -111,17 +104,15 @@ pub fn play(brain: &Brain, rng: &mut Rng, stop: &AtomicBool) -> Option<Data> {
         }
         let a = seats[p].play(&acts, &probs);
         d.count(a);
-        main_plays += matches!(s.pending(), Cont::MainPlay) as u16;
         s.apply_inplace(a);
         let obs = Obs::Act { player: p as u8, key: obs_key(&a) };
         seats[1 - p].observe(&obs, brain).expect("a seat follows every move");
     }
-    let ended = s.is_terminal();
-    d.z = actors.iter().map(|&p| if ended { s.utility(p) } else { 0.0 }).collect();
+    d.z = actors.iter().map(|&p| crate::score(&s, p)).collect();
     d.games = 1;
     match s.winner() {
         Some(w) => d.wins[w as usize] += 1,
-        None if ended => d.draws += 1,
+        None if s.is_terminal() => d.draws += 1,
         None => d.timeouts += 1,
     }
     Some(d)
@@ -189,19 +180,17 @@ impl Drop for Farm {
 
 pub(crate) fn resolve_chance(s: &mut State, player: u8, rng: &mut Rng) -> Action {
     debug_assert!(matches!(s.pending(), Cont::Draw { .. } | Cont::WarriorPriestDraw { .. }));
-    let acts = s.legal_actions();
     let pool = s.draw_pool(player);
-    let mut w: Vec<f64> = acts
-        .iter()
-        .map(|a| match a {
-            Action::DrawCoin { unit } if *unit != NONE => pool[*unit as usize] as f64,
-            _ => 1.0,
-        })
-        .collect();
-    if w.iter().all(|&x| x == 0.0) {
-        w.iter_mut().for_each(|x| *x = 1.0);
-    }
-    let drawn = acts[rng.weighted_index(&w)];
+    let total = pool.iter().map(|&c| c as usize).sum::<usize>();
+    let mut k = rng.below(total.max(1));
+    let unit = pool.iter().position(|&c| match k.checked_sub(c as usize) {
+        Some(rest) => {
+            k = rest;
+            false
+        }
+        None => true,
+    });
+    let drawn = Action::DrawCoin { unit: unit.map_or(NONE, |u| u as u8) };
     s.apply_inplace(drawn);
     drawn
 }
@@ -220,8 +209,8 @@ mod tests {
     struct Flat;
 
     impl Oracle for Flat {
-        fn eval(&self, q: &Query) -> Answer {
-            Answer { value: vec![0.0; q.len()], prior: uniform(q) }
+        fn eval(&self, q: Query) -> Answer {
+            Answer { value: vec![0.0; q.len()], prior: uniform(&q) }
         }
     }
 

@@ -58,16 +58,13 @@ impl Brain {
         kept.into_iter().map(|p| p / sum).collect()
     }
 
-    fn likelihood(&self, q: &Query) -> Vec<f32> {
+    fn likelihood(&self, q: Query) -> Vec<f32> {
+        let flat = uniform(&q);
         let prior = match &self.mind {
             Mind::Search { oracle, .. } if !q.is_empty() => oracle.eval(q).prior,
-            _ => uniform(q),
+            _ => return flat,
         };
-        let mut out = uniform(q);
-        for (u, p) in out.iter_mut().zip(prior) {
-            *u = EPS * *u + (1.0 - EPS) * p;
-        }
-        out
+        flat.iter().zip(prior).map(|(u, p)| EPS * u + (1.0 - EPS) * p).collect()
     }
 }
 
@@ -131,7 +128,7 @@ impl Session {
         if !self.to_move(player) {
             return Err(format!("player {} is not to act", player));
         }
-        let likelihood = |q: &Query| brain.likelihood(q);
+        let likelihood = |q: Query| brain.likelihood(q);
         let (mut opp, mut next) = posterior(&self.s, &self.ctx, player, &self.opp, key, likelihood);
         if opp.is_empty() {
             let restart = uniform_belief(&self.s, &self.ctx, player);
@@ -224,7 +221,7 @@ mod tests {
                     }
                     let other = 1 - seats[bot].seat;
                     assert!(seats[bot].opp.cfg.contains(&true_config(&seats[bot].s, other, &seats[bot].ctx)));
-                    done.push(Done { id: ask.id, action: Some(seats[bot].decide(&brain).unwrap()) });
+                    done.push(Done { id: ask.id, action: seats[bot].decide(&brain).unwrap() });
                 }
                 table.accept(bot, done).unwrap();
             }

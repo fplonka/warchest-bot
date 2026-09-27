@@ -1,6 +1,6 @@
 use warchest::board::{board, NONE, N_HEXES, N_LOCATIONS};
 use warchest::rng::Rng;
-use warchest::selfplay::{make_game, DRAFT_POOL};
+use warchest::selfplay::{game, DRAFT_POOL};
 use warchest::state::{Cont, State, BLACK, WHITE, Z_INFLIGHT};
 use warchest::units::{def, N_UNITS, ROYAL_COIN};
 
@@ -78,7 +78,7 @@ fn invariants_random_playouts() {
     let mut winners = [0u32; 3];
 
     for _ in 0..n_games {
-        let mut s = make_game(&mut rng, true);
+        let mut s = game(&mut rng);
         let init = [totals(&s, 0), totals(&s, 1)];
         check_invariants(&s, &init);
 
@@ -124,7 +124,7 @@ fn invariants_random_playouts() {
 #[test]
 fn random_drafts_never_duplicate_a_unit_card() {
     for g in 0..5000u64 {
-        let s = make_game(&mut Rng::new(g), true);
+        let s = game(&mut Rng::new(g));
         for u in 0..N_UNITS {
             if u as u8 == ROYAL_COIN {
                 continue;
