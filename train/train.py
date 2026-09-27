@@ -129,6 +129,7 @@ class Buffer:
             state.update({name: getattr(self, name)[at].copy()
                           for name in fields})
         state["soff"] = self.soff.copy()
+        state = {name: torch.from_numpy(value) for name, value in state.items()}
         state.update({name: int(getattr(self, name))
                       for name in ("acts", "cells", "rows", "cfgs", "lo")})
         return state
@@ -677,7 +678,7 @@ def main():
         diag_rng.bit_generator.state = checkpoint["diag_numpy_rng"]
         torch.set_rng_state(checkpoint["torch_rng"])
         torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
-        buf.load_state_dict(checkpoint["buffer"])
+        buf.load_state_dict(checkpoint.pop("buffer"))
     else:
         if args.init_weights:
             for net in (value, acting):

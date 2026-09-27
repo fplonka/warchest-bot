@@ -1,10 +1,12 @@
 
 import importlib.util
+import io
 import pathlib
 import sys
 import types
 
 import numpy as np
+import torch
 
 
 def load_buffer_module():
@@ -21,10 +23,6 @@ def load_buffer_module():
         "N_HEXES": 3,
     }.items():
         setattr(warchest, name, value)
-    torch = types.ModuleType("torch")
-    torch.no_grad = lambda: (lambda fn: fn)
-    torch.nn = types.ModuleType("torch.nn")
-    torch.nn.functional = types.ModuleType("torch.nn.functional")
     value_net = types.ModuleType("value_net")
     value_net.BINS = 16
     value_net.Net = object
@@ -33,9 +31,6 @@ def load_buffer_module():
     export_weights.load = lambda _: None
     sys.modules.update({
         "warchest": warchest,
-        "torch": torch,
-        "torch.nn": torch.nn,
-        "torch.nn.functional": torch.nn.functional,
         "value_net": value_net,
         "config": config,
         "export_weights": export_weights,
@@ -122,13 +117,16 @@ def main():
     buf = train.Buffer(4096, 12_000)
     for start in range(0, 6000, 1000):
         buf.add(*chunk(train, start, 1000))
-    state = buf.state_dict()
+    saved = io.BytesIO()
+    torch.save(buf.state_dict(), saved)
+    saved.seek(0)
+    state = torch.load(saved)
     assert len(state["x"]) == len(buf) < buf.cap
     assert len(state["cc"]) < buf.ccap
     assert len(state["pa"]) < buf.acap
     assert len(state["pci"]) < buf.pcap
 
-    restored = train.Buffer(buf.cap, buf.ccap)
+    restored = train.Buffer(2 * buf.cap, 2 * buf.ccap)
     restored.add(*chunk(train, 7000, 1000))
     restored.load_state_dict(state)
     assert len(restored) == len(buf)
