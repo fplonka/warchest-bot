@@ -64,8 +64,9 @@ class Net(nn.Module):
         nn.init.normal_(self.act_kind.weight, std=C ** -0.5)
         nn.init.ones_(self.act_role.weight)
 
-        nb = torch.as_tensor(warchest.hex_neighbours(), dtype=torch.long)
-        self.register_buffer("nb", nb.view(N_HEXES, 6), persistent=False)
+        nb = torch.as_tensor(warchest.hex_neighbours(), dtype=torch.long).view(N_HEXES, 6)
+        adj = F.one_hot(nb, N_HEXES + 1).sum(1)[:, :N_HEXES].float()
+        self.register_buffer("adj", adj, persistent=False)
         self.register_buffer("seat_of", torch.arange(NTYPE) // NSLOT, persistent=False)
         self.register_buffer("centres", (torch.arange(BINS) + 0.5) / (BINS / 2) - 1, persistent=False)
 
@@ -90,8 +91,7 @@ class Net(nn.Module):
              + type_pool.unsqueeze(1))
         for i in range(BLOCKS):
             a = gelu(self.ln1[i](x))
-            pad = F.pad(a, (0, 0, 0, 1))
-            y = self.blk1[i](torch.cat([a, pad[:, self.nb].sum(2)], -1))
+            y = self.blk1[i](torch.cat([a, self.adj @ a], -1))
             y = y + self.blkg[i](torch.cat([a.mean(1), a.amax(1)], -1)).unsqueeze(1)
             x = x + self.blk2[i](gelu(self.ln2[i](y)))
         return gelu(self.ln_trunk(x))
