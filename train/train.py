@@ -137,9 +137,11 @@ def bins(y):
 
 
 def losses(net, x, desc, parow, target, z, wp):
-    logits, pieces = net.evaluate(x)
+    with torch.autocast("cuda", torch.bfloat16):
+        logits, pieces = net.evaluate(x)
+        logit = net.actions(desc, pieces, parow)
+    logits, logit = logits.float(), logit.float()
     value_loss = -(bins(z) * logits.log_softmax(-1)).sum(1).mean()
-    logit = net.actions(desc, pieces, parow)
     n = x.shape[0]
     top = torch.full((n,), -1e30, device=x.device).scatter_reduce(0, parow, logit.detach(), reduce="amax")
     shifted = logit - top[parow]
