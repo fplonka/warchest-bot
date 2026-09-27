@@ -30,6 +30,7 @@ pub struct Brain {
     pub mind: Mind,
     pub net: Arc<Net>,
     pub cfg: Cfg,
+    pub temp: f32,
     pub opponent_temp: f32,
     pub opponent_eps: f32,
 }
@@ -58,6 +59,7 @@ impl Brain {
             mind,
             net: Arc::new(net),
             cfg,
+            temp: packed.manifest.search.temp,
             opponent_temp: packed.manifest.search.opponent_temp,
             opponent_eps: packed.manifest.search.opponent_eps,
         })
@@ -224,7 +226,8 @@ impl Session {
         let ci = self.bel[self.seat as usize]
             .index_of(&truth)
             .ok_or("the belief filter dropped this seat's own config")?;
-        let np = brain.policy(&self.s, &self.ctx, self.seat, &self.bel, &mut self.rng);
+        let mut np = brain.policy(&self.s, &self.ctx, self.seat, &self.bel, &mut self.rng);
+        np.temper(brain.temp);
         if np.row(ci).is_empty() {
             return Err(format!(
                 "this seat's hand has no legal action here ({} actions at the node)",
@@ -259,6 +262,7 @@ mod tests {
             mind: Mind::Random,
             net: Arc::new(Net::default()),
             cfg: Cfg::default(),
+            temp: 1.0,
             opponent_temp: 1.0,
             opponent_eps: 0.0,
         }
