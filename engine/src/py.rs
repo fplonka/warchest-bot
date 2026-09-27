@@ -1,6 +1,6 @@
 use std::sync::{Arc, LazyLock};
 
-use numpy::{IntoPyArray, PyReadonlyArray1};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use parking_lot::RwLock;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -165,7 +165,7 @@ fn sample_positions(games: usize, seed: u64) -> (Vec<u8>, Vec<u8>, Vec<u32>) {
 }
 
 #[pyfunction]
-fn mirror_rows(rows: PyReadonlyArray1<u8>) -> PyResult<Vec<u8>> {
+fn mirror_rows<'py>(py: Python<'py>, rows: PyReadonlyArray1<u8>) -> PyResult<Bound<'py, PyArray1<u8>>> {
     let rows = rows.as_slice()?;
     if rows.len() % ROW_BYTES != 0 {
         return Err(PyValueError::new_err("rows are not whole"));
@@ -174,7 +174,7 @@ fn mirror_rows(rows: PyReadonlyArray1<u8>) -> PyResult<Vec<u8>> {
     for (src, dst) in rows.chunks_exact(ROW_BYTES).zip(out.chunks_exact_mut(ROW_BYTES)) {
         mirror_row(src, dst);
     }
-    Ok(out)
+    Ok(out.into_pyarray_bound(py))
 }
 
 #[pyfunction]

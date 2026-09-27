@@ -37,7 +37,7 @@ def positions(games, seed):
 
 def packed_row_cuda_parity(device):
     rows = positions(128, 19)[0][:2048]
-    mirrored = np.frombuffer(bytes(warchest.mirror_rows(rows.ravel())), np.uint8).reshape(rows.shape)
+    mirrored = warchest.mirror_rows(rows.ravel()).reshape(rows.shape)
     rows = np.concatenate([rows, mirrored]).copy()
     want = np.asarray(warchest.expand_rows(rows.ravel()), np.float32).reshape(len(rows), warchest.PUBFEAT)
     got = expand(rows, device).cpu().numpy()

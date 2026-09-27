@@ -9,8 +9,7 @@ HEXMAP = np.asarray(warchest.hex_mirror(), np.int64)
 
 
 def mirror_rows(rows):
-    packed = bytes(warchest.mirror_rows(np.ascontiguousarray(rows).ravel()))
-    return np.frombuffer(packed, np.uint8).reshape(len(rows), -1)
+    return warchest.mirror_rows(np.ascontiguousarray(rows).ravel()).reshape(len(rows), -1)
 
 
 def mirror_batch(parts, flipped):
