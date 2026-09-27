@@ -41,3 +41,10 @@ MercDecline. On drafts without a footman nothing that changed is ever used,
 so from here the ladder deals without footmen and old and new bots meet on one
 game. adam-base is a smaller net the new binary cannot load; it left the
 campaign. The original bots are in /workspace/oldbots on the training box.
+
+## 2026-09-27: octaves only
+
+The campaign keeps fourweek at 4, 8, 16, 32, 64 and 128 h, the newest bot
+(s40, 160 h; swap it for s64 at 256 h), and s256-c1 at 1 to 8 h. Every match
+with any other bot is gone: 255 -> 61. Tonight's footman-free session, before
+the cut, had 80 -> 160 h at +51 +- 13 and the fix (s39 -> s40) at +22 +- 14.
