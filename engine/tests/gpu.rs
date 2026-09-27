@@ -48,14 +48,13 @@ fn priors_are_distributions_and_values_are_bounded() {
 #[test]
 fn a_position_evaluates_the_same_alone_or_in_a_crowd() {
     let q = positions(60);
-    let gpu = Gpu::new(&[0], &Net::random(11)).unwrap();
-    let crowd = gpu.eval(q.clone());
+    let net = Net::random(11);
+    let crowd = Gpu::new(&[0], &net).unwrap().eval(q.clone());
+    let gpu = Gpu::new(&[0], &net).unwrap();
     for i in (0..q.len()).step_by(97) {
         let mut one = Query::default();
-        one.rows.extend_from_slice(&q.rows[i * warchest::pbs::ROW_BYTES..(i + 1) * warchest::pbs::ROW_BYTES]);
+        one.push_row(q.row(i));
         let r = q.actions(i);
-        one.desc.extend_from_slice(&q.desc[r.start * warchest::search::ACT_BYTES..r.end * warchest::search::ACT_BYTES]);
-        one.off.push(r.len() as u32);
         let alone = gpu.eval(one);
         assert!((alone.value[0] - crowd.value[i]).abs() < 1e-4, "row {i} value");
         for (x, y) in alone.prior.iter().zip(&crowd.prior[r]) {

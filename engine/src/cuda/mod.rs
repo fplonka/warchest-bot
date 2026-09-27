@@ -15,6 +15,7 @@ use half::f16;
 use parking_lot::{Condvar, Mutex};
 
 use crate::board::{board, NONE, N_HEXES};
+use crate::memo::Memo;
 use crate::net::{ln_block, Flat, Net, NetLayout, Span, BINS, BLOCKS, C, D, HIDDEN, LN_ACT, LN_TRUNK, TYPE};
 use crate::pbs::{
     HEX_BLOCK, HEX_CH, HEX_FACTS, LOOSE, MAX_COINS, NSLOT, NTYPE, OFF_CARDS, OFF_LOOSE, OFF_PILES, PILE_COUNTS,
@@ -708,6 +709,7 @@ pub struct Gpu {
     lanes: Vec<Arc<Mutex<Card>>>,
     drivers: Vec<JoinHandle<()>>,
     next: AtomicUsize,
+    memo: Memo,
     pub stats: Arc<Stats>,
 }
 
@@ -766,7 +768,7 @@ impl Gpu {
             }
             queues.push(queue);
         }
-        Ok(Gpu { queues, lanes, drivers, next: AtomicUsize::new(0), stats })
+        Ok(Gpu { queues, lanes, drivers, next: AtomicUsize::new(0), memo: Memo::default(), stats })
     }
 
     pub fn set_weights(&self, net: &Net) -> Res<()> {
@@ -776,16 +778,19 @@ impl Gpu {
             card.weights = Weights::new(&card.stream, &card.layout, net)?;
             card.stream.synchronize().map_err(err)?;
         }
+        self.memo.forget();
         Ok(())
     }
 }
 
 impl Oracle for Gpu {
     fn eval(&self, q: Query) -> Answer {
-        let (back, answer) = mpsc::channel();
-        let g = self.next.fetch_add(1, Ordering::Relaxed) % self.queues.len();
-        self.queues[g].push((q, back));
-        answer.recv().expect("a gpu lane failed; its driver printed why")
+        self.memo.eval(q, |q| {
+            let (back, answer) = mpsc::channel();
+            let g = self.next.fetch_add(1, Ordering::Relaxed) % self.queues.len();
+            self.queues[g].push((q, back));
+            answer.recv().expect("a gpu lane failed; its driver printed why")
+        })
     }
 }
 

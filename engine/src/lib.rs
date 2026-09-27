@@ -4,6 +4,7 @@ pub mod board;
 pub mod bot;
 #[cfg(feature = "gpu")]
 pub mod cuda;
+pub mod memo;
 pub mod net;
 pub mod online;
 pub mod packed;

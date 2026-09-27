@@ -67,6 +67,17 @@ impl Query {
         self.off.push((self.desc.len() / ACT_BYTES) as u32);
     }
 
+    pub fn row(&self, i: usize) -> (&[u8], &[u8]) {
+        let a = self.actions(i);
+        (&self.rows[i * ROW_BYTES..(i + 1) * ROW_BYTES], &self.desc[a.start * ACT_BYTES..a.end * ACT_BYTES])
+    }
+
+    pub fn push_row(&mut self, (row, desc): (&[u8], &[u8])) {
+        self.rows.extend_from_slice(row);
+        self.desc.extend_from_slice(desc);
+        self.off.push((self.desc.len() / ACT_BYTES) as u32);
+    }
+
     pub fn append(&mut self, o: &Query) {
         let base = (self.desc.len() / ACT_BYTES) as u32;
         self.rows.extend_from_slice(&o.rows);
@@ -102,6 +113,7 @@ pub fn uniform(q: &Query) -> Vec<f32> {
         .collect()
 }
 
+#[derive(Default)]
 pub struct Answer {
     pub value: Vec<f32>,
     pub prior: Vec<f32>,
@@ -120,7 +132,7 @@ pub struct Search {
 }
 
 #[derive(Default)]
-struct Keyed(u64);
+pub struct Keyed(u64);
 
 impl Hasher for Keyed {
     fn finish(&self) -> u64 {
