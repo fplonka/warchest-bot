@@ -24,7 +24,7 @@ resumes itself after a crash (`tools/resume_train.sh`).
 
 ## Playing the ladder
 
-Never on the training box. `tools/fourweek_ladder.sh <hours>` rents a 2x3090
+Never on the training box. `tools/ladder_box.sh ladder/fourweek <hours>` rents a 2x3090
 AMD box (the packed bots are built for the trainer's Zen CPU), builds the
 ladder binary, copies the bots over from the training box, plays the most
 informative pairs for that long, appends to `matches.jsonl` here, prints the

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-hours=${1:?usage: fourweek_ladder.sh <hours>}
-campaign=$here/ladder/fourweek
+campaign=$here/${1:?usage: ladder_box.sh <campaign> <hours>}
+hours=${2:?usage: ladder_box.sh <campaign> <hours>}
 key=$HOME/.ssh/id_ed25519_warchest_vast
 ssh-add -q "$key"
 vast() { VAST_API_KEY=$(cat ~/.config/vastai/vast_api_key) uvx --from vastai vastai "$@" --raw; }
