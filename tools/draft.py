@@ -12,10 +12,11 @@ from export_weights import read_bin
 from gpu_batch import attention_layout
 
 SNAKE = [0, 1, 1, 0, 0, 1, 1, 0]
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def load(path):
-    return read_bin(path).eval().cuda()
+    return read_bin(path).eval().to(DEVICE)
 
 
 def values(net, drafts):
@@ -29,7 +30,7 @@ def values(net, drafts):
     rows, cc, cw, seg = np.stack(rows), np.concatenate(cc), np.concatenate(cw), np.concatenate(seg)
     x = np.asarray(warchest.expand_rows(rows.ravel()), np.float32).reshape(len(drafts), warchest.PUBFEAT)
     slot, width = attention_layout(seg // 2, len(drafts))
-    gpu = lambda a: torch.from_numpy(a).cuda()
+    gpu = lambda a: torch.from_numpy(a).to(DEVICE)
     with torch.no_grad():
         v = net(gpu(x), gpu(cc.astype(np.float32) / warchest.CNORM), gpu(cw), gpu(seg.astype(np.int64)),
                 2 * len(drafts), (gpu(slot), width)).cpu().numpy()
