@@ -45,17 +45,19 @@ impl Brain {
     }
 
     fn policy(&self, s: &State, ctx: &Ctx, opp: &Belief, acts: &[Action], rng: &mut Rng) -> Vec<f32> {
-        let raw = match &self.mind {
+        match &self.mind {
             _ if acts.len() == 1 => vec![1.0],
             Mind::Random => vec![1.0 / acts.len() as f32; acts.len()],
             Mind::Greedy => policy::greedy(s, acts),
             Mind::Search { search, oracle } => search.think(oracle.as_ref(), s, ctx, opp, rng),
-        };
-        let tempered: Vec<f32> = raw.iter().map(|p| p.powf(1.0 / self.temp)).collect();
-        let floor = self.cut * tempered.iter().copied().fold(0.0, f32::max);
-        let kept: Vec<f32> = tempered.into_iter().map(|p| if p < floor { 0.0 } else { p }).collect();
-        let sum: f32 = kept.iter().sum();
-        kept.into_iter().map(|p| p / sum).collect()
+        }
+    }
+
+    fn pick(&self, probs: &[f32], rng: &mut Rng) -> usize {
+        let tempered: Vec<f64> = probs.iter().map(|&p| (p as f64).powf(1.0 / self.temp as f64)).collect();
+        let floor = self.cut as f64 * tempered.iter().copied().fold(0.0, f64::max);
+        let kept: Vec<f64> = tempered.into_iter().map(|p| if p < floor { 0.0 } else { p }).collect();
+        rng.weighted_index(&kept)
     }
 
     fn likelihood(&self, q: Query) -> Vec<f32> {
@@ -157,16 +159,15 @@ impl Session {
         Ok((acts, probs))
     }
 
-    pub fn play(&mut self, acts: &[Action], probs: &[f32]) -> Action {
-        let weights: Vec<f64> = probs.iter().map(|&p| p as f64).collect();
-        let action = acts[self.rng.weighted_index(&weights)];
+    pub fn play(&mut self, brain: &Brain, acts: &[Action], probs: &[f32]) -> Action {
+        let action = acts[brain.pick(probs, &mut self.rng)];
         self.s.apply_inplace(action);
         action
     }
 
     pub fn decide(&mut self, brain: &Brain) -> Result<u32, String> {
         let (acts, probs) = self.think(brain)?;
-        Ok(self.play(&acts, &probs).encode())
+        Ok(self.play(brain, &acts, &probs).encode())
     }
 
     pub fn query(&self, acts: &[Action], q: &mut Query) {

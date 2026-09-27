@@ -116,14 +116,6 @@ class Buffer:
         parow = np.repeat(np.arange(len(ids)), lens)
         return self.x[s], self.pa[at], parow, self.pp[at].astype(np.float32), self.z[s]
 
-    def sample_ids(self, batch, rng, recent_mix=0.0, recent_frac=0.2):
-        ids = rng.integers(self.lo, self.rows, size=batch)
-        k = int(batch * recent_mix)
-        if k > 0:
-            span = max(1, int((self.rows - self.lo) * recent_frac))
-            ids[:k] = rng.integers(self.rows - span, self.rows, size=k)
-        return ids
-
 
 def fuse(net):
     net.evaluate = torch.compile(net.evaluate, dynamic=True)
@@ -155,13 +147,12 @@ def losses(net, x, desc, parow, target, z, wp):
     return value_loss + wp * policy_loss, stats
 
 
-def train_steps(net, acting, opt, buf, steps, batch, rng, device, batch_fn, policy_w,
-                recent_mix, recent_frac, deadline):
+def train_steps(net, acting, opt, buf, steps, batch, rng, device, batch_fn, policy_w, deadline):
     acc, done = collections.Counter(), 0
     for _ in range(steps):
         if time.time() >= deadline:
             break
-        parts = batch_fn(buf.gather(buf.sample_ids(batch, rng, recent_mix, recent_frac)), rng, device)
+        parts = batch_fn(buf.gather(rng.integers(buf.lo, buf.rows, size=batch)), rng, device)
         loss, stats = losses(net, *parts, policy_w)
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -345,7 +336,7 @@ def main():
         debt = args.replay_ratio * progress["generated_rows"] - progress["optimizer_rows"]
         steps = int(debt // args.batch) if len(buf) >= args.batch else 0
         done, stats = train_steps(value, acting, opt, buf, steps, args.batch, rng, dev, gpu_batch.make_batch,
-                                  args.policy_w, args.recent_mix, args.recent_frac, deadline)
+                                  args.policy_w, deadline)
         progress["optimizer_rows"] += done * args.batch
         return done, stats
 
@@ -375,7 +366,7 @@ def main():
         snapshot(0.0, "init")
     window = collections.Counter()
     while time.time() - t0 < warm:
-        absorb(window, warchest.warm(args.warm_games, args.seed * 1_000_003 + epoch, temp=args.temp))
+        absorb(window, warchest.warm(args.warm_games, args.seed * 1_000_003 + epoch, temp=args.warm_temp))
         done, stats = fit(t0 + total)
         window["steps"] += done
         report("warm", window, stats, {})
@@ -385,7 +376,7 @@ def main():
         target_state = cpu_state(acting)
         farm = warchest.Farm(args.seed + 1_000_003 * progress["farm_runs"], args.games,
                              [int(d) for d in args.gen_devices.split(",")], sims=args.sims,
-                             batch=args.search_batch, puct=args.puct, explore=args.explore)
+                             batch=args.search_batch, puct=args.puct, explore=args.explore, temp=args.temp)
         progress["farm_runs"] += 1
         next_target = time.time() + args.target_every * 60.0
         next_report = time.time() + 10.0

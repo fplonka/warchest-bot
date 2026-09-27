@@ -72,11 +72,11 @@ struct Farm {
 impl Farm {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32, batch: u32, puct: f32, explore: f32) -> PyResult<Farm> {
+    fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32, batch: u32, puct: f32, explore: f32, temp: f32) -> PyResult<Farm> {
         let net = net()?;
         let gpu = Arc::new(crate::cuda::Gpu::new(&devices, &net).map_err(PyRuntimeError::new_err)?);
         let search = crate::search::Search { sims, batch, puct, explore };
-        let brain = Brain { mind: Mind::Search { search, oracle: gpu.clone() }, temp: 1.0, cut: 0.0 };
+        let brain = Brain { mind: Mind::Search { search, oracle: gpu.clone() }, temp, cut: 0.0 };
         let farm = crate::selfplay::Farm::new(seed, games, Arc::new(brain));
         Ok(Farm { gpu, farm, net })
     }
