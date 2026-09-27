@@ -125,17 +125,13 @@ class Buffer:
         return ids
 
 
-def fuse(net):
-    net.evaluate = torch.compile(net.evaluate, dynamic=True)
-    return net
-
-
 def bins(y):
     edges = torch.linspace(-1.0, 1.0, BINS + 1, device=y.device)
     cdf = torch.special.ndtr((edges - y.unsqueeze(1)) * (BINS / 1.5))
     return cdf.diff(dim=1) / (cdf[:, -1:] - cdf[:, :1])
 
 
+@torch.compile(dynamic=True)
 def losses(net, x, desc, parow, target, z, wp):
     with torch.autocast("cuda", torch.bfloat16):
         logits, pieces = net.evaluate(x)
@@ -276,7 +272,6 @@ def main():
     torch.manual_seed(args.seed)
     value = Net().to(dev)
     acting = copy.deepcopy(value).requires_grad_(False)
-    fuse(value)
     opt = adam(value, args.lr, args.wd)
     buf = Buffer(args.cap)
     if checkpoint:

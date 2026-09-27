@@ -19,7 +19,6 @@ def main():
     torch.cuda.set_device(dev)
     torch.set_float32_matmul_precision("high")
     value, acting = Net().to(dev), Net().to(dev).requires_grad_(False)
-    train.fuse(value)
     opt, buf, rng = train.adam(value, cfg.lr, cfg.wd), train.Buffer(cfg.cap), np.random.default_rng(cfg.seed)
     train.ingest(buf, train.warchest.warm(cfg.warm_games, cfg.seed, temp=cfg.temp))
     run = lambda n: train.train_steps(value, acting, opt, buf, n, cfg.batch, rng, dev, gpu_batch.make_batch,
