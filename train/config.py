@@ -13,20 +13,20 @@ class Cfg:
     init_weights: str = ""
     resume: str = ""
 
-    batch: int = 1024
-    lr: float = 1e-3
+    batch: int = 8192
+    lr: float = 2.8e-3
     wd: float = 0.01
-    lr_final: float = 1e-4
+    lr_final: float = 2.8e-4
     lr_stable_frac: float = 0.75
     replay_ratio: float = 1.0
     target_every: float = 1.0
-    cap: int = 1_000_000
+    cap: int = 4_000_000
     policy_w: float = 1.0
     warm_games: int = 96
 
     sims: int = 32
     games: int = 1024
-    collect_rows: int = 16384
+    collect_rows: int = 65536
 
     device: str = "cuda:1"
 

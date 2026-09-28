@@ -27,7 +27,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 ROW_BYTES = warchest.ROW_BYTES
 ACT_BYTES = warchest.ACT_BYTES
-EMA = 0.999
+EMA_ROWS = 1_024_000
 PLAYS = ("attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative")
 FRESH = ("value_loss", "value_sq_err", "policy_loss")
 GAME_KEYS = ("games", "decisions", "timeouts", "white_wins", "black_wins", "draws",
@@ -156,7 +156,7 @@ def train_steps(net, acting, opt, buf, steps, batch, rng, device, batch_fn, poli
         stats["grad_norm"] = nn.utils.clip_grad_norm_(net.parameters(), 5.0)
         opt.step()
         with torch.no_grad():
-            torch._foreach_lerp_(list(acting.parameters()), list(net.parameters()), 1.0 - EMA)
+            torch._foreach_lerp_(list(acting.parameters()), list(net.parameters()), batch / EMA_ROWS)
         for key, value in stats.items():
             acc[key] = acc[key] + value
     if not steps:
