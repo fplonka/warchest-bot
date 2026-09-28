@@ -42,11 +42,7 @@ impl BotProcess {
         if hello.rules != rules_table_hash() {
             return Err(format!("{} was built against different rules", m.name));
         }
-        Ok(BotProcess {
-            child,
-            input,
-            output,
-        })
+        Ok(BotProcess { child, input, output })
     }
 
     fn send(&mut self, request: &Request) -> Result<(), String> {
@@ -94,6 +90,7 @@ struct Match {
     draft_seed: u64,
     protocol: u32,
     rules: u64,
+    moves: usize,
     outcomes: Vec<[i8; 2]>,
 }
 
@@ -113,30 +110,30 @@ fn drafts(seed: u64, count: usize) -> Vec<Draft> {
 
 const CONCURRENT: usize = 256;
 
-fn play(a: &Packed, b: &Packed, games: usize, seed: u64) -> Result<Vec<[i8; 2]>, String> {
+fn play(a: &Packed, b: &Packed, games: usize, seed: u64) -> Result<(Vec<[i8; 2]>, usize), String> {
     let mut bots = [BotProcess::launch(a, "0")?, BotProcess::launch(b, "1")?];
     let mut table = Table::new();
-    let mut outcomes = vec![[0; 2]; games / 2];
+    let (mut outcomes, mut moves) = (vec![[0; 2]; games / 2], 0);
     for (pair, draft) in drafts(seed, games / 2).into_iter().enumerate() {
         for (color, seats) in [[0, 1], [1, 0]].into_iter().enumerate() {
             let id = (2 * pair + color) as u32;
             table.start(id, &draft, seats, seed ^ id as u64)?;
         }
         while table.live() >= CONCURRENT {
-            step(&mut table, &mut bots, &mut outcomes)?;
+            moves += step(&mut table, &mut bots, &mut outcomes)?;
         }
     }
     while table.live() > 0 {
-        step(&mut table, &mut bots, &mut outcomes)?;
+        moves += step(&mut table, &mut bots, &mut outcomes)?;
     }
-    Ok(outcomes)
+    Ok((outcomes, moves))
 }
 
 fn step(
     table: &mut Table,
     bots: &mut [BotProcess; 2],
     outcomes: &mut [[i8; 2]],
-) -> Result<(), String> {
+) -> Result<usize, String> {
     table.settle();
     for (id, seats, utility) in table.reap() {
         outcomes[id as usize / 2][id as usize % 2] = if seats[0] == 0 { utility } else { -utility };
@@ -148,7 +145,7 @@ fn step(
     for (index, (bot, request)) in bots.iter_mut().zip(&requests).enumerate() {
         table.accept(index, bot.receive(request.go.len())?)?;
     }
-    Ok(())
+    Ok(requests.iter().map(|r| r.go.len()).sum())
 }
 
 fn main() {
@@ -170,7 +167,7 @@ fn run() -> Result<(), String> {
     if games < 2 || games % 2 != 0 {
         return Err("games must be even and at least two".into());
     }
-    let outcomes = play(&a, &b, games, seed)?;
+    let (outcomes, moves) = play(&a, &b, games, seed)?;
     let record = Match {
         a: a.manifest.name,
         b: b.manifest.name,
@@ -181,6 +178,7 @@ fn run() -> Result<(), String> {
         draft_seed: seed,
         protocol: PROTOCOL,
         rules: rules_table_hash(),
+        moves,
         outcomes,
     };
     println!("{}", serde_json::to_string(&record).map_err(|e| e.to_string())?);
