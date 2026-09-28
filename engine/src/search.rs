@@ -154,6 +154,7 @@ struct Node {
 struct Edge {
     action: Action,
     prior: f32,
+    logit: f32,
     n: u32,
     w: f32,
 }
@@ -199,7 +200,7 @@ impl Tree {
         n.first = self.edges.len() as u32;
         n.len = acts.len() as u32;
         n.value = value;
-        self.edges.extend(acts.iter().zip(prior).map(|(&action, &prior)| Edge { action, prior, n: 0, w: 0.0 }));
+        self.edges.extend(acts.iter().zip(prior).map(|(&action, &prior)| Edge { action, prior, logit: prior.ln(), n: 0, w: 0.0 }));
     }
 
     fn edges(&self, node: u32) -> &[Edge] {
@@ -207,7 +208,7 @@ impl Tree {
         &self.edges[n.first as usize..(n.first + n.len) as usize]
     }
 
-    fn sigma(&self, node: u32) -> Vec<f32> {
+    fn sigma(&self, node: u32) -> impl Fn(&Edge) -> f32 {
         let edges = self.edges(node);
         let visits = edges.iter().map(|e| e.n).sum::<u32>() as f32;
         let most = edges.iter().map(|e| e.n).max().unwrap_or(0) as f32;
@@ -218,11 +219,16 @@ impl Tree {
         let mean = if p > 0.0 { pq / p } else { 0.0 };
         let mix = (self.nodes[node as usize].value + visits * mean) / (1.0 + visits);
         let scale = (C_VISIT + most) * C_SCALE;
-        edges.iter().map(|e| scale * (if e.n > 0 { e.w / e.n as f32 } else { mix } + 1.0) / 2.0).collect()
+        move |e| scale * (if e.n > 0 { e.w / e.n as f32 } else { mix } + 1.0) / 2.0
+    }
+
+    fn logits(&self, node: u32) -> impl Iterator<Item = f32> + '_ {
+        let sigma = self.sigma(node);
+        self.edges(node).iter().map(move |e| e.logit + sigma(e))
     }
 
     fn improved(&self, node: u32) -> Vec<f32> {
-        let logits: Vec<f32> = self.edges(node).iter().zip(self.sigma(node)).map(|(e, s)| e.prior.ln() + s).collect();
+        let logits: Vec<f32> = self.logits(node).collect();
         let top = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let z: f32 = logits.iter().map(|l| (l - top).exp()).sum();
         logits.iter().map(|l| (l - top).exp() / z).collect()
@@ -231,9 +237,10 @@ impl Tree {
     fn select(&self, node: u32) -> u32 {
         let edges = self.edges(node);
         let total = (1 + edges.iter().map(|e| e.n).sum::<u32>()) as f32;
-        let pi = self.improved(node);
-        let score = |i: usize| pi[i] - edges[i].n as f32 / total;
-        let best = (0..edges.len()).max_by(|&a, &b| score(a).total_cmp(&score(b))).expect("an expanded node has an edge");
+        let top = self.logits(node).fold(f32::NEG_INFINITY, f32::max);
+        let z: f32 = self.logits(node).map(|l| (l - top).exp()).sum();
+        let score = self.logits(node).zip(edges).map(|(l, e)| (l - top).exp() / z - e.n as f32 / total);
+        let best = score.enumerate().max_by(|a, b| a.1.total_cmp(&b.1)).expect("an expanded node has an edge").0;
         self.nodes[node as usize].first + best as u32
     }
 
@@ -335,9 +342,7 @@ pub fn think(oracle: &dyn Oracle, sims: u32, root: &State, ctx: &Ctx, opp: &Beli
     let node = tree.node(root.to_act());
     tree.expand(node, &acts, &answer.prior, answer.value[0]);
     let gumbel: Vec<f32> = acts.iter().map(|_| rng.gumbel()).collect();
-    let score = |tree: &Tree| -> Vec<f32> {
-        tree.edges(0).iter().zip(tree.sigma(0)).zip(&gumbel).map(|((e, s), g)| g + e.prior.ln() + s).collect()
-    };
+    let score = |tree: &Tree| -> Vec<f32> { tree.logits(0).zip(&gumbel).map(|(l, g)| g + l).collect() };
     let mut alive: Vec<u32> = (0..acts.len() as u32).collect();
     for (k, n) in halving(acts.len().min(CONSIDERED), sims) {
         let s = score(&tree);
@@ -381,6 +386,10 @@ mod tests {
         tree
     }
 
+    fn sigma(tree: &Tree) -> Vec<f32> {
+        tree.edges(0).iter().map(tree.sigma(0)).collect()
+    }
+
     fn close(got: &[f32], want: &[f32]) {
         assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-4), "{got:?} is not {want:?}");
     }
@@ -399,8 +408,8 @@ mod tests {
     fn an_unvisited_move_completes_with_the_mixed_value() {
         let tree = root(&[0.5, 0.3, 0.2], 0.2, &[(2, 1.0), (1, -1.0), (0, 0.0)]);
         let mix = 0.003125;
-        close(&tree.sigma(0), &[52.0 * 0.75, 0.0, 52.0 * (1.0 + mix) / 2.0]);
-        close(&root(&[0.5, 0.5], -0.4, &[]).sigma(0), &[50.0 * 0.3, 50.0 * 0.3]);
+        close(&sigma(&tree), &[52.0 * 0.75, 0.0, 52.0 * (1.0 + mix) / 2.0]);
+        close(&sigma(&root(&[0.5, 0.5], -0.4, &[])), &[50.0 * 0.3, 50.0 * 0.3]);
     }
 
     #[test]
