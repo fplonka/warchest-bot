@@ -129,7 +129,6 @@ PANELS = (
     ("Simulations", "sims/s", (("sims", "sims_per_s"),), True, ()),
     ("Replay generation throughput", "rows/s", (("rows", "rows_per_s"),), True, ()),
     ("Rows per GPU call", "rows", (("rows per call", "rows_per_call"),), True, ()),
-    ("GPU lane occupancy", "fraction", (("busy", "gpu_busy"),), True, ()),
     ("Gradient norm before clipping", "L2 norm", (("mean", "grad_norm"),), True, (("clip", 5),)),
     ("Replay buffer fill", "rows", (("buffer", "buf"),), True, ()),
     ("Replay age", "seconds retained", (("replay age", "buf_s"),), True, ()),

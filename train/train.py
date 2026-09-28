@@ -382,11 +382,11 @@ def main():
         acting.push()
         target_state = cpu_state(acting)
         farm = warchest.Farm(args.seed + 1_000_003 * progress["farm_runs"], args.games,
-                             [int(d) for d in args.gen_devices.split(",")], sims=args.sims)
+                             list(range(torch.cuda.device_count())), sims=args.sims)
         progress["farm_runs"] += 1
         next_target = time.time() + args.target_every * 60.0
         next_report = time.time() + 10.0
-        at, seen = time.time(), {"gpu_rows": 0, "gpu_calls": 0, "gpu_nanos": 0, "decisions": 0}
+        at, seen = time.time(), (0, 0)
         stats = {}
         while time.time() - t0 < total:
             data = farm.collect(args.collect_rows)
@@ -402,13 +402,12 @@ def main():
             if time.time() < next_report:
                 continue
             now, span = time.time(), max(time.time() - at, 1e-9)
-            gpu = {k: int(data[k]) - seen[k] for k in ("gpu_rows", "gpu_calls", "gpu_nanos")}
-            extra = {"evals_per_s": round(gpu["gpu_rows"] / span, 1),
+            calls, evals = map(sum, zip(*farm.gpu_stats()))
+            extra = {"evals_per_s": round((evals - seen[1]) / span, 1),
                      "sims_per_s": round(window["rows"] * args.sims / span, 1),
                      "rows_per_s": round(window["rows"] / span, 1),
-                     "rows_per_call": round(gpu["gpu_rows"] / max(gpu["gpu_calls"], 1), 1),
-                     "gpu_busy": round(1e-9 * gpu["gpu_nanos"] / span / (warchest.PIPELINE * len(args.gen_devices.split(","))), 3)}
-            seen.update({k: int(data[k]) for k in ("gpu_rows", "gpu_calls", "gpu_nanos")})
+                     "rows_per_call": round((evals - seen[1]) / max(calls - seen[0], 1), 1)}
+            seen = (calls, evals)
             report("search", window, stats, extra)
             window.clear()
             at, next_report = now, now + 10.0

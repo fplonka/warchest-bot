@@ -94,15 +94,12 @@ impl Farm {
         if !self.farm.alive() {
             return Err(PyRuntimeError::new_err("a self-play game died; the log says why"));
         }
-        let out = data_to_dict(py, d)?;
-        let dict = out.bind(py).downcast::<PyDict>()?.clone();
+        data_to_dict(py, d)
+    }
+
+    fn gpu_stats(&self) -> Vec<(u64, u64)> {
         let read = |a: &std::sync::atomic::AtomicU64| a.load(std::sync::atomic::Ordering::Relaxed);
-        let s = &self.gpu.stats;
-        dict.set_item("gpu_calls", read(&s.calls))?;
-        dict.set_item("gpu_rows", read(&s.rows))?;
-        dict.set_item("gpu_actions", read(&s.actions))?;
-        dict.set_item("gpu_nanos", read(&s.nanos))?;
-        Ok(out)
+        self.gpu.stats.iter().map(|s| (read(&s.calls), read(&s.rows))).collect()
     }
 }
 
@@ -268,7 +265,6 @@ fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     {
         m.add_class::<Farm>()?;
         m.add_function(wrap_pyfunction!(evaluate, m)?)?;
-        m.add("PIPELINE", crate::cuda::PIPELINE)?;
     }
     m.add_function(wrap_pyfunction!(card_features_table, m)?)?;
     m.add_function(wrap_pyfunction!(hex_location_flags, m)?)?;

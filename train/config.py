@@ -25,11 +25,10 @@ class Cfg:
     warm_games: int = 96
 
     sims: int = 32
-    games: int = 512
+    games: int = 1024
     collect_rows: int = 2048
 
     device: str = "cuda:1"
-    gen_devices: str = "0"
 
     out: str = ""
     seed: int = 1
