@@ -75,7 +75,7 @@ fn a_farm_searches_on_the_card() {
     }
     let d = farm.take();
     let seconds = t0.elapsed().as_secs_f64();
-    let rows = gpu.stats.rows.load(std::sync::atomic::Ordering::Relaxed);
+    let rows = gpu.stats[0].rows.load(std::sync::atomic::Ordering::Relaxed);
     eprintln!("{} games, {} decisions, {rows} evals in {seconds:.1}s: {:.0} evals/s", d.games, d.decisions, rows as f64 / seconds);
     drop(farm);
 }

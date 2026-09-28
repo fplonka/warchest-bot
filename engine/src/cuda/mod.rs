@@ -2,7 +2,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, LazyLock};
 use std::thread::JoinHandle;
-use std::time::Instant;
 
 use cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N;
 use cudarc::cublas::CudaBlas;
@@ -35,7 +34,7 @@ fn err(e: impl std::fmt::Debug) -> String {
 
 const KERNELS: &str = concat!(include_str!("kernels.cu"), include_str!("trunk.cu"));
 
-pub const PIPELINE: usize = 5;
+const PIPELINE: usize = 5;
 const TILE: usize = 2048;
 const ACT_TILE: usize = 64 * TILE;
 const MERGE: usize = 1024;
@@ -698,8 +697,6 @@ impl<T> Queue<T> {
 pub struct Stats {
     pub calls: AtomicU64,
     pub rows: AtomicU64,
-    pub actions: AtomicU64,
-    pub nanos: AtomicU64,
 }
 
 type Job = (Query, mpsc::Sender<Answer>);
@@ -710,7 +707,7 @@ pub struct Gpu {
     drivers: Vec<JoinHandle<()>>,
     next: AtomicUsize,
     memo: Memo,
-    pub stats: Arc<Stats>,
+    pub stats: Vec<Arc<Stats>>,
 }
 
 fn drive(queue: &Queue<Job>, lane: &Mutex<Card>, stats: &Stats) {
@@ -724,7 +721,6 @@ fn drive(queue: &Queue<Job>, lane: &Mutex<Card>, stats: &Stats) {
         for (q, _) in &jobs {
             merged.append(q);
         }
-        let at = Instant::now();
         let (value, prior) = match lane.lock().eval(&merged) {
             Ok(out) => out,
             Err(e) => {
@@ -732,10 +728,8 @@ fn drive(queue: &Queue<Job>, lane: &Mutex<Card>, stats: &Stats) {
                 return;
             }
         };
-        stats.nanos.fetch_add(at.elapsed().as_nanos() as u64, Ordering::Relaxed);
         stats.calls.fetch_add(1, Ordering::Relaxed);
         stats.rows.fetch_add(value.len() as u64, Ordering::Relaxed);
-        stats.actions.fetch_add(prior.len() as u64, Ordering::Relaxed);
         let (mut r, mut a) = (0, 0);
         for (q, back) in jobs {
             let (n, na) = (q.len(), q.desc.len() / ACT_BYTES);
@@ -750,14 +744,14 @@ impl Gpu {
         if ordinals.is_empty() {
             return Err("no cuda device ordinals given".into());
         }
-        let stats = Arc::new(Stats::default());
-        let (mut queues, mut lanes, mut drivers) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut queues, mut lanes, mut drivers, mut stats) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for &o in ordinals {
             let module = Module::get(o)?;
             let queue = Arc::new(Queue::new());
+            let device = Arc::new(Stats::default());
             for p in 0..PIPELINE {
                 let lane = Arc::new(Mutex::new(Card::new(&module, net)?));
-                let (queue, card, stats) = (Arc::clone(&queue), Arc::clone(&lane), Arc::clone(&stats));
+                let (queue, card, stats) = (Arc::clone(&queue), Arc::clone(&lane), Arc::clone(&device));
                 drivers.push(
                     std::thread::Builder::new()
                         .name(format!("gpu-{o}.{p}"))
@@ -767,6 +761,7 @@ impl Gpu {
                 lanes.push(lane);
             }
             queues.push(queue);
+            stats.push(device);
         }
         Ok(Gpu { queues, lanes, drivers, next: AtomicUsize::new(0), memo: Memo::default(), stats })
     }
