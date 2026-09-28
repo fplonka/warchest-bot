@@ -5,7 +5,7 @@
 #define TPROWS (TMT * 16)
 #define TPITCH ((N_HEXES + 15) / 16 * 16)
 #define TKT (TB * TPITCH / 16)
-#define TSTEM (TB * NTYPE * (TOKEN_W + TRUNK_C) + 3 * TB * TRUNK_C + TB * LOOSE)
+#define TSTEM (TB * NTYPE * TRUNK_C + 3 * TB * TRUNK_C + TB * LOOSE)
 #define TBUF (TB * TPITCH * TLDS > TPROWS * TLDS + 2 * TSTEM ? TB * TPITCH * TLDS : TPROWS * TLDS + 2 * TSTEM)
 #define TNT (TRUNK_C / 8)
 #define TWN (TNT / TWARPS)
@@ -288,11 +288,8 @@ __device__ __forceinline__ void layer_norm(TrunkShared& s, const float (&v)[TMT]
 }
 
 struct Stem {
-    const float* cards;
+    const float* tok;
     const unsigned char* ids;
-    const float* w_pile;
-    const float* seat;
-    const float* w_tok;
     const unsigned* w_hex;
     const float* b_hex;
     const float* pos;
@@ -304,17 +301,26 @@ static_assert(HEX_K <= TRUNK_C, "the hex facts tile fits an activation row");
 __device__ void stem(TrunkShared& s, const Stem& st, const float* __restrict__ xpub, __half* tokens,
                      int first, int nboards, float (&x)[TMT][TWN][4]) {
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
-    float* tk = (float*)(s.a + (size_t)TPROWS * TLDS);
-    float* pj = tk + TB * NTYPE * TOKEN_W;
+    constexpr int SPLIT = 32 * TWARPS / TRUNK_C;
+    static_assert(SPLIT == 2, "the stem splits tokens and the loose projection between two halves of the block");
+    const int half = tid / TRUNK_C, c = tid % TRUNK_C;
+    float* pj = (float*)(s.a + (size_t)TPROWS * TLDS);
     float* tp = pj + TB * NTYPE * TRUNK_C;
     float* gl = tp + TB * TRUNK_C;
-    for (int i = tid; i < nboards * NTYPE * TOKEN_W; i += 32 * TWARPS) {
-        int b = i / (NTYPE * TOKEN_W), t = (i / TOKEN_W) % NTYPE, j = i % TOKEN_W;
+    float* loose = gl + 2 * TB * TRUNK_C;
+    for (int bt = half; bt < nboards * NTYPE; bt += SPLIT) {
+        const int b = bt / NTYPE, t = bt - b * NTYPE;
         const float* xp = xpub + (size_t)(first + b) * PUBFEAT + OFF_PILES + t * PILE_COUNTS;
-        float acc = st.cards[(size_t)st.ids[(size_t)(first + b) * ROW_BYTES + ROW_IDS + t] * TOKEN_W + j]
-                  + st.seat[(size_t)(t / NSLOT) * TOKEN_W + j];
-        for (int k = 0; k < PILE_COUNTS; ++k) acc += xp[k] * st.w_pile[(size_t)k * TOKEN_W + j];
-        tk[i] = acc;
+        float v = st.tok[(size_t)st.ids[(size_t)(first + b) * ROW_BYTES + ROW_IDS + t] * TRUNK_C + c]
+                + st.tok[(size_t)(N_UNITS + t / NSLOT) * TRUNK_C + c];
+#pragma unroll
+        for (int k = 0; k < PILE_COUNTS; ++k) v += xp[k] * st.tok[(size_t)(N_UNITS + 2 + k) * TRUNK_C + c];
+        pj[bt * TRUNK_C + c] = v;
+        tokens[((size_t)first * NTYPE + bt) * TRUNK_C + c] = __float2half(v);
+    }
+    for (int i = tid; i < TB * LOOSE; i += 32 * TWARPS) {
+        const int b = i / LOOSE, k = i - b * LOOSE;
+        loose[i] = b < nboards ? xpub[(size_t)(first + b) * PUBFEAT + OFF_LOOSE + k] : 0.0f;
     }
     for (int row = warp; row < TPROWS; row += TWARPS) {
         int b = row / N_HEXES, hex = row - b * N_HEXES;
@@ -323,33 +329,6 @@ __device__ void stem(TrunkShared& s, const Stem& st, const float* __restrict__ x
         s.a[(size_t)row * TLDS + lane] = __float2half(lane < HEX_FACTS ? f : 0.0f);
         const unsigned typed = __ballot_sync(0xffffffff, lane >= HEX_FACTS && f != 0.0f);
         if (lane == 0) s.occ[row] = typed ? __ffs(typed) - 1 - HEX_FACTS : -1;
-    }
-    __syncthreads();
-    constexpr int SPLIT = 32 * TWARPS / TRUNK_C, PER = (TB * NTYPE + SPLIT - 1) / SPLIT;
-    static_assert(SPLIT == 2, "the stem splits the loose projection between two halves of the block");
-    const int half = tid / TRUNK_C, c = tid % TRUNK_C;
-    {
-        float acc[PER];
-#pragma unroll
-        for (int k = 0; k < PER; ++k) acc[k] = 0.0f;
-        for (int j = 0; j < TOKEN_W; ++j) {
-            const float wv = st.w_tok[(size_t)j * TRUNK_C + c];
-#pragma unroll
-            for (int k = 0; k < PER; ++k) acc[k] += tk[(size_t)(SPLIT * k + half) * TOKEN_W + j] * wv;
-        }
-#pragma unroll
-        for (int k = 0; k < PER; ++k) {
-            const int bt = SPLIT * k + half;
-            if (bt < nboards * NTYPE) {
-                pj[bt * TRUNK_C + c] = acc[k];
-                tokens[((size_t)first * NTYPE + bt) * TRUNK_C + c] = __float2half(acc[k]);
-            }
-        }
-    }
-    float* loose = gl + 2 * TB * TRUNK_C;
-    for (int i = tid; i < TB * LOOSE; i += 32 * TWARPS) {
-        const int b = i / LOOSE, k = i - b * LOOSE;
-        loose[i] = b < nboards ? xpub[(size_t)(first + b) * PUBFEAT + OFF_LOOSE + k] : 0.0f;
     }
     __syncthreads();
     {

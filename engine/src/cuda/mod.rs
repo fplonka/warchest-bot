@@ -13,7 +13,7 @@ use parking_lot::{Condvar, Mutex};
 
 use crate::board::{board, NONE, N_HEXES};
 use crate::memo::Memo;
-use crate::net::{ln_block, Flat, Net, NetLayout, BINS, BLOCKS, C, D, HIDDEN, LN_ACT, LN_TRUNK, TYPE};
+use crate::net::{ln_block, Flat, Net, NetLayout, BINS, BLOCKS, C, D, HIDDEN, LN_ACT, LN_TRUNK};
 use crate::pbs::{
     HEX_BLOCK, HEX_CH, HEX_FACTS, LOOSE, MAX_COINS, NSLOT, NTYPE, OFF_CARDS, OFF_LOOSE, OFF_PILES, PILE_COUNTS,
     PLAYER_SCALARS, PUBFEAT, ROW_BAG_SIZE, ROW_BYTES, ROW_FD_SIZE, ROW_HAND_SIZE, ROW_HEX_HEIGHT, ROW_HEX_MARKER,
@@ -111,11 +111,8 @@ fn pack_mma_a(w: &[f32], base: usize, k: usize, m: usize) -> Vec<u32> {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Stem {
-    cards: u64,
+    tok: u64,
     ids: u64,
-    w_pile: u64,
-    seat: u64,
-    w_tok: u64,
     w_hex: u64,
     b_hex: u64,
     pos: u64,
@@ -151,7 +148,7 @@ const TRUNK_THREADS: u32 = 32 * TRUNK_WARPS as u32;
 const TRUNK_PITCH: usize = N_HEXES.next_multiple_of(16);
 const TRUNK_SHARED: u32 = {
     let rows = (TRUNK_BOARDS * N_HEXES).next_multiple_of(16);
-    let stem = 2 * (TRUNK_BOARDS * NTYPE * (TYPE + C) + 3 * TRUNK_BOARDS * C + TRUNK_BOARDS * LOOSE);
+    let stem = 2 * (TRUNK_BOARDS * NTYPE * C + 3 * TRUNK_BOARDS * C + TRUNK_BOARDS * LOOSE);
     let pitched = TRUNK_BOARDS * TRUNK_PITCH * (C + 8);
     let buf = if pitched > rows * (C + 8) + stem { pitched } else { rows * (C + 8) + stem };
     (buf * 2 + TRUNK_BOARDS * (2 * C + 8) * 2 + TRUNK_BOARDS * C * 4 + rows * 12) as u32
@@ -176,7 +173,7 @@ struct Weights {
     w: CudaSlice<f32>,
     b: CudaSlice<f32>,
     ln: CudaSlice<f32>,
-    cards: CudaSlice<f32>,
+    tok: CudaSlice<f32>,
     trunk_w: CudaSlice<u32>,
     trunk_g: CudaSlice<u32>,
     trunk_b: CudaSlice<f32>,
@@ -225,7 +222,7 @@ impl Weights {
             w: up(&flat.w)?,
             b: up(&flat.b)?,
             ln: up(&flat.ln)?,
-            cards: up(&net.cards())?,
+            tok: up(&net.tokens())?,
             trunk_w: upu(&tw)?,
             trunk_g: upu(&tg)?,
             trunk_b: up(&tb)?,
@@ -405,11 +402,8 @@ impl Card {
         .map_err(err)?;
         let ptr = |x: &CudaSlice<f32>, at: usize| x.slice(at..).device_ptr(stream).0;
         let stem = Stem {
-            cards: ptr(&w.cards, 0),
+            tok: ptr(&w.tok, 0),
             ids: s.rows.dev.device_ptr(stream).0,
-            w_pile: ptr(&w.w, l.pile.w),
-            seat: ptr(&w.w, l.seat),
-            w_tok: ptr(&w.w, l.tok_stem.w),
             w_hex: w.trunk_hex.device_ptr(stream).0,
             b_hex: ptr(&w.b, l.hex_stem.b),
             pos: ptr(&w.w, l.pos),
@@ -498,6 +492,7 @@ fn compile_options(major: i32, minor: i32) -> CompileOptions {
         NSLOT,
         PILE_COUNTS,
         CARD_FEATS,
+        N_UNITS,
         OFF_PILES,
         OFF_CARDS,
         OFF_LOOSE,
@@ -529,7 +524,6 @@ fn compile_options(major: i32, minor: i32) -> CompileOptions {
     options.extend([
         format!("--gpu-architecture=compute_{major}{minor}"),
         format!("-DTRUNK_C={C}"),
-        format!("-DTOKEN_W={TYPE}"),
         format!("-DTWARPS={TRUNK_WARPS}"),
         format!("-DHEX_K={HEX_K}"),
         format!("-DHR={HEAD_ROWS}"),

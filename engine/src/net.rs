@@ -213,15 +213,17 @@ impl Net {
         &self.flat
     }
 
-    pub fn cards(&self) -> Vec<f32> {
+    pub fn tokens(&self) -> Vec<f32> {
         let l = NetLayout::new();
-        let mut out = Vec::with_capacity(N_UNITS * TYPE);
-        for u in 0..N_UNITS {
+        let w = &self.flat.w;
+        let cards = (0..N_UNITS).map(|u| {
             let mut facts = [0.0f32; CARD_FEATS];
             write_card_features(u as u8, &mut facts);
             let hidden: Vec<f32> = dense(&self.flat, l.card[0], &facts).into_iter().map(gelu).collect();
-            out.extend(dense(&self.flat, l.card[1], &hidden));
-        }
-        out
+            dense(&self.flat, l.card[1], &hidden)
+        });
+        let seats = w[l.seat..l.seat + 2 * TYPE].chunks_exact(TYPE).map(<[f32]>::to_vec);
+        let piles = w[l.pile.w..l.pile.w + PILE_COUNTS * TYPE].chunks_exact(TYPE).map(<[f32]>::to_vec);
+        cards.chain(seats).chain(piles).flat_map(|t| dense(&self.flat, l.tok_stem, &t)).collect()
     }
 }
