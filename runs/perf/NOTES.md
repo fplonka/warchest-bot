@@ -85,3 +85,59 @@ capped at 328 W). HEAD: 600k and 597k evals/s. Ablations, results wrong but work
 Unrolling pool_gemm's weight loads fully: 544k (worse, register pressure); by 3: 599k (same).
 The pooling and LN phases are where the next trunk gains are; both need a rework of how a CTA
 reduces across its 12 warps, which is out of scope here.
+
+# Trainer throughput log
+
+## Result
+
+The measure is optimizer rows per second in a real `train.py` run, with optimizer rows equal to
+generated rows. Protocol as above: `init_weights=runs/perf-ref/snap_0004.pt warm_minutes=0`,
+4-6 minutes, rates over the reports from t >= 90 s.
+
+| | trained rows/s | generated rows/s | trained/generated | GPU split |
+|---|---|---|---|---|
+| before (ddc3475, batch 1024) | 5.4k | 31.8k | 0.15 | self-play on both GPUs, trainer on GPU 1 at equal priority |
+| after (c4194d5, batch 8192) | 25.3k | 25.3k | 1.000 | self-play on both GPUs, trainer on GPU 1 at high priority |
+| change | 4.7x | | | |
+
+Two runs at the final defaults gave 25.30k and 25.31k.
+
+## Changes, one at a time
+
+| change | trained rows/s | note |
+|---|---|---|
+| baseline ddc3475 | 5.4k | ratio 0.15 |
+| backpressure + high-priority training stream, chunk 16384 | 19.7k | ratio 1.000; kept |
+| batch 4096, lr 2e-3 (sqrt scaling), EMA per row | 22.2k | kept |
+| TORCHINDUCTOR_MAX_AUTOTUNE, batch 4096 | 23.1k | +4%, but +40 s compile and NaN losses on a second try; rejected |
+| chunk 65536 (probe forward is 1/16 as frequent) | 23.0k | +3%, kept |
+| hex-major trunk (adjacency as one GEMM, not bmm) | same | idle-GPU bench 39.1k vs 40.0k rows/s; rejected |
+| batch 8192, lr 2.8e-3 | 25.3k | kept |
+
+Backpressure: every game waits before a decision while the farm holds a full chunk of untaken
+rows. `Farm.collect` waits for a full chunk. The trainer takes a chunk only after it has trained
+all of its debt, so the ratio holds by construction (0.9998 over the run).
+
+## Where the time goes
+
+Idle GPU 1, batch 1024: 25.7 ms per step (40k rows/s). The GEMMs are 39% of GPU time; the rest
+is inductor's fused LayerNorm, GELU and cast kernels, which are memory bound on [B, 37, 192]
+activations with an fp32 residual. Clip, AdamW and EMA are 4.3 ms per step, which batch 8192
+amortizes. Gather, mirror and host copies overlap the GPU and are not on the critical path.
+
+In a live run (torch profiler inside `train.py`, batch 4096) a step takes 195 ms against 92 ms on
+an idle GPU. The CPU spends its time in "Command Buffer Full": the trainer is GPU bound. Its
+kernels wait for SMs that self-play trunk CTAs (1.2 ms each, the whole register file) hold, and a
+high stream priority only orders pending blocks. Fewer, larger kernels per row wait less, which
+is why batch 8192 helps more on the shared GPU than on an idle one (idle: 1024 -> 4096 is +12%).
+
+Balance: self-play makes ~16k rows/s per whole GPU and the trainer ~45k rows/s on a whole GPU.
+With backpressure the split on GPU 1 settles by itself. The ceiling with an infinitely fast
+trainer is ~32k rows/s; at 25.3k the rest is GPU 1's share for the trainer.
+
+Loss check at equal settings (bench_train, batch 1024, lr 1e-3, 200 steps from warm rows): Lv
+1.8246 / Lp 2.0499 after, against 1.8022-1.8116 / 2.0420-2.0465 over three runs before. The
+spread is run-to-run nondeterminism; the step is numerically the same code.
+
+Replay buffer: 4M rows, about 2.7 minutes of play at 25k rows/s, ~2.6 GB of RAM and a ~2 GB
+snapshot.
