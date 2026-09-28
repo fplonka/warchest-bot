@@ -382,7 +382,7 @@ def main():
         acting.push()
         target_state = cpu_state(acting)
         farm = warchest.Farm(args.seed + 1_000_003 * progress["farm_runs"], args.games,
-                             [int(d) for d in args.gen_devices.split(",")], sims=args.sims)
+                             list(range(torch.cuda.device_count())), sims=args.sims)
         progress["farm_runs"] += 1
         next_target = time.time() + args.target_every * 60.0
         next_report = time.time() + 10.0

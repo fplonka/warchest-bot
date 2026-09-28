@@ -23,7 +23,7 @@ def main():
     torch.manual_seed(cfg.seed)
     net = export_weights.load(cfg.init_weights) if cfg.init_weights else Net()
     net.push()
-    devices = [int(d) for d in cfg.gen_devices.split(",")]
+    devices = list(range(torch.cuda.device_count()))
     farm = warchest.Farm(cfg.seed, cfg.games, devices, sims=cfg.sims)
     time.sleep(WARM)
     farm.collect(0)
