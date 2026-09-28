@@ -27,7 +27,7 @@ def main():
     net.push()
     devices = [int(d) for d in cfg.gen_devices.split(",")]
     farm = warchest.Farm(cfg.seed, cfg.games, devices, sims=cfg.sims, batch=cfg.search_batch,
-                         puct=cfg.puct, explore=cfg.explore)
+                         puct=cfg.puct, explore=cfg.explore, temp=cfg.temp)
     t0, start, at, rows, decisions = time.time(), None, {}, 0, 0
     while True:
         d = farm.collect(cfg.collect_rows)

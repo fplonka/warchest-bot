@@ -12,6 +12,7 @@ use crate::state::State;
 use crate::units::{ENSIGN, MARSHAL, ROYAL_COIN};
 
 pub const ACT_BYTES: usize = 6;
+const NOISE_MASS: f64 = 10.0;
 
 fn action_coin(a: &Action, s: &State) -> u8 {
     use Action::*;
@@ -189,17 +190,21 @@ impl Tree {
         (self.nodes.len() - 1) as u32
     }
 
-    fn expand(&mut self, node: u32, acts: &[Action], prior: &[f32], explore: f32) {
-        let uniform = explore / acts.len() as f32;
+    fn expand(&mut self, node: u32, acts: &[Action], prior: &[f32]) {
         let n = &mut self.nodes[node as usize];
         n.first = self.edges.len() as u32;
         n.len = acts.len() as u32;
-        self.edges.extend(acts.iter().zip(prior).map(|(&action, &p)| Edge {
-            action,
-            prior: (1.0 - explore) * p + uniform,
-            n: 0,
-            w: 0.0,
-        }));
+        self.edges.extend(acts.iter().zip(prior).map(|(&action, &prior)| Edge { action, prior, n: 0, w: 0.0 }));
+    }
+
+    fn perturb_root(&mut self, explore: f32, rng: &mut Rng) {
+        let n = &self.nodes[0];
+        let edges = &mut self.edges[n.first as usize..(n.first + n.len) as usize];
+        let noise: Vec<f64> = edges.iter().map(|_| rng.gamma(NOISE_MASS / edges.len() as f64)).collect();
+        let total: f64 = noise.iter().sum();
+        for (e, g) in edges.iter_mut().zip(noise) {
+            e.prior = (1.0 - explore) * e.prior + explore * (g / total) as f32;
+        }
     }
 
     fn edges(&self, node: u32) -> &[Edge] {
@@ -306,8 +311,10 @@ impl Search {
             }
             let answer = oracle.eval(q);
             for (i, (node, steps, moves)) in fresh.drain(..).enumerate() {
-                let explore = if node == 0 { self.explore } else { 0.0 };
-                tree.expand(node, &acts[moves.clone()], &answer.prior[moves], explore);
+                tree.expand(node, &acts[moves.clone()], &answer.prior[moves]);
+                if node == 0 {
+                    tree.perturb_root(self.explore, rng);
+                }
                 let v = answer.value[i];
                 tree.backup(&path[steps], if tree.nodes[node as usize].player == 0 { v } else { -v });
             }

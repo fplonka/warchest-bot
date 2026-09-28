@@ -102,7 +102,7 @@ pub fn play(brain: &Brain, rng: &mut Rng, stop: &AtomicBool) -> Option<Data> {
             d.target.extend_from_slice(&probs);
             actors.push(p);
         }
-        let a = seats[p].play(&acts, &probs);
+        let a = seats[p].play(brain, &acts, &probs);
         d.count(a);
         s.apply_inplace(a);
         let obs = Obs::Act { player: p as u8, key: obs_key(&a) };
@@ -216,7 +216,7 @@ mod tests {
 
     fn searcher() -> Brain {
         let search = Search { sims: 24, batch: 8, puct: 1.5, explore: 0.25 };
-        Brain { mind: Mind::Search { search, oracle: Arc::new(Flat) }, temp: 1.0, cut: 0.0 }
+        Brain { mind: Mind::Search { search, oracle: Arc::new(Flat) }, temp: 0.5, cut: 0.0 }
     }
 
     fn check(d: &Data) {

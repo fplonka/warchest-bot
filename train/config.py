@@ -7,9 +7,9 @@ from dataclasses import dataclass
 
 @dataclass
 class Cfg:
-    minutes: float = 30.0
+    minutes: float = 60.0
     warm_minutes: float = 3.0
-    snapshot_every: float = 240.0
+    snapshot_every: float = 15.0
     init_weights: str = ""
     resume: str = ""
 
@@ -19,18 +19,17 @@ class Cfg:
     lr_final: float = 1e-4
     lr_stable_frac: float = 0.75
     replay_ratio: float = 6.0
-    target_every: float = 5.0
-    recent_mix: float = 0.5
-    recent_frac: float = 0.2
+    target_every: float = 1.0
     cap: int = 1_000_000
     policy_w: float = 1.0
     warm_games: int = 96
-    temp: float = 2.0
+    warm_temp: float = 2.0
 
-    sims: int = 128
+    sims: int = 256
     search_batch: int = 16
     puct: float = 1.5
     explore: float = 0.25
+    temp: float = 0.5
     games: int = 512
     collect_rows: int = 2048
 
