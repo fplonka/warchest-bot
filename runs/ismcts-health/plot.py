@@ -1,5 +1,7 @@
+import collections
 import json
 import pathlib
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -7,7 +9,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
-RUNS = {"ismcts30": "#eb6834", "ismcts60": "#2a78d6"}
+OUT = HERE.parent / sys.argv[1] / "plots"
+RUNS = dict(zip(sys.argv[2:], ("#eb6834", "#2a78d6", "#1baf7a")))
 PLAYS = {"attack": "#2a78d6", "pass": "#e34948", "deploy": "#1baf7a", "bolster": "#eda100",
          "maneuver": "#4a3aa7", "recruit": "#e87ba4", "claim_initiative": "#008300"}
 DECIDED_CE, TIMEOUT_CE, DECIDED_SQ = 0.5072, 1.2003, 0.0074
@@ -16,15 +19,19 @@ WINDOW = 6
 
 def load(run):
     rows = [json.loads(l) for l in open(HERE.parent / run / "epochs.jsonl")]
-    d = {k: np.array([r.get(k, np.nan) for r in rows], dtype=float) for k in rows[-1] if k != "phase"}
+    d = collections.defaultdict(lambda: np.full(len(rows), np.nan),
+                                {k: np.array([r.get(k, np.nan) for r in rows], dtype=float) for k in rows[-1] if k != "phase"})
     d["dt"] = np.diff(d["t"], prepend=0.0)
     return d
 
 
 def smooth(x):
-    c = np.cumsum(np.insert(x, 0, 0.0))
-    n = np.minimum(np.arange(1, len(x) + 1), WINDOW)
-    return (c[1:] - c[np.arange(1, len(x) + 1) - n]) / n
+    ok = ~np.isnan(x)
+    c = np.cumsum(np.insert(np.where(ok, x, 0.0), 0, 0.0))
+    k = np.cumsum(np.insert(ok, 0, False))
+    lo = np.maximum(np.arange(1, len(x) + 1) - WINDOW, 0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(ok, (c[1:] - c[lo]) / (k[1:] - k[lo]), np.nan)
 
 
 def ratio(num, den):
@@ -45,10 +52,11 @@ def figure(name, panels):
         ax.remove()
     axes.flat[0].legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig(HERE / "plots" / f"{name}.png", dpi=110)
+    fig.savefig(OUT / f"{name}.png", dpi=110)
     plt.close(fig)
 
 
+OUT.mkdir(exist_ok=True)
 data = {run: load(run) for run in RUNS}
 figure("mix", [(f"{p} per finished game", lambda d, p=p: ratio(d[f"plays_{p}"], d["games"])) for p in PLAYS]
        + [("pass share of plays", lambda d: ratio(d["plays_pass"], sum(d[f"plays_{p}"] for p in PLAYS)))])
@@ -62,9 +70,11 @@ figure("games", [
 ])
 figure("losses", [
     ("value loss", lambda d: smooth(d["value_loss"])),
+    ("fresh value loss (rows not yet trained on)", lambda d: smooth(d["fresh_value_loss"])),
     ("value loss above its entropy floor", lambda d: smooth(d["value_loss"]) - DECIDED_CE
      - (TIMEOUT_CE - DECIDED_CE) * ratio(d["timeouts"], d["games"])),
     (f"log10 value squared error (floor {np.log10(DECIDED_SQ):.2f})", lambda d: np.log10(smooth(d["value_sq_err"]))),
+    (f"log10 fresh value squared error (floor {np.log10(DECIDED_SQ):.2f})", lambda d: np.log10(smooth(d["fresh_value_sq_err"]))),
     ("policy loss", lambda d: smooth(d["policy_loss"])),
     ("policy target entropy", lambda d: smooth(d["policy_target_entropy"])),
     ("policy KL (loss - entropy)", lambda d: smooth(d["policy_kl"])),

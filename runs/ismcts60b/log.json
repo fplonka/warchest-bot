@@ -1,0 +1,45 @@
+{
+ "cfg": {
+  "minutes": 60.0,
+  "warm_minutes": 3.0,
+  "snapshot_every": 15.0,
+  "init_weights": "",
+  "resume": "",
+  "batch": 1024,
+  "lr": 0.001,
+  "wd": 0.01,
+  "lr_final": 0.0001,
+  "lr_stable_frac": 0.75,
+  "replay_ratio": 1.0,
+  "target_every": 1.0,
+  "cap": 1000000,
+  "policy_w": 1.0,
+  "warm_games": 96,
+  "warm_temp": 2.0,
+  "sims": 256,
+  "search_batch": 16,
+  "puct": 1.5,
+  "explore": 0.25,
+  "temp": 0.5,
+  "games": 512,
+  "collect_rows": 2048,
+  "device": "cuda:1",
+  "gen_devices": "0",
+  "out": "runs/ismcts60b",
+  "seed": 1001,
+  "git": "9f8de98",
+  "note": ""
+ },
+ "snapshots": [
+  {
+   "label": "s3",
+   "t": 2712.7,
+   "file": "snap_0003.pt"
+  },
+  {
+   "label": "final",
+   "t": 3601.1,
+   "file": "snap_0004.pt"
+  }
+ ]
+}

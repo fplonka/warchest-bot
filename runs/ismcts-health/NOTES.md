@@ -1,7 +1,7 @@
 # ismcts health: why strength peaks early
 
 Plots come from `plot.py` over runs/ismcts{30,60}/epochs.jsonl. Snapshots: ismcts30 at 10/20/30 min, ismcts60 at 15/30/45/60 min.
-(`uv run --no-project --with matplotlib --with numpy python runs/ismcts-health/plot.py`).
+(`uv run --no-project --with matplotlib --with numpy python runs/ismcts-health/plot.py ismcts-health ismcts30 ismcts60`).
 Both runs show the same shape. ismcts30 predates the memo and the new defaults, and its
 first snapshot (10 min) is also its strongest. So the memo and the four default changes
 did not cause the drop. They only moved it.
