@@ -35,3 +35,12 @@ agree within 0.2%.
 | 8 lanes per GPU | 24.85k | 814k | 32.8 | rejected |
 | memo 8x larger | 27.69k | 914k | 33.0 | rejected |
 | one queue for all lanes | 29.09k | 958k | 32.9 | kept, +4% |
+| heads fused into the trunk epilogue (fp32, 3 boards per CTA) | 29.09k | 972k | 33.4 | rejected: CTA 370 -> 434 us per wave |
+| one tensor-core head kernel per 16 rows, no cuBLAS | 31.50k | 1046k | 33.2 | kept, +8% |
+
+Why the side kernels cost so much: k_trunk uses 168 registers x 384 threads, the whole register
+file, so nothing co-resides with a trunk CTA. Every block of a side kernel holds an SM that a
+trunk CTA then waits for. Fusing the heads into the trunk epilogue removes that, but each CTA then
+streams 1.26 MB of fp32 head weights for 3 boards (clock64 per phase: board_out 55k cycles,
+hidden/act 31k, against 52k per trunk layer). One batched head kernel reads the fp16 weights once
+per 16 rows, with mma, and replaces 3 cuBLAS gemms and 5 small kernels.

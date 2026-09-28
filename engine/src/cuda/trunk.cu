@@ -32,9 +32,9 @@ __device__ __forceinline__ void mma_h16(unsigned (&d)[2], const unsigned (&a)[4]
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
-__device__ __forceinline__ void frag_a16(const __half* a, int row, int k, int lane,
-                                         unsigned (&f)[4]) {
-    const __half* p = a + (size_t)(row + (lane & 7) + 8 * ((lane >> 3) & 1)) * TLDS + k + 8 * (lane >> 4);
+template <int LDS = TLDS>
+__device__ __forceinline__ void frag_a16(const __half* a, int row, int k, int lane, unsigned (&f)[4]) {
+    const __half* p = a + (size_t)(row + (lane & 7) + 8 * ((lane >> 3) & 1)) * LDS + k + 8 * (lane >> 4);
     unsigned addr = (unsigned)__cvta_generic_to_shared(p);
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
                  : "=r"(f[0]), "=r"(f[1]), "=r"(f[2]), "=r"(f[3]) : "r"(addr));
