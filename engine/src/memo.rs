@@ -42,8 +42,11 @@ impl Memo {
         }
     }
 
-    fn put(&self, key: u64, entry: Arc<[f32]>) {
+    fn put(&self, key: u64, entry: Arc<[f32]>, epoch: u64) {
         let mut s = self.shard(key);
+        if self.epoch.load(Ordering::SeqCst) != epoch {
+            return;
+        }
         if s.now.len() >= GENERATION {
             s.old = std::mem::take(&mut s.now);
         }
@@ -66,16 +69,13 @@ impl Memo {
             miss.push_row(q.row(i));
         }
         let fresh = if miss.is_empty() { Answer::default() } else { compute(miss) };
-        let keep = self.epoch.load(Ordering::SeqCst) == epoch;
         let (mut out, mut r, mut a) = (Answer::default(), 0, 0);
         for (i, (key, hit)) in seen.into_iter().enumerate() {
             let entry = hit.unwrap_or_else(|| {
                 let n = q.actions(i).len();
                 let e: Arc<[f32]> = std::iter::once(fresh.value[r]).chain(fresh.prior[a..a + n].iter().copied()).collect();
                 (r, a) = (r + 1, a + n);
-                if keep {
-                    self.put(key, e.clone());
-                }
+                self.put(key, e.clone(), epoch);
                 e
             });
             out.value.push(entry[0]);
