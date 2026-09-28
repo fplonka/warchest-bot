@@ -315,17 +315,34 @@ def run_dir(runs_dir, name):
     return path if os.path.dirname(path) == runs_dir and os.path.isdir(path) else ""
 
 
+ISMCTS = {"decisions": "solves", "decisions_per_s": "solves_per_s", "value_loss": "loss",
+          "fresh_value_loss": "loss_new", "policy_kl": "policy_search_kl"}
+
+
+def schema(e):
+    if e.get("phase") != "search":
+        return e
+    got = {ISMCTS.get(k, k): v for k, v in e.items()}
+    got["phase"], got["loss_old"] = "sog", e.get("value_loss")
+    got["plays"] = {k[6:]: v for k, v in e.items() if k.startswith("plays_")}
+    if e.get("replay_rows"):
+        got["train_row_ratio"] = e.get("optimizer_rows", 0) / e["replay_rows"]
+    return got
+
+
 def detail(runs_dir, name):
     path = run_dir(runs_dir, name)
     if not path:
         return None
     log = read_json(os.path.join(path, "log.json")) or {}
-    eps = [e for e in read_epochs(os.path.join(path, "epochs.jsonl"))
+    eps = [e for e in map(schema, read_epochs(os.path.join(path, "epochs.jsonl")))
            if e.get("phase") == "sog" and e.get("solves", 0) > 0
            and e.get("steps", 1) > 0]
     cfg = log.get("cfg") or {}
+    known = {k for k, _, _ in config.knobs({})}
     return {"name": name, "epochs": len(eps), "panels": panels(eps),
-            "cfg": [[k, str(v), ch] for k, v, ch in config.knobs(cfg)],
+            "cfg": [[k, str(v), ch] for k, v, ch in config.knobs(cfg) if k in cfg]
+            + [[k, str(v), False] for k, v in cfg.items() if k not in known],
             "health": health(eps), "note": cfg.get("note", ""),
             "git": cfg.get("git", ""), "log": read_text(f"{path}/train.log"),
             "notes": read_text(f"{path}/NOTES.md"),
