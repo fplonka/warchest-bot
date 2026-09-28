@@ -1,8 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use rayon::prelude::*;
 
 use crate::actions::{Action, N_PLAYS};
@@ -75,7 +74,7 @@ impl Data {
     }
 }
 
-pub fn play(brain: &Brain, rng: &mut Rng, stop: &AtomicBool) -> Option<Data> {
+pub fn play(brain: &Brain, rng: &mut Rng, open: impl Fn() -> bool) -> Option<Data> {
     let draft = dealt(rng);
     let mut s = draft.state().expect("a dealt draft is legal");
     let mut seats = [WHITE, BLACK].map(|p| Session::new(&draft, p, rng.next_u64()).expect("a dealt draft is legal"));
@@ -92,7 +91,7 @@ pub fn play(brain: &Brain, rng: &mut Rng, stop: &AtomicBool) -> Option<Data> {
         if crate::finished(&s) {
             break;
         }
-        if stop.load(Ordering::Relaxed) {
+        if !open() {
             return None;
         }
         let p = s.to_act() as usize;
@@ -120,10 +119,9 @@ pub fn play(brain: &Brain, rng: &mut Rng, stop: &AtomicBool) -> Option<Data> {
 }
 
 pub fn warm(brain: &Brain, games: usize, seed: u64) -> Data {
-    let never = AtomicBool::new(false);
     (0..games)
         .into_par_iter()
-        .map(|i| play(brain, &mut Rng::new(worker_seed(seed, i)), &never).expect("a warm game runs to its end"))
+        .map(|i| play(brain, &mut Rng::new(worker_seed(seed, i)), || true).expect("a warm game runs to its end"))
         .reduce(Data::default, |mut a, b| {
             a.merge(b);
             a
@@ -131,48 +129,53 @@ pub fn warm(brain: &Brain, games: usize, seed: u64) -> Data {
 }
 
 pub struct Farm {
-    stop: Arc<AtomicBool>,
-    data: Arc<Mutex<Data>>,
+    pool: Arc<(Mutex<(Data, bool)>, Condvar)>,
+    limit: usize,
     threads: Vec<JoinHandle<()>>,
 }
 
 impl Farm {
-    pub fn new(seed: u64, games: usize, brain: Arc<Brain>) -> Farm {
-        let stop = Arc::new(AtomicBool::new(false));
-        let data = Arc::new(Mutex::new(Data::default()));
+    pub fn new(seed: u64, games: usize, brain: Arc<Brain>, limit: usize) -> Farm {
+        let pool = Arc::new((Mutex::new((Data::default(), false)), Condvar::new()));
         let threads = (0..games)
             .map(|i| {
-                let (brain, stop, data) = (Arc::clone(&brain), Arc::clone(&stop), Arc::clone(&data));
+                let (brain, pool) = (Arc::clone(&brain), Arc::clone(&pool));
                 std::thread::Builder::new()
                     .name(format!("game-{i}"))
                     .spawn(move || {
                         let mut rng = Rng::new(worker_seed(seed, i));
-                        while let Some(d) = play(&brain, &mut rng, &stop) {
-                            data.lock().merge(d);
+                        let open = || {
+                            let mut held = pool.0.lock();
+                            pool.1.wait_while(&mut held, |(d, stop)| d.q.len() >= limit && !*stop);
+                            !held.1
+                        };
+                        while let Some(d) = play(&brain, &mut rng, open) {
+                            pool.0.lock().0.merge(d);
                         }
                     })
                     .expect("spawn a game thread")
             })
             .collect();
-        Farm { stop, data, threads }
+        Farm { pool, limit, threads }
     }
 
-    pub fn rows(&self) -> usize {
-        self.data.lock().q.len()
-    }
-
-    pub fn take(&self) -> Data {
-        std::mem::take(&mut *self.data.lock())
-    }
-
-    pub fn alive(&self) -> bool {
-        self.threads.iter().all(|t| !t.is_finished())
+    pub fn collect(&self) -> Option<Data> {
+        while self.pool.0.lock().0.q.len() < self.limit {
+            if self.threads.iter().any(|t| t.is_finished()) {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let d = std::mem::take(&mut self.pool.0.lock().0);
+        self.pool.1.notify_all();
+        Some(d)
     }
 }
 
 impl Drop for Farm {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.pool.0.lock().1 = true;
+        self.pool.1.notify_all();
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
@@ -223,7 +226,7 @@ mod tests {
 
     #[test]
     fn a_searching_game_yields_one_row_per_real_choice() {
-        let d = play(&searcher(), &mut Rng::new(3), &AtomicBool::new(false)).expect("an unstopped game ends");
+        let d = play(&searcher(), &mut Rng::new(3), || true).expect("an unstopped game ends");
         check(&d);
         assert_eq!(d.wins[0] + d.wins[1] + d.draws + d.timeouts, 1);
         assert!(d.z.iter().all(|z| z.abs() <= 1.0));
@@ -236,12 +239,8 @@ mod tests {
 
     #[test]
     fn a_farm_of_searching_games_collects_rows() {
-        let farm = Farm::new(5, 4, Arc::new(searcher()));
-        while farm.rows() < 200 {
-            assert!(farm.alive(), "a game thread died");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let d = farm.take();
+        let farm = Farm::new(5, 4, Arc::new(searcher()), 200);
+        let d = farm.collect().expect("no game thread dies");
         drop(farm);
         check(&d);
     }

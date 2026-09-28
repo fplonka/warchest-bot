@@ -146,11 +146,9 @@ def losses(net, x, desc, parow, target, z, wp):
     return value_loss + wp * policy_loss, stats
 
 
-def train_steps(net, acting, opt, buf, steps, batch, rng, device, batch_fn, policy_w, deadline):
-    acc, done = collections.Counter(), 0
+def train_steps(net, acting, opt, buf, steps, batch, rng, device, batch_fn, policy_w):
+    acc = collections.Counter()
     for _ in range(steps):
-        if time.time() >= deadline:
-            break
         parts = batch_fn(buf.gather(rng.integers(buf.lo, buf.rows, size=batch)), rng, device)
         loss, stats = losses(net, *parts, policy_w)
         opt.zero_grad(set_to_none=True)
@@ -161,10 +159,9 @@ def train_steps(net, acting, opt, buf, steps, batch, rng, device, batch_fn, poli
             torch._foreach_lerp_(list(acting.parameters()), list(net.parameters()), 1.0 - EMA)
         for key, value in stats.items():
             acc[key] = acc[key] + value
-        done += 1
-    if not done:
+    if not steps:
         return 0, {}
-    return done, dict(zip(acc, (torch.stack([v.float() for v in acc.values()]) / done).tolist()))
+    return steps, dict(zip(acc, (torch.stack([v.float() for v in acc.values()]) / steps).tolist()))
 
 
 def probe(net, buf, n, batch, rng, device, batch_fn, policy_w):
@@ -266,6 +263,7 @@ def main():
     rng = np.random.default_rng(args.seed)
     dev = torch.device(args.device)
     torch.cuda.set_device(dev)
+    torch.cuda.set_stream(torch.cuda.Stream(dev, priority=torch.cuda.Stream.priority_range()[1]))
 
     import gpu_batch
     torch.manual_seed(args.seed)
@@ -335,13 +333,13 @@ def main():
             snapshot(time.time() - t0)
             next_snap = time.time() - t0 + snap_gap
 
-    def fit(deadline):
+    def fit():
         for group in opt.param_groups:
             group["lr"] = scheduled_lr(args.lr, args.lr_final, time.time() - t0, total, args.lr_stable_frac)
         debt = args.replay_ratio * progress["generated_rows"] - progress["optimizer_rows"]
         steps = int(debt // args.batch) if len(buf) >= args.batch else 0
         done, stats = train_steps(value, acting, opt, buf, steps, args.batch, rng, dev, gpu_batch.make_batch,
-                                  args.policy_w, deadline)
+                                  args.policy_w)
         progress["optimizer_rows"] += done * args.batch
         return done, stats
 
@@ -374,7 +372,7 @@ def main():
     window = collections.Counter()
     while time.time() - t0 < warm:
         absorb(window, warchest.warm(args.warm_games, args.seed * 1_000_003 + epoch))
-        done, stats = fit(t0 + total)
+        done, stats = fit()
         window["steps"] += done
         report("warm", window, stats, {})
         window.clear()
@@ -382,16 +380,15 @@ def main():
         acting.push()
         target_state = cpu_state(acting)
         farm = warchest.Farm(args.seed + 1_000_003 * progress["farm_runs"], args.games,
-                             list(range(torch.cuda.device_count())), sims=args.sims)
+                             list(range(torch.cuda.device_count())), sims=args.sims, chunk=args.collect_rows)
         progress["farm_runs"] += 1
         next_target = time.time() + args.target_every * 60.0
         next_report = time.time() + 10.0
         at, seen = time.time(), (0, 0)
         stats = {}
         while time.time() - t0 < total:
-            data = farm.collect(args.collect_rows)
-            absorb(window, data)
-            done, fitted = fit(min(t0 + total, next_report))
+            absorb(window, farm.collect())
+            done, fitted = fit()
             window["steps"] += done
             stats = fitted or stats
             if time.time() >= next_target:

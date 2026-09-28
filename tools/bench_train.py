@@ -22,7 +22,7 @@ def main():
     opt, buf, rng = train.adam(value, cfg.lr, cfg.wd), train.Buffer(cfg.cap), np.random.default_rng(cfg.seed)
     train.ingest(buf, train.warchest.warm(cfg.warm_games, cfg.seed))
     run = lambda n: train.train_steps(value, acting, opt, buf, n, cfg.batch, rng, dev, gpu_batch.make_batch,
-                                      cfg.policy_w, float("inf"))
+                                      cfg.policy_w)
     run(steps // 4)
     torch.cuda.synchronize()
     t = time.time()

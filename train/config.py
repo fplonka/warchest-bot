@@ -26,7 +26,7 @@ class Cfg:
 
     sims: int = 32
     games: int = 1024
-    collect_rows: int = 2048
+    collect_rows: int = 16384
 
     device: str = "cuda:1"
 

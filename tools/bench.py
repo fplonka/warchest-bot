@@ -24,12 +24,12 @@ def main():
     net = export_weights.load(cfg.init_weights) if cfg.init_weights else Net()
     net.push()
     devices = list(range(torch.cuda.device_count()))
-    farm = warchest.Farm(cfg.seed, cfg.games, devices, sims=cfg.sims)
+    farm = warchest.Farm(cfg.seed, cfg.games, devices, sims=cfg.sims, chunk=cfg.collect_rows)
     time.sleep(WARM)
-    farm.collect(0)
+    farm.collect()
     t, at, games, decisions, busy, samples = time.time(), farm.gpu_stats(), 0, 0, [0] * len(devices), 0
     while time.time() - t < seconds:
-        d = farm.collect(cfg.collect_rows)
+        d = farm.collect()
         games += d["games"]
         decisions += d["decisions"]
         busy = [b + torch.cuda.utilization(dev) for b, dev in zip(busy, devices)]

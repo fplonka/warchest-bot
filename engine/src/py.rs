@@ -70,31 +70,23 @@ struct Farm {
 #[pymethods]
 impl Farm {
     #[new]
-    fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32) -> PyResult<Farm> {
+    fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32, chunk: usize) -> PyResult<Farm> {
         let net = net()?;
         let gpu = Arc::new(crate::cuda::Gpu::new(&devices, &net).map_err(PyRuntimeError::new_err)?);
         let brain = Brain::Search { sims, oracle: gpu.clone() };
-        let farm = crate::selfplay::Farm::new(seed, games, Arc::new(brain));
+        let farm = crate::selfplay::Farm::new(seed, games, Arc::new(brain), chunk);
         Ok(Farm { gpu, farm, net })
     }
 
-    fn collect(&mut self, py: Python<'_>, rows: usize) -> PyResult<PyObject> {
+    fn collect(&mut self, py: Python<'_>) -> PyResult<PyObject> {
         let next = net()?;
         if !Arc::ptr_eq(&next, &self.net) {
             self.gpu.set_weights(&next).map_err(PyRuntimeError::new_err)?;
             self.net = next;
         }
         let farm = &self.farm;
-        let d = py.allow_threads(|| loop {
-            if farm.rows() >= rows || !farm.alive() {
-                return farm.take();
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        });
-        if !self.farm.alive() {
-            return Err(PyRuntimeError::new_err("a self-play game died; the log says why"));
-        }
-        data_to_dict(py, d)
+        let d = py.allow_threads(|| farm.collect());
+        data_to_dict(py, d.ok_or_else(|| PyRuntimeError::new_err("a self-play game died; the log says why"))?)
     }
 
     fn gpu_stats(&self) -> Vec<(u64, u64)> {

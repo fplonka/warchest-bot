@@ -67,13 +67,9 @@ fn a_position_evaluates_the_same_alone_or_in_a_crowd() {
 fn a_farm_searches_on_the_card() {
     let gpu = Arc::new(Gpu::new(&[0], &Net::random(3)).unwrap());
     let brain = Brain::Search { sims: 32, oracle: gpu.clone() };
-    let farm = Farm::new(1, 64, Arc::new(brain));
+    let farm = Farm::new(1, 64, Arc::new(brain), 2000);
     let t0 = std::time::Instant::now();
-    while farm.rows() < 2000 {
-        assert!(farm.alive(), "a game thread died");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let d = farm.take();
+    let d = farm.collect().expect("no game thread dies");
     let seconds = t0.elapsed().as_secs_f64();
     let rows = gpu.stats[0].rows.load(std::sync::atomic::Ordering::Relaxed);
     eprintln!("{} games, {} decisions, {rows} evals in {seconds:.1}s: {:.0} evals/s", d.games, d.decisions, rows as f64 / seconds);
