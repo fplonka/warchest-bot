@@ -13,6 +13,7 @@ use crate::units::{ENSIGN, MARSHAL, ROYAL_COIN};
 
 pub const ACT_BYTES: usize = 6;
 const NOISE_MASS: f64 = 10.0;
+const FPU_REDUCTION: f32 = 0.25;
 
 fn action_coin(a: &Action, s: &State) -> u8 {
     use Action::*;
@@ -214,12 +215,13 @@ impl Tree {
 
     fn select(&self, node: u32, puct: f32) -> u32 {
         let n = &self.nodes[node as usize];
+        let edges = self.edges(node);
         let scale = puct * (n.n.max(1) as f32).sqrt();
+        let fpu = edges.iter().map(|e| e.w).sum::<f32>() / n.n.max(1) as f32 - FPU_REDUCTION;
         let score = |e: &Edge| {
-            let q = if e.n > 0 { e.w / e.n as f32 } else { 0.0 };
+            let q = if e.n > 0 { e.w / e.n as f32 } else { fpu };
             q + scale * e.prior / (1 + e.n) as f32
         };
-        let edges = self.edges(node);
         let best = (0..edges.len())
             .max_by(|&a, &b| score(&edges[a]).total_cmp(&score(&edges[b])))
             .expect("an expanded node has an edge");
@@ -324,5 +326,22 @@ impl Search {
         let edges = tree.edges(0);
         let total = edges.iter().map(|e| e.n).sum::<u32>() as f32;
         edges.iter().map(|e| e.n as f32 / total).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_untried_move_starts_below_the_movers_mean() {
+        let mut tree = Tree::default();
+        let node = tree.node(1);
+        tree.expand(node, &[Action::Pass { coin: 0 }, Action::Pass { coin: 1 }], &[0.5, 0.5]);
+        tree.nodes[0].n = 1;
+        tree.edges[0].n = 1;
+        tree.edges[0].w = -1.0;
+        tree.backup(&[Step { node, edge: 0 }], 0.6);
+        assert_eq!(tree.select(node, 0.5), 0, "black is losing, so the untried move must not look better");
     }
 }
