@@ -4,15 +4,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::search::Search;
-
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Mind {
     pub mind: String,
-    #[serde(flatten)]
-    pub search: Search,
-    pub temp: f32,
-    pub cut: f32,
+    pub sims: u32,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

@@ -30,19 +30,8 @@ impl Rng {
         ((self.next_u64() >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
     }
 
-    pub fn gamma(&mut self, shape: f64) -> f64 {
-        if shape < 1.0 {
-            return self.gamma(shape + 1.0) * self.unit_f64().powf(1.0 / shape);
-        }
-        let d = shape - 1.0 / 3.0;
-        let c = 1.0 / (9.0 * d).sqrt();
-        loop {
-            let x = (-2.0 * (1.0 - self.unit_f64()).ln()).sqrt() * (std::f64::consts::TAU * self.unit_f64()).cos();
-            let v = (1.0 + c * x).powi(3);
-            if v > 0.0 && (1.0 - self.unit_f64()).ln() < 0.5 * x * x + d - d * v + d * v.ln() {
-                return d * v;
-            }
-        }
+    pub fn gumbel(&mut self) -> f32 {
+        -(-self.unit_f64().ln()).ln() as f32
     }
 
     pub fn weighted_index(&mut self, weights: &[f64]) -> usize {
@@ -65,11 +54,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gamma_draws_have_the_shape_as_mean() {
+    fn gumbel_draws_have_the_euler_constant_as_mean() {
         let mut rng = Rng::new(7);
-        for shape in [0.1, 0.5, 1.0, 4.0] {
-            let mean = (0..200_000).map(|_| rng.gamma(shape)).sum::<f64>() / 200_000.0;
-            assert!((mean / shape - 1.0).abs() < 0.03, "shape {shape} gave mean {mean}");
-        }
+        let mean = (0..200_000).map(|_| rng.gumbel() as f64).sum::<f64>() / 200_000.0;
+        assert!((mean - 0.5772).abs() < 0.01, "mean {mean}");
     }
 }

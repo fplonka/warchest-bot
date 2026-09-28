@@ -39,8 +39,8 @@ def write_bin(net, path):
 
 
 BOT = Path(__file__).resolve().parents[1] / "engine/target/release/bot"
-SEARCH = {"mind": "search", "sims": 256, "batch": 16, "puct": 1.5, "explore": 0.0, "temp": 0.5, "cut": 0.1}
-GREEDY = {**SEARCH, "mind": "greedy", "temp": 2.0, "cut": 0.0}
+SEARCH = {"mind": "search", "sims": 32}
+GREEDY = {**SEARCH, "mind": "greedy"}
 
 
 def digest(path):

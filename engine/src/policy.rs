@@ -2,6 +2,8 @@ use crate::actions::Action;
 use crate::board::{board, NONE, N_HEXES, N_LOCATIONS};
 use crate::state::{State, Z_ELIM};
 
+const TEMP: f32 = 2.0;
+
 pub fn eval_static(s: &State, p: u8) -> f32 {
     if s.is_terminal() {
         return s.utility(p as usize) * 1e6;
@@ -53,7 +55,7 @@ pub fn greedy(s: &State, acts: &[Action]) -> Vec<f32> {
         .map(|&a| eval_static(&s.apply(a), s.to_act()))
         .collect();
     let best = score.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let e: Vec<f32> = score.iter().map(|x| (x - best).exp()).collect();
+    let e: Vec<f32> = score.iter().map(|x| ((x - best) / TEMP).exp()).collect();
     let sum: f32 = e.iter().sum();
     e.into_iter().map(|x| x / sum).collect()
 }

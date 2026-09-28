@@ -23,13 +23,8 @@ class Cfg:
     cap: int = 1_000_000
     policy_w: float = 1.0
     warm_games: int = 96
-    warm_temp: float = 2.0
 
-    sims: int = 256
-    search_batch: int = 16
-    puct: float = 1.5
-    explore: float = 0.25
-    temp: float = 0.5
+    sims: int = 32
     games: int = 512
     collect_rows: int = 2048
 

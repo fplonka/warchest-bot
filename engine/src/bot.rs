@@ -7,63 +7,52 @@ use crate::pbs::{
 };
 use crate::policy;
 use crate::rng::Rng;
-use crate::search::{uniform, Oracle, Query, Search};
+use crate::search::{think, uniform, Oracle, Query};
 use crate::state::{Cont, State};
 
 const SUPPORT: usize = 128;
 const FLOOR: f32 = 1e-3;
 const EPS: f32 = 0.05;
 
-pub enum Mind {
+pub enum Brain {
     Random,
     Greedy,
-    Search { search: Search, oracle: Arc<dyn Oracle> },
-}
-
-pub struct Brain {
-    pub mind: Mind,
-    pub temp: f32,
-    pub cut: f32,
+    Search { sims: u32, oracle: Arc<dyn Oracle> },
 }
 
 impl Brain {
     #[cfg(feature = "gpu")]
     pub fn load(packed: &crate::packed::Packed, devices: &[usize]) -> Result<Brain, String> {
         let m: crate::packed::Mind = serde_json::from_value(packed.manifest.search.clone()).map_err(|e| e.to_string())?;
-        let mind = match m.mind.as_str() {
-            "greedy" => Mind::Greedy,
+        match m.mind.as_str() {
+            "greedy" => Ok(Brain::Greedy),
             "search" => {
                 let weights = packed.dir.join(&packed.manifest.weights);
                 let net = crate::net::Net::load_bin(weights.to_str().ok_or("invalid weights path")?)
                     .map_err(|e| format!("{}: {e}", weights.display()))?;
                 let oracle = crate::cuda::Gpu::new(devices, &net)?;
-                Mind::Search { search: m.search, oracle: Arc::new(oracle) }
+                Ok(Brain::Search { sims: m.sims, oracle: Arc::new(oracle) })
             }
-            other => return Err(format!("unknown mind {other}")),
-        };
-        Ok(Brain { mind, temp: m.temp, cut: m.cut })
-    }
-
-    fn policy(&self, s: &State, ctx: &Ctx, opp: &Belief, acts: &[Action], rng: &mut Rng) -> Vec<f32> {
-        match &self.mind {
-            _ if acts.len() == 1 => vec![1.0],
-            Mind::Random => vec![1.0 / acts.len() as f32; acts.len()],
-            Mind::Greedy => policy::greedy(s, acts),
-            Mind::Search { search, oracle } => search.think(oracle.as_ref(), s, ctx, opp, rng),
+            other => Err(format!("unknown mind {other}")),
         }
     }
 
-    fn pick(&self, probs: &[f32], rng: &mut Rng) -> usize {
-        let tempered: Vec<f64> = probs.iter().map(|&p| (p as f64).powf(1.0 / self.temp as f64)).collect();
-        let floor = self.cut as f64 * tempered.iter().copied().fold(0.0, f64::max);
-        let kept: Vec<f64> = tempered.into_iter().map(|p| if p < floor { 0.0 } else { p }).collect();
-        rng.weighted_index(&kept)
+    fn policy(&self, s: &State, ctx: &Ctx, opp: &Belief, acts: &[Action], rng: &mut Rng) -> (Vec<f32>, usize) {
+        let probs = match self {
+            _ if acts.len() == 1 => return (vec![1.0], 0),
+            Brain::Random => vec![1.0 / acts.len() as f32; acts.len()],
+            Brain::Greedy => policy::greedy(s, acts),
+            Brain::Search { sims, oracle } => return think(oracle.as_ref(), *sims, s, ctx, opp, rng),
+        };
+        let weights: Vec<f64> = probs.iter().map(|&p| p as f64).collect();
+        let pick = rng.weighted_index(&weights);
+        (probs, pick)
     }
 
     fn likelihood(&self, q: Query) -> Vec<f32> {
         let flat = uniform(&q);
-        let prior = match &self.mind {
-            Mind::Search { oracle, .. } if !q.is_empty() => oracle.eval(q).prior,
+        let prior = match self {
+            Brain::Search { oracle, .. } if !q.is_empty() => oracle.eval(q).prior,
             _ => return flat,
         };
         flat.iter().zip(prior).map(|(u, p)| EPS * u + (1.0 - EPS) * p).collect()
@@ -150,24 +139,23 @@ impl Session {
         !self.s.is_terminal() && !self.s.is_chance() && self.s.to_act() == player
     }
 
-    pub fn think(&mut self, brain: &Brain) -> Result<(Vec<Action>, Vec<f32>), String> {
+    pub fn think(&mut self, brain: &Brain) -> Result<(Vec<Action>, Vec<f32>, usize), String> {
         if !self.to_move(self.seat) {
             return Err("the bot was asked to move out of turn".into());
         }
         let acts = self.s.legal_actions();
-        let probs = brain.policy(&self.s, &self.ctx, &self.opp, &acts, &mut self.rng);
-        Ok((acts, probs))
+        let (probs, pick) = brain.policy(&self.s, &self.ctx, &self.opp, &acts, &mut self.rng);
+        Ok((acts, probs, pick))
     }
 
-    pub fn play(&mut self, brain: &Brain, acts: &[Action], probs: &[f32]) -> Action {
-        let action = acts[brain.pick(probs, &mut self.rng)];
+    pub fn play(&mut self, action: Action) {
         self.s.apply_inplace(action);
-        action
     }
 
     pub fn decide(&mut self, brain: &Brain) -> Result<u32, String> {
-        let (acts, probs) = self.think(brain)?;
-        Ok(self.play(brain, &acts, &probs).encode())
+        let (acts, _, pick) = self.think(brain)?;
+        self.play(acts[pick]);
+        Ok(acts[pick].encode())
     }
 
     pub fn query(&self, acts: &[Action], q: &mut Query) {
@@ -191,7 +179,7 @@ mod tests {
 
     #[test]
     fn a_seat_is_told_nothing_private_and_follows_the_game() {
-        let brain = Brain { mind: Mind::Random, temp: 1.0, cut: 0.0 };
+        let brain = Brain::Random;
         let mut table = Table::new();
         table.start(1, &draft(), [0, 1], 8191).unwrap();
         let mut seats = [
