@@ -29,6 +29,7 @@ ROW_BYTES = warchest.ROW_BYTES
 ACT_BYTES = warchest.ACT_BYTES
 EMA = 0.999
 PLAYS = ("attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative")
+FRESH = ("value_loss", "value_sq_err", "policy_loss")
 GAME_KEYS = ("games", "decisions", "timeouts", "white_wins", "black_wins", "draws",
              *(f"plays_{p}" for p in PLAYS))
 
@@ -164,6 +165,13 @@ def train_steps(net, acting, opt, buf, steps, batch, rng, device, batch_fn, poli
     if not done:
         return 0, {}
     return done, dict(zip(acc, (torch.stack([v.float() for v in acc.values()]) / done).tolist()))
+
+
+def probe(net, buf, n, batch, rng, device, batch_fn, policy_w):
+    parts = batch_fn(buf.gather(rng.integers(buf.rows - n, buf.rows, size=min(n, batch))), rng, device)
+    with torch.no_grad():
+        _, stats = losses(net, *parts, policy_w)
+    return {f"fresh_{k}": stats[k] * n for k in FRESH}
 
 
 def ingest(buf, data):
@@ -344,6 +352,7 @@ def main():
                "optimizer_rows": progress["optimizer_rows"], "replay_rows": progress["generated_rows"],
                "timeout_frac": round(window["timeouts"] / games, 3), "buf_s": round(buf.span_seconds(), 1),
                "tgt_mean": round(window["z_sum"] / max(window["rows"], 1), 4),
+               **{f"fresh_{k}": round(float(window[f"fresh_{k}"]) / max(window["rows"], 1), 5) for k in FRESH},
                **{k: round(v, 5) for k, v in stats.items()}, **extra}
         tick(rec, f"[t={time.time() - t0:6.1f}s] {phase} games={rec['games']} rows={rec['rows']} "
                   f"W{rec['white_wins']}/B{rec['black_wins']}/D{rec['draws']}/T{rec['timeouts']} "
@@ -358,6 +367,7 @@ def main():
         window["z_sum"] += float(np.asarray(data["z"], np.float64).sum())
         for k in GAME_KEYS:
             window[k] += int(data[k])
+        window.update(probe(value, buf, n, args.batch, rng, dev, gpu_batch.make_batch, args.policy_w))
 
     if not checkpoint:
         snapshot(0.0, "init")
