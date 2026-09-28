@@ -1,0 +1,14 @@
+{
+ "format": 1,
+ "name": "gumbel30.s1",
+ "sha": "8e117ed",
+ "binary": "81d084c33c00c4d7a216d3fa2e0fe696009e08a95125444fc870c3c29bf8abe9",
+ "weights": "weights.bin",
+ "weights_sha": "50bebe990a874acfd16abbd1badfb37747a382c4d76b31341ea6b5f662201212",
+ "search": {
+  "mind": "search",
+  "sims": 32
+ },
+ "minutes": 7.581,
+ "note": "gumbel30 s1, 8 min"
+}
