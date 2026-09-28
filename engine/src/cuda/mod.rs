@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, LazyLock};
 use std::thread::JoinHandle;
 
@@ -702,10 +702,9 @@ pub struct Stats {
 type Job = (Query, mpsc::Sender<Answer>);
 
 pub struct Gpu {
-    queues: Vec<Arc<Queue<Job>>>,
+    queue: Arc<Queue<Job>>,
     lanes: Vec<Arc<Mutex<Card>>>,
     drivers: Vec<JoinHandle<()>>,
-    next: AtomicUsize,
     memo: Memo,
     pub stats: Vec<Arc<Stats>>,
 }
@@ -744,10 +743,10 @@ impl Gpu {
         if ordinals.is_empty() {
             return Err("no cuda device ordinals given".into());
         }
-        let (mut queues, mut lanes, mut drivers, mut stats) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let queue = Arc::new(Queue::new());
+        let (mut lanes, mut drivers, mut stats) = (Vec::new(), Vec::new(), Vec::new());
         for &o in ordinals {
             let module = Module::get(o)?;
-            let queue = Arc::new(Queue::new());
             let device = Arc::new(Stats::default());
             for p in 0..PIPELINE {
                 let lane = Arc::new(Mutex::new(Card::new(&module, net)?));
@@ -760,10 +759,9 @@ impl Gpu {
                 );
                 lanes.push(lane);
             }
-            queues.push(queue);
             stats.push(device);
         }
-        Ok(Gpu { queues, lanes, drivers, next: AtomicUsize::new(0), memo: Memo::default(), stats })
+        Ok(Gpu { queue, lanes, drivers, memo: Memo::default(), stats })
     }
 
     pub fn set_weights(&self, net: &Net) -> Res<()> {
@@ -782,8 +780,7 @@ impl Oracle for Gpu {
     fn eval(&self, q: Query) -> Answer {
         self.memo.eval(q, |q| {
             let (back, answer) = mpsc::channel();
-            let g = self.next.fetch_add(1, Ordering::Relaxed) % self.queues.len();
-            self.queues[g].push((q, back));
+            self.queue.push((q, back));
             answer.recv().expect("a gpu lane failed; its driver printed why")
         })
     }
@@ -791,9 +788,7 @@ impl Oracle for Gpu {
 
 impl Drop for Gpu {
     fn drop(&mut self) {
-        for q in &self.queues {
-            q.close();
-        }
+        self.queue.close();
         for d in self.drivers.drain(..) {
             let _ = d.join();
         }
