@@ -1,5 +1,17 @@
 # Self-play throughput log
 
+## Result
+
+| | decisions/s | evals/s | evals/decision |
+|---|---|---|---|
+| before (7519131) | 27.96k | 926k | 33.1 |
+| after (cb2caaf2) | 32.45k | 1079k | 33.3 |
+| change | +16.1% | +16.5% | |
+
+What limits throughput now: both GPUs run at the 330 W host power cap, SMs are full of trunk CTAs,
+and the trunk's cost is spread over many non-MMA phases (see the ablations below). The trainer on
+GPU 1 gets ~5 steps/s against the ~32/s that replay_ratio=1 asks for.
+
 Box: vast 53191824, 2x RTX 3090 (330 W host power cap, SM clocks ~1650 MHz under load),
 Threadripper PRO 3975WX (64 threads). The first box went down; this one replaced it.
 
@@ -40,6 +52,7 @@ agree within 0.2%.
 | head kernel: branch-free action loads, one thread per value bin | 31.77k | 1061k | 33.4 | kept, +0.9% |
 | expand_rows folded into the trunk stem (features from row bytes) | 31.00k | 1031k | 33.3 | rejected: the stem slows more than the kernel saves |
 | stem reads tokens from a host-projected table (cards, seats, piles through tok_stem) | 32.45k | 1079k | 33.3 | kept, +2.1% |
+| LN partials moved behind the neighbour rows, 2 syncs per layer fewer | 32.48k | 1082k | 33.3 | rejected: +0.1%, power-capped |
 
 Why the side kernels cost so much: k_trunk uses 168 registers x 384 threads, the whole register
 file, so nothing co-resides with a trunk CTA. Every block of a side kernel holds an SM that a
@@ -60,3 +73,15 @@ gemm<1> ~10k. The gemms run at ~80% of the tensor pipe; LN, pooling and stores a
 
 Power: both GPUs sit at the 330 W cap (SW power cap active 100% of samples, 1635-1680 MHz, memory
 at 9501 MHz). Throughput is energy per eval, so cutting idle cycles pays only in part.
+
+Single-GPU energy bench (standalone evals of 1.2M distinct positions, 10 threads x 500 rows, power
+capped at 328 W). HEAD: 600k and 597k evals/s. Ablations, results wrong but work shape kept:
+- main gemm mma skipped: 621k (+3.5%), clock rises to 1860 MHz. The MMAs are not the bottleneck.
+- 6/7 of A-fragment ldmatrix skipped: 608k (+1.5%).
+- weight B fragments from 2 k-tiles only (L1-hot): 625k (+4%). L2 weight streaming costs ~4%.
+- gather mma skipped: 597k (0%).
+- LN statistics skipped (syncs kept): 658k (+9.7%).
+- per-layer pooling (pool_rows + pool_gemm) skipped: 706k (+18%).
+Unrolling pool_gemm's weight loads fully: 544k (worse, register pressure); by 3: 599k (same).
+The pooling and LN phases are where the next trunk gains are; both need a rework of how a CTA
+reduces across its 12 warps, which is out of scope here.
