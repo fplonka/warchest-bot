@@ -96,13 +96,14 @@ pub fn play(brain: &Brain, rng: &mut Rng, stop: &AtomicBool) -> Option<Data> {
             return None;
         }
         let p = s.to_act() as usize;
-        let (acts, probs) = seats[p].think(brain).expect("the seat to act can think");
+        let (acts, probs, pick) = seats[p].think(brain).expect("the seat to act can think");
         if acts.len() > 1 {
             seats[p].query(&acts, &mut d.q);
             d.target.extend_from_slice(&probs);
             actors.push(p);
         }
-        let a = seats[p].play(brain, &acts, &probs);
+        let a = acts[pick];
+        seats[p].play(a);
         d.count(a);
         s.apply_inplace(a);
         let obs = Obs::Act { player: p as u8, key: obs_key(&a) };
@@ -202,21 +203,11 @@ fn worker_seed(seed: u64, i: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::Mind;
     use crate::pbs::ROW_BYTES;
-    use crate::search::{uniform, Answer, Oracle, Search, ACT_BYTES};
-
-    struct Flat;
-
-    impl Oracle for Flat {
-        fn eval(&self, q: Query) -> Answer {
-            Answer { value: vec![0.0; q.len()], prior: uniform(&q) }
-        }
-    }
+    use crate::search::{Flat, ACT_BYTES};
 
     fn searcher() -> Brain {
-        let search = Search { sims: 24, batch: 8, puct: 1.5, explore: 0.25 };
-        Brain { mind: Mind::Search { search, oracle: Arc::new(Flat) }, temp: 0.5, cut: 0.0 }
+        Brain::Search { sims: 32, oracle: Arc::new(Flat) }
     }
 
     fn check(d: &Data) {
@@ -240,7 +231,7 @@ mod tests {
 
     #[test]
     fn greedy_warm_games_label_every_row() {
-        check(&warm(&Brain { mind: Mind::Greedy, temp: 2.0, cut: 0.0 }, 4, 11));
+        check(&warm(&Brain::Greedy, 4, 11));
     }
 
     #[test]

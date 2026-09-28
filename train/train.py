@@ -373,7 +373,7 @@ def main():
         snapshot(0.0, "init")
     window = collections.Counter()
     while time.time() - t0 < warm:
-        absorb(window, warchest.warm(args.warm_games, args.seed * 1_000_003 + epoch, temp=args.warm_temp))
+        absorb(window, warchest.warm(args.warm_games, args.seed * 1_000_003 + epoch))
         done, stats = fit(t0 + total)
         window["steps"] += done
         report("warm", window, stats, {})
@@ -382,8 +382,7 @@ def main():
         acting.push()
         target_state = cpu_state(acting)
         farm = warchest.Farm(args.seed + 1_000_003 * progress["farm_runs"], args.games,
-                             [int(d) for d in args.gen_devices.split(",")], sims=args.sims,
-                             batch=args.search_batch, puct=args.puct, explore=args.explore, temp=args.temp)
+                             [int(d) for d in args.gen_devices.split(",")], sims=args.sims)
         progress["farm_runs"] += 1
         next_target = time.time() + args.target_every * 60.0
         next_report = time.time() + 10.0

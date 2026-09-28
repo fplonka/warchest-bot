@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use warchest::bot::{Brain, Mind};
+use warchest::bot::Brain;
 use warchest::cuda::Gpu;
 use warchest::net::Net;
 use warchest::pbs::Ctx;
 use warchest::rng::Rng;
-use warchest::search::{Oracle, Query, Search};
+use warchest::search::{Oracle, Query};
 use warchest::selfplay::{game, Farm};
 
 fn positions(games: u64) -> Query {
@@ -66,8 +66,7 @@ fn a_position_evaluates_the_same_alone_or_in_a_crowd() {
 #[test]
 fn a_farm_searches_on_the_card() {
     let gpu = Arc::new(Gpu::new(&[0], &Net::random(3)).unwrap());
-    let search = Search { sims: 32, batch: 8, puct: 1.5, explore: 0.25 };
-    let brain = Brain { mind: Mind::Search { search, oracle: gpu.clone() }, temp: 1.0, cut: 0.0 };
+    let brain = Brain::Search { sims: 32, oracle: gpu.clone() };
     let farm = Farm::new(1, 64, Arc::new(brain));
     let t0 = std::time::Instant::now();
     while farm.rows() < 2000 {

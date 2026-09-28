@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::board::board;
-use crate::bot::{Brain, Mind};
+use crate::bot::Brain;
 use crate::net::Net;
 use crate::online::{Game, Site};
 use crate::pbs::{expand_row, mirror_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
@@ -53,9 +53,8 @@ fn data_to_dict(py: Python<'_>, d: Data) -> PyResult<PyObject> {
 }
 
 #[pyfunction]
-fn warm(py: Python<'_>, games: usize, seed: u64, temp: f32) -> PyResult<PyObject> {
-    let brain = Brain { mind: Mind::Greedy, temp, cut: 0.0 };
-    let d = py.allow_threads(|| crate::selfplay::warm(&brain, games, seed));
+fn warm(py: Python<'_>, games: usize, seed: u64) -> PyResult<PyObject> {
+    let d = py.allow_threads(|| crate::selfplay::warm(&Brain::Greedy, games, seed));
     data_to_dict(py, d)
 }
 
@@ -71,12 +70,10 @@ struct Farm {
 #[pymethods]
 impl Farm {
     #[new]
-    #[allow(clippy::too_many_arguments)]
-    fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32, batch: u32, puct: f32, explore: f32, temp: f32) -> PyResult<Farm> {
+    fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32) -> PyResult<Farm> {
         let net = net()?;
         let gpu = Arc::new(crate::cuda::Gpu::new(&devices, &net).map_err(PyRuntimeError::new_err)?);
-        let search = crate::search::Search { sims, batch, puct, explore };
-        let brain = Brain { mind: Mind::Search { search, oracle: gpu.clone() }, temp, cut: 0.0 };
+        let brain = Brain::Search { sims, oracle: gpu.clone() };
         let farm = crate::selfplay::Farm::new(seed, games, Arc::new(brain));
         Ok(Farm { gpu, farm, net })
     }

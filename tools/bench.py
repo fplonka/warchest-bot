@@ -26,8 +26,7 @@ def main():
         net.load_state_dict(torch.load(cfg.init_weights, map_location="cpu", weights_only=False)["acting"])
     net.push()
     devices = [int(d) for d in cfg.gen_devices.split(",")]
-    farm = warchest.Farm(cfg.seed, cfg.games, devices, sims=cfg.sims, batch=cfg.search_batch,
-                         puct=cfg.puct, explore=cfg.explore, temp=cfg.temp)
+    farm = warchest.Farm(cfg.seed, cfg.games, devices, sims=cfg.sims)
     t0, start, at, rows, decisions = time.time(), None, {}, 0, 0
     while True:
         d = farm.collect(cfg.collect_rows)
@@ -46,7 +45,7 @@ def main():
         torch.cuda.cudart().cudaProfilerStop()
     span, lanes = now - start, warchest.PIPELINE * len(devices)
     got = {k: int(d[k]) - at[k] for k in GPU}
-    print(f"[bench] games={cfg.games} sims={cfg.sims} batch={cfg.search_batch} over {span:.0f}s: "
+    print(f"[bench] games={cfg.games} sims={cfg.sims} over {span:.0f}s: "
           f"evals/s={got['gpu_rows'] / span:.0f} "
           f"sims/s={rows * cfg.sims / span:.0f} "
           f"decisions/s={decisions / span:.1f} rows/s={rows / span:.1f} "

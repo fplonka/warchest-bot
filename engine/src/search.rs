@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
-use serde::{Deserialize, Serialize};
-
 use crate::actions::Action;
 use crate::board::NONE;
 use crate::pbs::{obs_key, pack_row, set_config, true_config, Belief, Ctx, NSLOT, ROW_BYTES};
@@ -12,8 +10,9 @@ use crate::state::State;
 use crate::units::{ENSIGN, MARSHAL, ROYAL_COIN};
 
 pub const ACT_BYTES: usize = 6;
-const NOISE_MASS: f64 = 10.0;
-const FPU_REDUCTION: f32 = 0.25;
+const CONSIDERED: usize = 16;
+const C_VISIT: f32 = 50.0;
+const C_SCALE: f32 = 1.0;
 
 fn action_coin(a: &Action, s: &State) -> u8 {
     use Action::*;
@@ -125,14 +124,6 @@ pub trait Oracle: Send + Sync {
     fn eval(&self, q: Query) -> Answer;
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct Search {
-    pub sims: u32,
-    pub batch: u32,
-    pub puct: f32,
-    pub explore: f32,
-}
-
 #[derive(Default)]
 pub struct Keyed(u64);
 
@@ -156,8 +147,8 @@ fn mix(h: u64, x: u64) -> u64 {
 struct Node {
     first: u32,
     len: u32,
-    n: u32,
     player: u8,
+    value: f32,
 }
 
 struct Edge {
@@ -178,6 +169,18 @@ enum Leaf {
     Busy,
 }
 
+fn halving(m: usize, sims: u32) -> Vec<(usize, u32)> {
+    let rounds = (usize::BITS - (m - 1).leading_zeros()).max(1);
+    let (mut k, mut left, mut phases) = (m, sims, Vec::new());
+    while left > 0 {
+        let n = (k as u32 * (sims / (rounds * k as u32)).max(1)).min(left);
+        phases.push((k, n));
+        left -= n;
+        k = (k / 2).max(2);
+    }
+    phases
+}
+
 #[derive(Default)]
 struct Tree {
     nodes: Vec<Node>,
@@ -187,25 +190,16 @@ struct Tree {
 
 impl Tree {
     fn node(&mut self, player: u8) -> u32 {
-        self.nodes.push(Node { first: 0, len: 0, n: 0, player });
+        self.nodes.push(Node { first: 0, len: 0, player, value: 0.0 });
         (self.nodes.len() - 1) as u32
     }
 
-    fn expand(&mut self, node: u32, acts: &[Action], prior: &[f32]) {
+    fn expand(&mut self, node: u32, acts: &[Action], prior: &[f32], value: f32) {
         let n = &mut self.nodes[node as usize];
         n.first = self.edges.len() as u32;
         n.len = acts.len() as u32;
+        n.value = value;
         self.edges.extend(acts.iter().zip(prior).map(|(&action, &prior)| Edge { action, prior, n: 0, w: 0.0 }));
-    }
-
-    fn perturb_root(&mut self, explore: f32, rng: &mut Rng) {
-        let n = &self.nodes[0];
-        let edges = &mut self.edges[n.first as usize..(n.first + n.len) as usize];
-        let noise: Vec<f64> = edges.iter().map(|_| rng.gamma(NOISE_MASS / edges.len() as f64)).collect();
-        let total: f64 = noise.iter().sum();
-        for (e, g) in edges.iter_mut().zip(noise) {
-            e.prior = (1.0 - explore) * e.prior + explore * (g / total) as f32;
-        }
     }
 
     fn edges(&self, node: u32) -> &[Edge] {
@@ -213,37 +207,39 @@ impl Tree {
         &self.edges[n.first as usize..(n.first + n.len) as usize]
     }
 
-    fn select(&self, node: u32, puct: f32) -> u32 {
-        let n = &self.nodes[node as usize];
+    fn sigma(&self, node: u32) -> Vec<f32> {
         let edges = self.edges(node);
-        let scale = puct * (n.n.max(1) as f32).sqrt();
-        let fpu = edges.iter().map(|e| e.w).sum::<f32>() / n.n.max(1) as f32 - FPU_REDUCTION;
-        let score = |e: &Edge| {
-            let q = if e.n > 0 { e.w / e.n as f32 } else { fpu };
-            q + scale * e.prior / (1 + e.n) as f32
-        };
-        let best = (0..edges.len())
-            .max_by(|&a, &b| score(&edges[a]).total_cmp(&score(&edges[b])))
-            .expect("an expanded node has an edge");
-        n.first + best as u32
+        let visits = edges.iter().map(|e| e.n).sum::<u32>() as f32;
+        let most = edges.iter().map(|e| e.n).max().unwrap_or(0) as f32;
+        let (pq, p) = edges.iter().filter(|e| e.n > 0).fold((0.0, 0.0), |(pq, p), e| {
+            let prior = e.prior.max(f32::MIN_POSITIVE);
+            (pq + prior * e.w / e.n as f32, p + prior)
+        });
+        let mean = if p > 0.0 { pq / p } else { 0.0 };
+        let mix = (self.nodes[node as usize].value + visits * mean) / (1.0 + visits);
+        let scale = (C_VISIT + most) * C_SCALE;
+        edges.iter().map(|e| scale * (if e.n > 0 { e.w / e.n as f32 } else { mix } + 1.0) / 2.0).collect()
     }
 
-    fn descend(&mut self, w: &mut State, ctx: &Ctx, rng: &mut Rng, puct: f32, path: &mut Vec<Step>) -> Leaf {
-        let mut h = 0u64;
+    fn improved(&self, node: u32) -> Vec<f32> {
+        let logits: Vec<f32> = self.edges(node).iter().zip(self.sigma(node)).map(|(e, s)| e.prior.ln() + s).collect();
+        let top = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let z: f32 = logits.iter().map(|l| (l - top).exp()).sum();
+        logits.iter().map(|l| (l - top).exp() / z).collect()
+    }
+
+    fn select(&self, node: u32) -> u32 {
+        let edges = self.edges(node);
+        let total = (1 + edges.iter().map(|e| e.n).sum::<u32>()) as f32;
+        let pi = self.improved(node);
+        let score = |i: usize| pi[i] - edges[i].n as f32 / total;
+        let best = (0..edges.len()).max_by(|&a, &b| score(a).total_cmp(&score(b))).expect("an expanded node has an edge");
+        self.nodes[node as usize].first + best as u32
+    }
+
+    fn descend(&mut self, w: &mut State, ctx: &Ctx, rng: &mut Rng, mut edge: u32, path: &mut Vec<Step>) -> Leaf {
+        let (mut node, mut h) = (0, 0u64);
         loop {
-            let p = w.to_act();
-            let key = mix(mix(h, p as u64), true_config(w, p, ctx).key());
-            let node = match self.index.get(&key) {
-                Some(&node) if self.nodes[node as usize].len > 0 => node,
-                Some(_) => return Leaf::Busy,
-                None => {
-                    let fresh = self.node(p);
-                    self.index.insert(key, fresh);
-                    return Leaf::Fresh(fresh);
-                }
-            };
-            let edge = self.select(node, puct);
-            self.nodes[node as usize].n += 1;
             let e = &mut self.edges[edge as usize];
             e.n += 1;
             e.w -= 1.0;
@@ -258,6 +254,18 @@ impl Tree {
             if crate::finished(w) {
                 return Leaf::Ended;
             }
+            let p = w.to_act();
+            let key = mix(mix(h, p as u64), true_config(w, p, ctx).key());
+            node = match self.index.get(&key) {
+                Some(&node) if self.nodes[node as usize].len > 0 => node,
+                Some(_) => return Leaf::Busy,
+                None => {
+                    let fresh = self.node(p);
+                    self.index.insert(key, fresh);
+                    return Leaf::Fresh(fresh);
+                }
+            };
+            edge = self.select(node);
         }
     }
 
@@ -270,32 +278,27 @@ impl Tree {
 
     fn undo(&mut self, path: &[Step]) {
         for s in path {
-            self.nodes[s.node as usize].n -= 1;
             let e = &mut self.edges[s.edge as usize];
             e.n -= 1;
             e.w += 1.0;
         }
     }
-}
 
-impl Search {
-    pub fn think(&self, oracle: &dyn Oracle, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> Vec<f32> {
-        let me = root.to_act();
-        let mut tree = Tree::default();
+    fn simulate(&mut self, oracle: &dyn Oracle, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng, visits: &[u32]) {
         let (mut path, mut acts, mut legal, mut fresh) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let mut left = self.sims;
-        while left > 0 {
+        let mut next = 0;
+        while next < visits.len() {
             let mut q = Query::default();
-            while fresh.len() < self.batch as usize && left > 0 {
+            while next < visits.len() {
                 let (mut w, start) = (*root, path.len());
-                set_config(&mut w, 1 - me, ctx, &opp.sample(rng));
-                match tree.descend(&mut w, ctx, rng, self.puct, &mut path) {
+                set_config(&mut w, 1 - root.to_act(), ctx, &opp.sample(rng));
+                match self.descend(&mut w, ctx, rng, visits[next], &mut path) {
                     Leaf::Ended => {
-                        tree.backup(&path[start..], crate::score(&w, 0));
+                        self.backup(&path[start..], crate::score(&w, 0));
                         path.truncate(start);
                     }
                     Leaf::Busy => {
-                        tree.undo(&path[start..]);
+                        self.undo(&path[start..]);
                         path.truncate(start);
                         break;
                     }
@@ -306,42 +309,131 @@ impl Search {
                         acts.extend_from_slice(&legal);
                     }
                 }
-                left -= 1;
+                next += 1;
             }
             if q.is_empty() {
                 continue;
             }
             let answer = oracle.eval(q);
             for (i, (node, steps, moves)) in fresh.drain(..).enumerate() {
-                tree.expand(node, &acts[moves.clone()], &answer.prior[moves]);
-                if node == 0 {
-                    tree.perturb_root(self.explore, rng);
-                }
                 let v = answer.value[i];
-                tree.backup(&path[steps], if tree.nodes[node as usize].player == 0 { v } else { -v });
+                self.expand(node, &acts[moves.clone()], &answer.prior[moves], v);
+                self.backup(&path[steps], if self.nodes[node as usize].player == 0 { v } else { -v });
             }
             path.clear();
             acts.clear();
         }
-        let edges = tree.edges(0);
-        let total = edges.iter().map(|e| e.n).sum::<u32>() as f32;
-        edges.iter().map(|e| e.n as f32 / total).collect()
+    }
+}
+
+pub fn think(oracle: &dyn Oracle, sims: u32, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> (Vec<f32>, usize) {
+    let acts = root.legal_actions();
+    let mut q = Query::default();
+    q.push(root, ctx, &acts);
+    let answer = oracle.eval(q);
+    let mut tree = Tree::default();
+    let node = tree.node(root.to_act());
+    tree.expand(node, &acts, &answer.prior, answer.value[0]);
+    let gumbel: Vec<f32> = acts.iter().map(|_| rng.gumbel()).collect();
+    let score = |tree: &Tree| -> Vec<f32> {
+        tree.edges(0).iter().zip(tree.sigma(0)).zip(&gumbel).map(|((e, s), g)| g + e.prior.ln() + s).collect()
+    };
+    let mut alive: Vec<u32> = (0..acts.len() as u32).collect();
+    for (k, n) in halving(acts.len().min(CONSIDERED), sims) {
+        let s = score(&tree);
+        alive.sort_by(|&a, &b| s[b as usize].total_cmp(&s[a as usize]));
+        alive.truncate(k);
+        let visits: Vec<u32> = (0..n as usize).map(|j| alive[j % k]).collect();
+        tree.simulate(oracle, root, ctx, opp, rng, &visits);
+    }
+    let (s, edges) = (score(&tree), tree.edges(0));
+    let most = edges.iter().map(|e| e.n).max().expect("a root has a move");
+    let pick = (0..edges.len())
+        .filter(|&i| edges[i].n == most)
+        .max_by(|&a, &b| s[a].total_cmp(&s[b]))
+        .expect("a most visited move exists");
+    (tree.improved(0), pick)
+}
+
+#[cfg(test)]
+pub(crate) struct Flat;
+
+#[cfg(test)]
+impl Oracle for Flat {
+    fn eval(&self, q: Query) -> Answer {
+        Answer { value: vec![0.0; q.len()], prior: uniform(&q) }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::greedy;
+
+    fn root(prior: &[f32], value: f32, visits: &[(u32, f32)]) -> Tree {
+        let mut tree = Tree::default();
+        let acts: Vec<Action> = (0..prior.len() as u8).map(|coin| Action::Pass { coin }).collect();
+        let node = tree.node(0);
+        tree.expand(node, &acts, prior, value);
+        for (e, &(n, w)) in tree.edges.iter_mut().zip(visits) {
+            (e.n, e.w) = (n, w);
+        }
+        tree
+    }
+
+    fn close(got: &[f32], want: &[f32]) {
+        assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-4), "{got:?} is not {want:?}");
+    }
 
     #[test]
-    fn an_untried_move_starts_below_the_movers_mean() {
-        let mut tree = Tree::default();
-        let node = tree.node(1);
-        tree.expand(node, &[Action::Pass { coin: 0 }, Action::Pass { coin: 1 }], &[0.5, 0.5]);
-        tree.nodes[0].n = 1;
-        tree.edges[0].n = 1;
-        tree.edges[0].w = -1.0;
-        tree.backup(&[Step { node, edge: 0 }], 0.6);
-        assert_eq!(tree.select(node, 0.5), 0, "black is losing, so the untried move must not look better");
+    fn sequential_halving_spends_the_budget_like_mctx() {
+        assert_eq!(halving(16, 32), [(16, 16), (8, 8), (4, 8)]);
+        assert_eq!(halving(16, 200), [(16, 48), (8, 48), (4, 48), (2, 50), (2, 6)]);
+        assert_eq!(halving(16, 8), [(16, 8)]);
+        assert_eq!(halving(3, 32), [(3, 15), (2, 16), (2, 1)]);
+        assert_eq!(halving(2, 32), [(2, 32)]);
+        assert_eq!(halving(1, 5), [(1, 5)]);
+    }
+
+    #[test]
+    fn an_unvisited_move_completes_with_the_mixed_value() {
+        let tree = root(&[0.5, 0.3, 0.2], 0.2, &[(2, 1.0), (1, -1.0), (0, 0.0)]);
+        let mix = 0.003125;
+        close(&tree.sigma(0), &[52.0 * 0.75, 0.0, 52.0 * (1.0 + mix) / 2.0]);
+        close(&root(&[0.5, 0.5], -0.4, &[]).sigma(0), &[50.0 * 0.3, 50.0 * 0.3]);
+    }
+
+    #[test]
+    fn the_improved_policy_follows_the_better_q() {
+        close(&root(&[0.8, 0.2], 0.0, &[(1, 0.0), (1, 0.1)]).improved(0), &[0.2380, 0.7620]);
+        close(&root(&[0.8, 0.2], 0.0, &[]).improved(0), &[0.8, 0.2]);
+        assert!(root(&[0.8, 0.2], 0.0, &[(1, -1.0), (1, 1.0)]).improved(0)[1] > 0.99);
+    }
+
+    #[test]
+    fn thirty_two_simulations_find_the_only_winning_move() {
+        let (mut rng, mut found) = (Rng::new(1), 0);
+        while found < 10 {
+            let mut s = crate::selfplay::game(&mut rng);
+            let ctx = Ctx::new(&s);
+            while !crate::finished(&s) {
+                let acts = s.legal_actions();
+                if s.is_chance() {
+                    s.apply_inplace(acts[rng.below(acts.len())]);
+                    continue;
+                }
+                let me = s.to_act();
+                let wins: Vec<bool> = acts.iter().map(|&a| s.apply(a).winner() == Some(me)).collect();
+                if acts.len() <= CONSIDERED && wins.iter().filter(|&&w| w).count() == 1 {
+                    let opp = Belief::point(true_config(&s, 1 - me, &ctx));
+                    let (target, pick) = think(&Flat, 32, &s, &ctx, &opp, &mut rng);
+                    assert!(wins[pick], "the search missed the win");
+                    assert!(target[pick] > 0.9, "the target gives the win only {}", target[pick]);
+                    found += 1;
+                }
+                let w: Vec<f64> = greedy(&s, &acts).iter().map(|&p| p as f64).collect();
+                s.apply_inplace(acts[rng.weighted_index(&w)]);
+            }
+        }
     }
 }
