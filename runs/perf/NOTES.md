@@ -37,6 +37,7 @@ agree within 0.2%.
 | one queue for all lanes | 29.09k | 958k | 32.9 | kept, +4% |
 | heads fused into the trunk epilogue (fp32, 3 boards per CTA) | 29.09k | 972k | 33.4 | rejected: CTA 370 -> 434 us per wave |
 | one tensor-core head kernel per 16 rows, no cuBLAS | 31.50k | 1046k | 33.2 | kept, +8% |
+| head kernel: branch-free action loads, one thread per value bin | 31.77k | 1061k | 33.4 | kept, +0.9% |
 
 Why the side kernels cost so much: k_trunk uses 168 registers x 384 threads, the whole register
 file, so nothing co-resides with a trunk CTA. Every block of a side kernel holds an SM that a
@@ -44,3 +45,10 @@ trunk CTA then waits for. Fusing the heads into the trunk epilogue removes that,
 streams 1.26 MB of fp32 head weights for 3 boards (clock64 per phase: board_out 55k cycles,
 hidden/act 31k, against 52k per trunk layer). One batched head kernel reads the fp16 weights once
 per 16 rows, with mma, and replaces 3 cuBLAS gemms and 5 small kernels.
+
+k_heads per 16-row block (clock64, test positions): board gemm 22k cycles, mid gemm 10k, value
+23k -> 18k, actions 93k -> 53k (~150 actions). The whole kernel is now ~3% of the trunk's SM time.
+
+k_trunk per CTA (3 boards, clock64): stem 77k cycles, 12 layers of ~52k, total ~734k. In a layer:
+LN1+store 5.4k, pool_rows 1.9k, pool_gemm+gemm<2> 23k, store 1.3k, gather 3.4k, LN2+store 6.2k,
+gemm<1> ~10k. The gemms run at ~80% of the tensor pipe; LN, pooling and stores are ~30% of a layer.

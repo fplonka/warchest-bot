@@ -5,7 +5,8 @@
 #define HNT (D / 8 / TWARPS)
 static_assert(D == 8 * HNT * TWARPS && HIDDEN + TRUNK_C == D, "a warp owns whole column tiles of both head layers");
 static_assert(HD <= HA, "the board rows reuse the pooled rows");
-static_assert(BINS <= 32 && TRUNK_C % 32 == 0, "a warp holds the value bins and an action row");
+static_assert(32 % BINS == 0 && HR * BINS <= 32 * TWARPS && TRUNK_C % 32 == 0,
+              "a thread holds one value bin of one row and a warp one action row");
 
 struct Head {
     const unsigned* w_board;
@@ -48,19 +49,22 @@ __device__ __forceinline__ void head_gemm(const __half* a, const unsigned* __res
 
 __device__ float action_logit(const Head& h, const unsigned char* d, const float* act, const __half* tokens,
                               const __half* spatial, int lane) {
+    const __half* src[5];
+    float on[5];
+#pragma unroll
+    for (int r = 0; r < 5; ++r) {
+        on[r] = d[r + 1] < (r < 2 ? NTYPE : N_HEXES);
+        src[r] = (r < 2 ? tokens : spatial) + (size_t)(on[r] ? d[r + 1] : 0) * TRUNK_C;
+    }
+    const float* kind = h.kind + (size_t)d[0] * TRUNK_C;
     float v[TRUNK_C / 32];
     float sum = 0.0f;
 #pragma unroll
     for (int q = 0; q < TRUNK_C / 32; ++q) {
         const int j = lane + 32 * q;
-        float x = h.kind[(size_t)d[0] * TRUNK_C + j] + act[j];
+        float x = kind[j] + act[j];
 #pragma unroll
-        for (int r = 0; r < 5; ++r) {
-            const int e = d[r + 1];
-            const __half* src = r < 2 ? (e < NTYPE ? tokens + (size_t)e * TRUNK_C : nullptr)
-                                      : (e < N_HEXES ? spatial + (size_t)e * TRUNK_C : nullptr);
-            if (src) x += h.role[r * TRUNK_C + j] * __half2float(src[j]);
-        }
+        for (int r = 0; r < 5; ++r) x += on[r] * h.role[r * TRUNK_C + j] * __half2float(src[r][j]);
         v[q] = x;
         sum += x;
     }
@@ -113,18 +117,19 @@ k_heads(const float* __restrict__ pooled, const Head h, const unsigned char* __r
         mid[g + 8][col + 1] = acc[j][3] + b1;
     }
     __syncthreads();
-    for (int r = warp; r < rows; r += TWARPS) {
-        float logit = neg_inf();
-        if (lane < BINS) {
-            logit = h.b_value[lane];
-            for (int k = 0; k < HIDDEN; ++k) logit += gelu1(mid[r][k]) * h.w_value[k * BINS + lane];
-        }
+    if (tid < HR * BINS) {
+        const int r = tid / BINS, bin = tid % BINS;
+        float logit = h.b_value[bin];
+#pragma unroll 8
+        for (int k = 0; k < HIDDEN; ++k) logit += gelu1(mid[r][k]) * h.w_value[k * BINS + bin];
         float top = logit;
-        for (int m = 16; m > 0; m >>= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffff, top, m));
-        const float e = lane < BINS ? expf(logit - top) : 0.0f;
-        const float centre = (lane + 0.5f) / (BINS / 2) - 1.0f;
-        const float total = warp_sum(e), mean = warp_sum(e * centre);
-        if (lane == 0) out[first + r] = mean / total;
+        for (int m = BINS / 2; m > 0; m >>= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffff, top, m, BINS));
+        float e = expf(logit - top), centre = e * ((bin + 0.5f) / (BINS / 2) - 1.0f);
+        for (int m = BINS / 2; m > 0; m >>= 1) {
+            e += __shfl_xor_sync(0xffffffff, e, m, BINS);
+            centre += __shfl_xor_sync(0xffffffff, centre, m, BINS);
+        }
+        if (bin == 0 && r < rows) out[first + r] = centre / e;
     }
     float* prior = out + n;
     for (unsigned i = off[first] + warp; i < off[first + rows]; i += TWARPS) {
