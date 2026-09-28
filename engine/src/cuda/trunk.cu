@@ -95,12 +95,12 @@ __device__ __forceinline__ void pool_gemm(TrunkShared& s, const uint4* __restric
     unsigned d[2][2] = {};
     const int g = lane >> 2, t = lane & 3;
     const uint4* wl = wg + (size_t)warp * (2 * TRUNK_C / 16) * 32 + lane;
-    for (int k0 = 0; k0 < 2 * TRUNK_C / 16; k0 += 12) {
-        uint4 av[12];
+    for (int k0 = 0; k0 < 2 * TRUNK_C / 16; k0 += 2) {
+        uint4 av[2];
 #pragma unroll
-        for (int i = 0; i < 12; ++i) av[i] = wl[(size_t)(k0 + i) * 32];
+        for (int i = 0; i < 2; ++i) av[i] = wl[(size_t)(k0 + i) * 32];
 #pragma unroll
-        for (int i = 0; i < 12; ++i) {
+        for (int i = 0; i < 2; ++i) {
             unsigned af[4] = {av[i].x, av[i].y, av[i].z, av[i].w};
             unsigned bf[2] = {0u, 0u};
             if (g < TB) {
