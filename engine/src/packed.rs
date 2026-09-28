@@ -23,7 +23,7 @@ pub struct Manifest {
     pub binary: String,
     pub weights: String,
     pub weights_sha: String,
-    pub search: Mind,
+    pub search: serde_json::Value,
     pub minutes: f64,
     pub note: String,
 }

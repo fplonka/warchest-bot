@@ -36,11 +36,8 @@ impl BotProcess {
         if hello.name != m.name {
             return Err(format!("{} identified as {}", m.name, hello.name));
         }
-        if hello.protocol != PROTOCOL {
-            return Err(format!(
-                "{} speaks protocol {}, not {}",
-                m.name, hello.protocol, PROTOCOL
-            ));
+        if ![6, PROTOCOL].contains(&hello.protocol) {
+            return Err(format!("{} speaks protocol {}", m.name, hello.protocol));
         }
         if hello.rules != rules_table_hash() {
             return Err(format!("{} was built against different rules", m.name));

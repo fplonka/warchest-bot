@@ -29,7 +29,7 @@ pub struct Brain {
 impl Brain {
     #[cfg(feature = "gpu")]
     pub fn load(packed: &crate::packed::Packed, devices: &[usize]) -> Result<Brain, String> {
-        let m = &packed.manifest.search;
+        let m: crate::packed::Mind = serde_json::from_value(packed.manifest.search.clone()).map_err(|e| e.to_string())?;
         let mind = match m.mind.as_str() {
             "greedy" => Mind::Greedy,
             "search" => {
