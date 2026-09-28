@@ -126,7 +126,7 @@ PANELS = (
     ("Search target vs prior", "nats",
      (("KL", "policy_kl"), ("target entropy", "policy_target_entropy")), True, ()),
     ("Network evaluations", "rows/s", (("evals", "evals_per_s"),), True, ()),
-    ("Simulations", "sims/s", (("sims", "sims_per_s"),), True, ()),
+    ("Decisions", "decisions/s", (("decisions", "decisions_per_s"),), True, ()),
     ("Replay generation throughput", "rows/s", (("rows", "rows_per_s"),), True, ()),
     ("Rows per GPU call", "rows", (("rows per call", "rows_per_call"),), True, ()),
     ("Gradient norm before clipping", "L2 norm", (("mean", "grad_norm"),), True, (("clip", 5),)),
@@ -159,7 +159,7 @@ def health(eps):
     return [("wall clock", f"{last.get('t', 0) / 60:.0f} min"),
             ("games", f"{tot('games'):,}"),
             ("evals/s", f"{last.get('evals_per_s', 0):,.0f}"),
-            ("sims/s", f"{last.get('sims_per_s', 0):,.0f}"),
+            ("decisions/s", f"{last.get('decisions_per_s', 0):,.0f}"),
             ("buffer", f"{last.get('buf', 0):,}"),
             ("games stopped", f"{100 * tot('timeouts') / max(tot('games'), 1):.1f}%"),
             ("gradient norm", f"{last.get('grad_norm', 0):.2f}")]

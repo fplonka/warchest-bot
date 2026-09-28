@@ -391,7 +391,7 @@ def main():
         while time.time() - t0 < total:
             data = farm.collect(args.collect_rows)
             absorb(window, data)
-            done, fitted = fit(t0 + total)
+            done, fitted = fit(min(t0 + total, next_report))
             window["steps"] += done
             stats = fitted or stats
             if time.time() >= next_target:
@@ -404,7 +404,7 @@ def main():
             now, span = time.time(), max(time.time() - at, 1e-9)
             calls, evals = map(sum, zip(*farm.gpu_stats()))
             extra = {"evals_per_s": round((evals - seen[1]) / span, 1),
-                     "sims_per_s": round(window["rows"] * args.sims / span, 1),
+                     "decisions_per_s": round(window["decisions"] / span, 1),
                      "rows_per_s": round(window["rows"] / span, 1),
                      "rows_per_call": round((evals - seen[1]) / max(calls - seen[0], 1), 1)}
             seen = (calls, evals)
