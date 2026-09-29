@@ -323,7 +323,7 @@ def schema(e):
     if e.get("phase") != "search":
         return e
     got = {ISMCTS.get(k, k): v for k, v in e.items()}
-    got["phase"], got["loss_old"] = "sog", e.get("value_loss")
+    got["phase"], got["loss_old"], got["decisions"] = "sog", e.get("value_loss"), e.get("decisions")
     got["plays"] = {k[6:]: v for k, v in e.items() if k.startswith("plays_")}
     if e.get("replay_rows"):
         got["train_row_ratio"] = e.get("optimizer_rows", 0) / e["replay_rows"]
