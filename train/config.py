@@ -26,7 +26,7 @@ class Cfg:
     warm_games: int = 96
 
     sims: int = 32
-    games: int = 1024
+    games: int = 2048
     collect_rows: int = 65536
 
     device: str = "cuda:1"

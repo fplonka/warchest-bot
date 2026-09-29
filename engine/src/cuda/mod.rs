@@ -126,7 +126,7 @@ unsafe impl cudarc::driver::DeviceRepr for Head {}
 
 const KC: usize = 32;
 const TRUNK_BOARDS: usize = 3;
-const TRUNK_WARPS: usize = 8;
+const TRUNK_WARPS: usize = 16;
 const DENSE_ROWS: usize = 32;
 const DENSE_COLS: usize = 128;
 const DENSE_WARPS: usize = 4;
