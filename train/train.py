@@ -4,7 +4,6 @@ import collections
 import copy
 import dataclasses
 import json
-import math
 import os
 import pathlib
 import sys
@@ -40,16 +39,6 @@ def adam(net, lr, wd):
     return torch.optim.AdamW(
         [{"params": wide, "weight_decay": wd}, {"params": thin, "weight_decay": 0.0}],
         lr=lr, fused=True)
-
-
-def scheduled_lr(initial, final, elapsed, duration, stable_frac):
-    stable = stable_frac * duration
-    if stable_frac >= 1.0 or elapsed <= stable:
-        return initial
-    if elapsed >= duration:
-        return final
-    return final + (initial - final) * (1.0 + math.cos(
-        math.pi * ((elapsed - stable) / (duration - stable)))) / 2.0
 
 
 class Buffer:
@@ -255,6 +244,8 @@ def main():
             (args.snapshot_every <= 0.0, "snapshot_every must be positive minutes"),
             (not 0.0 <= args.warm_minutes <= args.minutes, "warm_minutes must be within the run"),
             (args.lr_final <= 0.0 or args.lr_final > args.lr, "lr_final must be in (0, lr]"),
+            (args.lr_warmup <= 0.0, "lr_warmup must be positive minutes"),
+            (not 0.0 <= args.lr_stable_frac < 1.0, "lr_stable_frac must be in [0, 1)"),
             (args.batch % args.micro != 0, "micro must divide batch"),
             (not torch.cuda.is_available(), "training requires a working GPU")):
         if bad:
@@ -337,7 +328,7 @@ def main():
 
     def fit():
         for group in opt.param_groups:
-            group["lr"] = scheduled_lr(args.lr, args.lr_final, time.time() - t0, total, args.lr_stable_frac)
+            group["lr"] = args.lr_at(time.time() - t0)
         debt = args.replay_ratio * progress["generated_rows"] - progress["optimizer_rows"]
         steps = int(debt // args.batch) if len(buf) >= args.batch else 0
         done, stats = train_steps(value, acting, opt, buf, steps, args.batch, args.micro, rng, dev, gpu_batch.make_batch,
