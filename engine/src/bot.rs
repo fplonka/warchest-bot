@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::actions::Action;
 use crate::arena::{Draft, Obs};
-use crate::pbs::{deal, obs_key, unseen, Ctx};
+use crate::pbs::{deal, obs_key, unseen, Belief, Ctx};
 use crate::policy;
 use crate::rng::Rng;
 use crate::search::{think, Oracle, Query, Search};
@@ -31,12 +31,12 @@ impl Brain {
         }
     }
 
-    fn policy(&self, s: &State, ctx: &Ctx, acts: &[Action], rng: &mut Rng) -> (Vec<f32>, usize) {
+    fn policy(&self, s: &State, ctx: &Ctx, opp: &Belief, acts: &[Action], rng: &mut Rng) -> (Vec<f32>, usize) {
         let probs = match self {
             _ if acts.len() == 1 => return (vec![1.0], 0),
             Brain::Random => vec![1.0 / acts.len() as f32; acts.len()],
             Brain::Greedy => policy::greedy(s, acts),
-            Brain::Search { search, oracle } => return think(oracle.as_ref(), *search, s, ctx, rng),
+            Brain::Search { search, oracle } => return think(oracle.as_ref(), *search, s, ctx, opp, rng),
         };
         let weights: Vec<f64> = probs.iter().map(|&p| p as f64).collect();
         let pick = rng.weighted_index(&weights);
@@ -48,6 +48,7 @@ pub struct Session {
     s: State,
     ctx: Ctx,
     seat: u8,
+    opp: Belief,
     rng: Rng,
 }
 
@@ -56,6 +57,7 @@ impl Session {
         let s = draft.state()?;
         Ok(Session {
             ctx: Ctx::new(&s),
+            opp: Belief::new(&s, 1 - seat),
             s,
             seat,
             rng: Rng::new(seed),
@@ -80,7 +82,9 @@ impl Session {
             self.s.apply_inplace(drawn);
             return Ok(());
         }
+        let before = self.s;
         self.s.apply_inplace(self.s.legal_actions()[0]);
+        self.opp.observe(&before, &self.s, player);
         Ok(())
     }
 
@@ -106,7 +110,9 @@ impl Session {
         let next = std::iter::once(self.s)
             .chain(fronted)
             .find_map(|w| w.legal_actions().into_iter().find(|a| obs_key(a) == key).map(|a| w.apply(a)));
-        self.s = next.ok_or_else(|| format!("observation {} is unreachable from this state", key))?;
+        let next = next.ok_or_else(|| format!("observation {} is unreachable from this state", key))?;
+        self.opp.observe(&self.s, &next, player);
+        self.s = next;
         Ok(())
     }
 
@@ -119,7 +125,7 @@ impl Session {
             return Err("the bot was asked to move out of turn".into());
         }
         let acts = self.s.legal_actions();
-        let (probs, pick) = brain.policy(&self.s, &self.ctx, &acts, &mut self.rng);
+        let (probs, pick) = brain.policy(&self.s, &self.ctx, &self.opp, &acts, &mut self.rng);
         Ok((acts, probs, pick))
     }
 

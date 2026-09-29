@@ -3,7 +3,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::actions::Action;
 use crate::board::NONE;
-use crate::pbs::{deal, obs_key, pack_row, unseen, Ctx, NSLOT, ROW_BYTES};
+use crate::pbs::{obs_key, pack_row, Belief, Ctx, NSLOT, ROW_BYTES};
 use crate::rng::Rng;
 use crate::selfplay::resolve_chance;
 use crate::state::{State, Z_FACEDOWN, Z_HAND, Z_INFLIGHT};
@@ -298,17 +298,14 @@ impl Tree {
         }
     }
 
-    fn simulate(&mut self, oracle: &dyn Oracle, root: &State, ctx: &Ctx, rng: &mut Rng, visits: &[u32]) {
-        let opp = 1 - root.to_act();
-        let mut coins = unseen(root, opp);
+    fn simulate(&mut self, oracle: &dyn Oracle, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng, visits: &[u32]) {
         let (mut path, mut acts, mut legal, mut fresh) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut next = 0;
         while next < visits.len() {
             let mut q = Query::default();
             while next < visits.len() {
                 let (mut w, start) = (*root, path.len());
-                rng.shuffle(&mut coins);
-                deal(&mut w, opp, &coins);
+                opp.deal(&mut w, 1 - root.to_act(), rng);
                 match self.descend(&mut w, ctx, rng, visits[next], &mut path) {
                     Leaf::Ended => {
                         self.backup(&path[start..], crate::score(&w, 0));
@@ -349,7 +346,7 @@ pub enum Search {
     Fast(u32),
 }
 
-pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, rng: &mut Rng) -> (Vec<f32>, usize) {
+pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> (Vec<f32>, usize) {
     let acts = root.legal_actions();
     let mut q = Query::default();
     q.push(root, ctx, &acts);
@@ -369,7 +366,7 @@ pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, rng: 
         alive.sort_by(|&a, &b| s[b as usize].total_cmp(&s[a as usize]));
         alive.truncate(k);
         let visits: Vec<u32> = (0..n as usize).map(|j| alive[j % k]).collect();
-        tree.simulate(oracle, root, ctx, rng, &visits);
+        tree.simulate(oracle, root, ctx, opp, rng, &visits);
     }
     let (s, edges) = (score(&tree), tree.edges(0));
     let most = edges.iter().map(|e| e.n).max().expect("a root has a move");
@@ -454,7 +451,7 @@ mod tests {
                 let me = s.to_act();
                 let wins: Vec<bool> = acts.iter().map(|&a| s.apply(a).winner() == Some(me)).collect();
                 if acts.len() <= 8 && wins.iter().filter(|&&w| w).count() == 1 {
-                    let (target, pick) = think(&Flat, Search::Full(32), &s, &ctx, &mut rng);
+                    let (target, pick) = think(&Flat, Search::Full(32), &s, &ctx, &Belief::new(&s, 1 - me), &mut rng);
                     assert!(wins[pick], "the search missed the win");
                     assert!(target[pick] > 0.9, "the target gives the win only {}", target[pick]);
                     found += 1;
