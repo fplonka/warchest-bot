@@ -1,12 +1,10 @@
 use crate::actions::{Action, N_KINDS};
 use crate::board::{board, NONE, N_HEXES};
-use crate::rng::Rng;
-use crate::search::Query;
 use crate::state::{State, CONT_CAP, PENDING_KINDS, Z_BAG, Z_ELIM, Z_FACEDOWN, Z_FACEUP, Z_HAND, Z_INFLIGHT, Z_SUPPLY};
 use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
 
 pub const NSLOT: usize = 5;
-pub const HAND_CAP: usize = 3;
+const HIDDEN: [usize; 4] = [Z_INFLIGHT, Z_HAND, Z_FACEDOWN, Z_BAG];
 
 #[derive(Clone, Copy, Default)]
 pub struct Ctx {
@@ -41,310 +39,32 @@ impl Ctx {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Debug)]
-pub struct Config {
-    pub hand: [u8; NSLOT],
-    pub fd: [u8; NSLOT],
-    pub inflight: Option<u8>,
+fn reserve(s: &State, p: u8, ctx: &Ctx) -> [u8; NSLOT] {
+    ctx.slots[p as usize].map(|u| HIDDEN.iter().map(|&z| s.zones[p as usize][z][u as usize]).sum())
 }
 
-impl Config {
-    #[inline]
-    pub fn hand_size(&self) -> u8 {
-        self.hand.iter().sum()
-    }
-    #[inline]
-    pub fn fd_size(&self) -> u8 {
-        self.fd.iter().sum()
-    }
-    #[inline]
-    pub fn bag(&self, reserve: &[u8; NSLOT]) -> [u8; NSLOT] {
-        let mut b = [0u8; NSLOT];
-        for k in 0..NSLOT {
-            b[k] = reserve[k].saturating_sub(self.hand[k] + self.fd[k] + u8::from(self.inflight == Some(k as u8)));
-        }
-        b
-    }
-    #[inline]
-    pub fn key(&self) -> u64 {
-        let mut k = 0u64;
-        for i in 0..NSLOT {
-            k = (k << 2) | self.hand[i] as u64;
-        }
-        for i in 0..NSLOT {
-            k = (k << 5) | self.fd[i] as u64;
-        }
-        (k << 3) | self.inflight.map_or(0, |p| p as u64 + 1)
-    }
+pub fn unseen(s: &State, p: u8) -> Vec<u8> {
+    let z = &s.zones[p as usize];
+    (0..N_UNITS as u8)
+        .flat_map(|u| {
+            let n = HIDDEN.iter().map(|&zone| z[zone][u as usize]).sum::<u8>();
+            std::iter::repeat_n(u, n as usize)
+        })
+        .collect()
 }
 
-pub fn reserve(s: &State, p: u8, ctx: &Ctx) -> [u8; NSLOT] {
-    let mut out = [0u8; NSLOT];
-    for k in 0..NSLOT {
-        let u = ctx.slots[p as usize][k] as usize;
-        out[k] = s.zones[p as usize][Z_BAG][u]
-            + s.zones[p as usize][Z_HAND][u]
-            + s.zones[p as usize][Z_FACEDOWN][u]
-            + s.zones[p as usize][Z_INFLIGHT][u];
-    }
-    out
-}
-
-pub fn true_config(s: &State, p: u8, ctx: &Ctx) -> Config {
-    let mut c = Config::default();
-    for k in 0..NSLOT {
-        let u = ctx.slots[p as usize][k] as usize;
-        c.hand[k] = s.zones[p as usize][Z_HAND][u];
-        c.fd[k] = s.zones[p as usize][Z_FACEDOWN][u];
-        if s.zones[p as usize][Z_INFLIGHT][u] > 0 {
-            c.inflight = Some(k as u8);
+pub fn deal(s: &mut State, p: u8, coins: &[u8]) {
+    let z = &mut s.zones[p as usize];
+    let mut rest = coins;
+    for zone in HIDDEN {
+        let (dealt, left) = rest.split_at(z[zone].iter().sum::<u8>() as usize);
+        z[zone] = [0; N_UNITS];
+        for &u in dealt {
+            z[zone][u as usize] += 1;
         }
+        rest = left;
     }
-    c
-}
-
-pub fn set_config(s: &mut State, p: u8, ctx: &Ctx, c: &Config) {
-    debug_assert_eq!(
-        u8::from(c.inflight.is_some()),
-        s.zones[p as usize][Z_INFLIGHT].iter().copied().sum::<u8>(),
-        "in-flight size is public"
-    );
-    for k in 0..NSLOT {
-        let u = ctx.slots[p as usize][k] as usize;
-        let inflight = u8::from(c.inflight == Some(k as u8));
-        let res = s.zones[p as usize][Z_BAG][u]
-            + s.zones[p as usize][Z_HAND][u]
-            + s.zones[p as usize][Z_FACEDOWN][u]
-            + s.zones[p as usize][Z_INFLIGHT][u];
-        debug_assert!(c.hand[k] + c.fd[k] + inflight <= res, "config must fit in the reserve");
-        s.zones[p as usize][Z_HAND][u] = c.hand[k];
-        s.zones[p as usize][Z_FACEDOWN][u] = c.fd[k];
-        s.zones[p as usize][Z_INFLIGHT][u] = inflight;
-        s.zones[p as usize][Z_BAG][u] = res - c.hand[k] - c.fd[k] - inflight;
-    }
-}
-
-pub fn uniform_belief(s: &State, ctx: &Ctx, p: u8) -> Belief {
-    let truth = true_config(s, p, ctx);
-    let cfg = enumerate_configs(
-        &reserve(s, p, ctx),
-        truth.hand_size(),
-        truth.fd_size(),
-        truth.inflight.is_some(),
-    );
-    let w = 1.0 / cfg.len().max(1) as f32;
-    Belief {
-        p: vec![w; cfg.len()],
-        cfg,
-    }
-}
-
-fn spread(room: &[u8; NSLOT], left: u8, out: &mut impl FnMut(&[u8; NSLOT])) {
-    fn rec(room: &[u8; NSLOT], bin: &mut [u8; NSLOT], k: usize, left: u8, out: &mut impl FnMut(&[u8; NSLOT])) {
-        if k == NSLOT - 1 {
-            if left <= room[k] {
-                bin[k] = left;
-                out(bin);
-                bin[k] = 0;
-            }
-            return;
-        }
-        for t in 0..=left.min(room[k]) {
-            bin[k] = t;
-            rec(room, bin, k + 1, left - t, out);
-        }
-        bin[k] = 0;
-    }
-    rec(room, &mut [0u8; NSLOT], 0, left, out);
-}
-
-pub fn enumerate_configs(reserve: &[u8; NSLOT], hand_size: u8, fd_size: u8, inflight: bool) -> Vec<Config> {
-    let mut out = Vec::new();
-    spread(reserve, hand_size, &mut |hand| {
-        let free = std::array::from_fn(|k| reserve[k] - hand[k]);
-        spread(&free, fd_size, &mut |fd| {
-            let (hand, fd) = (*hand, *fd);
-            if !inflight {
-                out.push(Config { hand, fd, inflight: None });
-                return;
-            }
-            for s in 0..NSLOT {
-                if hand[s] + fd[s] < reserve[s] {
-                    out.push(Config { hand, fd, inflight: Some(s as u8) });
-                }
-            }
-        });
-    });
-    out
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Belief {
-    pub cfg: Vec<Config>,
-    pub p: Vec<f32>,
-}
-
-impl Belief {
-    pub fn point(c: Config) -> Belief {
-        Belief {
-            cfg: vec![c],
-            p: vec![1.0],
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.cfg.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.cfg.is_empty()
-    }
-
-    pub fn from_pairs(mut pairs: Vec<(Config, f32)>) -> Belief {
-        pairs.sort_unstable_by_key(|a| a.0);
-        let mut b = Belief::default();
-        for (c, w) in pairs {
-            if w <= 0.0 {
-                continue;
-            }
-            if b.cfg.last() == Some(&c) {
-                *b.p.last_mut().unwrap() += w;
-            } else {
-                b.cfg.push(c);
-                b.p.push(w);
-            }
-        }
-        b.normalize();
-        b
-    }
-
-    fn normalize(&mut self) {
-        let s: f32 = self.p.iter().sum();
-        for v in self.p.iter_mut() {
-            *v /= s;
-        }
-    }
-
-    pub fn prune(&mut self, keep: usize, floor: f32) {
-        let mut order: Vec<usize> = (0..self.len()).collect();
-        order.sort_unstable_by(|&a, &b| self.p[b].total_cmp(&self.p[a]));
-        let top = self.p[order[0]];
-        order.truncate(keep);
-        order.retain(|&i| self.p[i] >= floor * top);
-        order.sort_unstable();
-        *self = Belief {
-            cfg: order.iter().map(|&i| self.cfg[i]).collect(),
-            p: order.iter().map(|&i| self.p[i]).collect(),
-        };
-        self.normalize();
-    }
-
-    pub fn sample(&self, rng: &mut Rng) -> Config {
-        let mut u = rng.unit_f64() as f32;
-        for (c, &w) in self.cfg.iter().zip(&self.p) {
-            if u < w {
-                return *c;
-            }
-            u -= w;
-        }
-        *self.cfg.last().expect("a belief has support")
-    }
-}
-
-fn draw_children(
-    c: &Config,
-    reserve: &[u8; NSLOT],
-    faceup: &[u8; NSLOT],
-    set_pending: bool,
-    mut emit: impl FnMut(Config, f32),
-) {
-    let (src, base) = draw_source(c, reserve, faceup);
-    let total: u32 = src.iter().map(|&x| x as u32).sum();
-    if total == 0 {
-        emit(*c, 1.0);
-        return;
-    }
-    let inv = 1.0 / total as f32;
-    for k in 0..NSLOT {
-        if src[k] == 0 {
-            continue;
-        }
-        let mut n = base;
-        if set_pending {
-            debug_assert!(n.inflight.is_none(), "a coin is already in flight");
-            n.inflight = Some(k as u8);
-            emit(n, src[k] as f32 * inv);
-        } else {
-            n.hand[k] += 1;
-            if n.hand_size() as usize <= HAND_CAP {
-                emit(n, src[k] as f32 * inv);
-            }
-        }
-    }
-}
-
-pub fn belief_after_draw(b: &Belief, reserve: &[u8; NSLOT], faceup: &[u8; NSLOT], set_pending: bool) -> Belief {
-    let mut pairs: Vec<(Config, f32)> = Vec::with_capacity(b.len() * NSLOT);
-    for (c, w) in b.cfg.iter().zip(b.p.iter()) {
-        draw_children(c, reserve, faceup, set_pending, |n, p| pairs.push((n, *w * p)));
-    }
-    Belief::from_pairs(pairs)
-}
-
-pub fn posterior(
-    s: &State,
-    ctx: &Ctx,
-    player: u8,
-    prior: &Belief,
-    key: u32,
-    likelihood: impl FnOnce(Query) -> Vec<f32>,
-) -> (Belief, State) {
-    let mut q = Query::default();
-    let mut worlds = Vec::new();
-    for (c, &w) in prior.cfg.iter().zip(&prior.p) {
-        let mut world = *s;
-        set_config(&mut world, player, ctx, c);
-        let acts = world.legal_actions();
-        if acts.iter().any(|a| obs_key(a) == key) {
-            q.push(&world, ctx, &acts);
-            worlds.push((world, acts, w));
-        }
-    }
-    let lik = likelihood(q);
-    let (mut pairs, mut next, mut at) = (Vec::new(), *s, 0);
-    for (world, acts, w) in &worlds {
-        let seen = &lik[at..at + acts.len()];
-        at += acts.len();
-        for (a, &l) in acts.iter().zip(seen) {
-            if obs_key(a) == key {
-                next = world.apply(*a);
-                pairs.push((true_config(&next, player, ctx), w * l));
-            }
-        }
-    }
-    (Belief::from_pairs(pairs), next)
-}
-
-fn draw_source(c: &Config, reserve: &[u8; NSLOT], faceup: &[u8; NSLOT]) -> ([u8; NSLOT], Config) {
-    let bag = c.bag(reserve);
-    if bag.iter().any(|&x| x > 0) {
-        return (bag, *c);
-    }
-    let mut refill = [0u8; NSLOT];
-    for k in 0..NSLOT {
-        refill[k] = faceup[k] + c.fd[k];
-    }
-    let mut base = *c;
-    base.fd = [0; NSLOT];
-    (refill, base)
-}
-
-pub fn faceup_counts(s: &State, p: u8, ctx: &Ctx) -> [u8; NSLOT] {
-    let mut out = [0u8; NSLOT];
-    for k in 0..NSLOT {
-        out[k] = s.zones[p as usize][Z_FACEUP][ctx.slots[p as usize][k] as usize];
-    }
-    out
+    debug_assert!(rest.is_empty(), "every unseen coin lands in a hidden zone");
 }
 
 pub fn obs_key(a: &Action) -> u32 {
@@ -600,30 +320,33 @@ pub fn expand_row(row: &[u8], out: &mut [f32]) {
 }
 
 #[cfg(test)]
-mod enumerate_tests {
+mod tests {
     use super::*;
-    use crate::state::{Cont, State, BLACK, WHITE, Z_BAG, Z_INFLIGHT};
-    use crate::units::{CROSSBOWMAN, PIKEMAN, ROYAL_COIN, SWORDSMAN, WARRIOR_PRIEST};
+    use crate::rng::Rng;
+    use crate::state::{N_ZONES, WHITE};
+    use crate::units::{PIKEMAN, SWORDSMAN};
 
     #[test]
-    fn set_config_accepts_enumerated_inflight_configs() {
+    fn a_dealt_world_places_each_unseen_coin_by_zone_size() {
         let mut s = State::blank(WHITE);
-        for u in [WARRIOR_PRIEST, SWORDSMAN, PIKEMAN, CROSSBOWMAN, ROYAL_COIN] {
-            s.add_zone(WHITE, Z_BAG, u, 2);
-            s.add_zone(BLACK, Z_BAG, u, 2);
-        }
-        s.add_zone(WHITE, Z_INFLIGHT, WARRIOR_PRIEST, 1);
-        s.pending = Cont::WarriorPriestPlay { player: WHITE };
-        let ctx = Ctx::new(&s);
-        let res = reserve(&s, WHITE, &ctx);
-        let truth = true_config(&s, WHITE, &ctx);
-        assert!(truth.inflight.is_some());
-        let all = enumerate_configs(&res, truth.hand_size(), truth.fd_size(), true);
-        assert!(!all.is_empty());
-        assert!(all.iter().all(|c| c.inflight.is_some()));
-        for c in &all {
+        s.add_zone(WHITE, Z_BAG, SWORDSMAN, 3);
+        s.add_zone(WHITE, Z_FACEDOWN, SWORDSMAN, 2);
+        s.add_zone(WHITE, Z_HAND, PIKEMAN, 1);
+        let (mut rng, mut coins, n) = (Rng::new(5), unseen(&s, WHITE), 60_000);
+        let mut seen = [0usize; N_ZONES];
+        for _ in 0..n {
+            rng.shuffle(&mut coins);
             let mut w = s;
-            set_config(&mut w, WHITE, &ctx, c);
+            deal(&mut w, WHITE, &coins);
+            assert_eq!(unseen(&w, WHITE), unseen(&s, WHITE));
+            for z in HIDDEN {
+                assert_eq!(w.zones[0][z].iter().sum::<u8>(), s.zones[0][z].iter().sum::<u8>());
+                seen[z] += w.zones[0][z][PIKEMAN as usize] as usize;
+            }
+        }
+        for (z, want) in [(Z_HAND, 1.0 / 6.0), (Z_FACEDOWN, 2.0 / 6.0), (Z_BAG, 3.0 / 6.0)] {
+            let got = seen[z] as f64 / n as f64;
+            assert!((got - want).abs() < 0.01, "zone {z}: {got} is not {want}");
         }
     }
 }

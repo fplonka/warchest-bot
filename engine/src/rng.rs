@@ -34,6 +34,12 @@ impl Rng {
         -(-self.unit_f64().ln()).ln() as f32
     }
 
+    pub fn shuffle<T>(&mut self, v: &mut [T]) {
+        for i in (1..v.len()).rev() {
+            v.swap(i, self.below(i + 1));
+        }
+    }
+
     pub fn weighted_index(&mut self, weights: &[f64]) -> usize {
         let total: f64 = weights.iter().copied().sum();
         assert!(total > 0.0 && total.is_finite());

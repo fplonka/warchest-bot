@@ -20,9 +20,7 @@ pub const DRAFT_POOL: [[u16; 2]; 16] = [
 
 pub fn deal(rng: &mut Rng) -> [u16; 16] {
     let mut pool = DRAFT_POOL.map(|slot| slot[(rng.next_u64() & 1) as usize]);
-    for i in (1..pool.len()).rev() {
-        pool.swap(i, rng.below(i + 1));
-    }
+    rng.shuffle(&mut pool);
     pool
 }
 
@@ -91,7 +89,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
             let code = resolve_chance(&mut s, p, rng).encode();
             for (seat, sess) in seats.iter_mut().enumerate() {
                 let obs = Obs::Draw { player: p, code: (seat == p as usize).then_some(code) };
-                sess.observe(&obs, &playout.full).expect("a seat follows every draw");
+                sess.observe(&obs).expect("a seat follows every draw");
             }
         }
         if crate::finished(&s) {
@@ -115,7 +113,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
         d.count(a);
         s.apply_inplace(a);
         let obs = Obs::Act { player: p as u8, key: obs_key(&a) };
-        seats[1 - p].observe(&obs, &playout.full).expect("a seat follows every move");
+        seats[1 - p].observe(&obs).expect("a seat follows every move");
     }
     d.z = actors.iter().map(|&p| crate::score(&s, p)).collect();
     d.games = 1;

@@ -2,17 +2,11 @@ use std::sync::Arc;
 
 use crate::actions::Action;
 use crate::arena::{Draft, Obs};
-use crate::pbs::{
-    belief_after_draw, faceup_counts, posterior, reserve, set_config, uniform_belief, Belief, Config, Ctx,
-};
+use crate::pbs::{deal, obs_key, unseen, Ctx};
 use crate::policy;
 use crate::rng::Rng;
-use crate::search::{think, uniform, Oracle, Query, Search};
-use crate::state::{Cont, State};
-
-const SUPPORT: usize = 128;
-const FLOOR: f32 = 1e-3;
-const EPS: f32 = 0.05;
+use crate::search::{think, Oracle, Query, Search};
+use crate::state::State;
 
 pub enum Brain {
     Random,
@@ -37,25 +31,16 @@ impl Brain {
         }
     }
 
-    fn policy(&self, s: &State, ctx: &Ctx, opp: &Belief, acts: &[Action], rng: &mut Rng) -> (Vec<f32>, usize) {
+    fn policy(&self, s: &State, ctx: &Ctx, acts: &[Action], rng: &mut Rng) -> (Vec<f32>, usize) {
         let probs = match self {
             _ if acts.len() == 1 => return (vec![1.0], 0),
             Brain::Random => vec![1.0 / acts.len() as f32; acts.len()],
             Brain::Greedy => policy::greedy(s, acts),
-            Brain::Search { search, oracle } => return think(oracle.as_ref(), *search, s, ctx, opp, rng),
+            Brain::Search { search, oracle } => return think(oracle.as_ref(), *search, s, ctx, rng),
         };
         let weights: Vec<f64> = probs.iter().map(|&p| p as f64).collect();
         let pick = rng.weighted_index(&weights);
         (probs, pick)
-    }
-
-    fn likelihood(&self, q: Query) -> Vec<f32> {
-        let flat = uniform(&q);
-        let prior = match self {
-            Brain::Search { oracle, .. } if !q.is_empty() => oracle.eval(q).prior,
-            _ => return flat,
-        };
-        flat.iter().zip(prior).map(|(u, p)| EPS * u + (1.0 - EPS) * p).collect()
     }
 }
 
@@ -63,7 +48,6 @@ pub struct Session {
     s: State,
     ctx: Ctx,
     seat: u8,
-    opp: Belief,
     rng: Rng,
 }
 
@@ -74,16 +58,15 @@ impl Session {
             ctx: Ctx::new(&s),
             s,
             seat,
-            opp: Belief::point(Config::default()),
             rng: Rng::new(seed),
         })
     }
 
-    pub fn observe(&mut self, obs: &Obs, brain: &Brain) -> Result<(), String> {
+    pub fn observe(&mut self, obs: &Obs) -> Result<(), String> {
         match *obs {
             Obs::Draw { player, code } => self.drew(player, code),
             Obs::Act { player, key } if player == self.seat => self.acted(key),
-            Obs::Act { player, key } => self.watched(player, key, brain),
+            Obs::Act { player, key } => self.watched(player, key),
         }
     }
 
@@ -97,13 +80,7 @@ impl Session {
             self.s.apply_inplace(drawn);
             return Ok(());
         }
-        let wp = matches!(self.s.pending(), Cont::WarriorPriestDraw { .. });
-        let res = reserve(&self.s, player, &self.ctx);
-        let faceup = faceup_counts(&self.s, player, &self.ctx);
-        self.opp = belief_after_draw(&self.opp, &res, &faceup, wp);
-        self.opp.prune(SUPPORT, FLOOR);
         self.s.apply_inplace(self.s.legal_actions()[0]);
-        set_config(&mut self.s, player, &self.ctx, &self.opp.cfg[0]);
         Ok(())
     }
 
@@ -115,23 +92,21 @@ impl Session {
         Ok(())
     }
 
-    fn watched(&mut self, player: u8, key: u32, brain: &Brain) -> Result<(), String> {
+    fn watched(&mut self, player: u8, key: u32) -> Result<(), String> {
         if !self.to_move(player) {
             return Err(format!("player {} is not to act", player));
         }
-        let likelihood = |q: Query| brain.likelihood(q);
-        let (mut opp, mut next) = posterior(&self.s, &self.ctx, player, &self.opp, key, likelihood);
-        if opp.is_empty() {
-            let restart = uniform_belief(&self.s, &self.ctx, player);
-            (opp, next) = posterior(&self.s, &self.ctx, player, &restart, key, likelihood);
-        }
-        if opp.is_empty() {
-            return Err(format!("observation {} is unreachable from this state", key));
-        }
-        opp.prune(SUPPORT, FLOOR);
-        self.opp = opp;
-        self.s = next;
-        set_config(&mut self.s, player, &self.ctx, &self.opp.cfg[0]);
+        let coins = unseen(&self.s, player);
+        let fronted = (0..coins.len()).map(|i| {
+            let (mut c, mut w) = (coins.clone(), self.s);
+            c.swap(0, i);
+            deal(&mut w, player, &c);
+            w
+        });
+        let next = std::iter::once(self.s)
+            .chain(fronted)
+            .find_map(|w| w.legal_actions().into_iter().find(|a| obs_key(a) == key).map(|a| w.apply(a)));
+        self.s = next.ok_or_else(|| format!("observation {} is unreachable from this state", key))?;
         Ok(())
     }
 
@@ -144,7 +119,7 @@ impl Session {
             return Err("the bot was asked to move out of turn".into());
         }
         let acts = self.s.legal_actions();
-        let (probs, pick) = brain.policy(&self.s, &self.ctx, &self.opp, &acts, &mut self.rng);
+        let (probs, pick) = brain.policy(&self.s, &self.ctx, &acts, &mut self.rng);
         Ok((acts, probs, pick))
     }
 
@@ -167,7 +142,6 @@ impl Session {
 mod tests {
     use super::*;
     use crate::arena::{Done, Table};
-    use crate::pbs::{obs_key, true_config};
 
     fn draft() -> Draft {
         Draft {
@@ -206,10 +180,8 @@ mod tests {
                             }
                         }
                         checked += 1;
-                        seats[bot].observe(obs, &brain).unwrap();
+                        seats[bot].observe(obs).unwrap();
                     }
-                    let other = 1 - seats[bot].seat;
-                    assert!(seats[bot].opp.cfg.contains(&true_config(&seats[bot].s, other, &seats[bot].ctx)));
                     done.push(Done { id: ask.id, action: seats[bot].decide(&brain).unwrap() });
                 }
                 table.accept(bot, done).unwrap();
