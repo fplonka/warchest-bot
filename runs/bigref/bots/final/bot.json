@@ -1,0 +1,14 @@
+{
+ "format": 1,
+ "name": "bigref.final",
+ "sha": "f7fa945",
+ "binary": "8c42a92c7165c08e30cae1be8fb0a7a1d39706d0cc05ecd996322e40d9a8e6fc",
+ "weights": "weights.bin",
+ "weights_sha": "7ebdf47c8f55164d741580fbcd713cef8563a9a8ffe8e1d03f06c72d782d442f",
+ "search": {
+  "mind": "search",
+  "sims": 32
+ },
+ "minutes": 10.432,
+ "note": "bigref final, 10 min"
+}
