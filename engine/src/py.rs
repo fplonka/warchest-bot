@@ -7,7 +7,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::board::board;
-use crate::bot::Brain;
 use crate::net::Net;
 use crate::online::{Game, Site};
 use crate::pbs::{expand_row, mirror_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
@@ -54,7 +53,7 @@ fn data_to_dict(py: Python<'_>, d: Data) -> PyResult<PyObject> {
 
 #[pyfunction]
 fn warm(py: Python<'_>, games: usize, seed: u64) -> PyResult<PyObject> {
-    let d = py.allow_threads(|| crate::selfplay::warm(&Brain::Greedy, games, seed));
+    let d = py.allow_threads(|| crate::selfplay::warm(games, seed));
     data_to_dict(py, d)
 }
 
@@ -70,11 +69,13 @@ struct Farm {
 #[pymethods]
 impl Farm {
     #[new]
-    fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32, chunk: usize) -> PyResult<Farm> {
+    fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32, fast_sims: u32, p_full: f64, chunk: usize) -> PyResult<Farm> {
+        use crate::{bot::Brain, search::Search, selfplay::Playout};
         let net = net()?;
         let gpu = Arc::new(crate::cuda::Gpu::new(&devices, &net).map_err(PyRuntimeError::new_err)?);
-        let brain = Brain::Search { sims, oracle: gpu.clone() };
-        let farm = crate::selfplay::Farm::new(seed, games, Arc::new(brain), chunk);
+        let search = |search| Brain::Search { search, oracle: gpu.clone() };
+        let playout = Playout { full: search(Search::Full(sims)), fast: search(Search::Fast(fast_sims)), p_full };
+        let farm = crate::selfplay::Farm::new(seed, games, Arc::new(playout), chunk);
         Ok(Farm { gpu, farm, net })
     }
 

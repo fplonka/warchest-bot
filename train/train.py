@@ -125,8 +125,9 @@ def losses(net, x, desc, parow, target, z, wp):
     shifted = logit - top[parow]
     total = torch.zeros(n, device=x.device).index_add_(0, parow, shifted.exp())
     logp = shifted - total[parow].log()
-    policy_loss = -(target * logp).sum() / n
-    entropy = -(target * target.clamp(min=1e-30).log()).sum() / n
+    taught = target.sum()
+    policy_loss = -(target * logp).sum() / taught
+    entropy = -(target * target.clamp(min=1e-30).log()).sum() / taught
     stats = {"value_loss": value_loss.detach(),
              "policy_loss": policy_loss.detach(),
              "policy_target_entropy": entropy,
@@ -246,6 +247,7 @@ def main():
             (args.lr_final <= 0.0 or args.lr_final > args.lr, "lr_final must be in (0, lr]"),
             (args.lr_warmup <= 0.0, "lr_warmup must be positive minutes"),
             (not 0.0 <= args.lr_stable_frac < 1.0, "lr_stable_frac must be in [0, 1)"),
+            (not 0.0 < args.pcr_full <= 1.0, "pcr_full must be in (0, 1]"),
             (args.batch % args.micro != 0, "micro must divide batch"),
             (not torch.cuda.is_available(), "training requires a working GPU")):
         if bad:
@@ -339,7 +341,7 @@ def main():
     def report(phase, window, stats, extra):
         games = max(window["games"], 1)
         rec = {"phase": phase, **{k: int(window[k]) for k in GAME_KEYS},
-               "rows": int(window["rows"]), "steps": int(window["steps"]),
+               "rows": int(window["rows"]), "policy_rows": int(window["policy_rows"]), "steps": int(window["steps"]),
                "optimizer_rows": progress["optimizer_rows"], "replay_rows": progress["generated_rows"],
                "timeout_frac": round(window["timeouts"] / games, 3), "buf_s": round(buf.span_seconds(), 1),
                "tgt_mean": round(window["z_sum"] / max(window["rows"], 1), 4),
@@ -355,6 +357,7 @@ def main():
         n = ingest(buf, data)
         progress["generated_rows"] += n
         window["rows"] += n
+        window["policy_rows"] += int(np.count_nonzero(np.diff(data["off"])))
         window["z_sum"] += float(np.asarray(data["z"], np.float64).sum())
         for k in GAME_KEYS:
             window[k] += int(data[k])
@@ -369,17 +372,19 @@ def main():
         window["steps"] += done
         report("warm", window, stats, {})
         window.clear()
-    if time.time() - t0 < total:
+    while time.time() - t0 < total:
         acting.push()
         target_state = cpu_state(acting)
+        playout = args.playout_at(time.time() - t0)
         farm = warchest.Farm(args.seed + 1_000_003 * progress["farm_runs"], args.games,
-                             list(range(torch.cuda.device_count())), sims=args.sims, chunk=args.collect_rows)
+                             list(range(torch.cuda.device_count())), *playout, chunk=args.collect_rows)
         progress["farm_runs"] += 1
+        print(f"[t={time.time() - t0:6.1f}s] --- self-play: sims, fast_sims, p_full = {playout} ---", flush=True)
         next_target = time.time() + args.target_every * 60.0
         next_report = time.time() + 10.0
         at, seen = time.time(), (0, 0)
         stats = {}
-        while time.time() - t0 < total:
+        while time.time() - t0 < total and args.playout_at(time.time() - t0) == playout:
             absorb(window, farm.collect())
             done, fitted = fit()
             window["steps"] += done

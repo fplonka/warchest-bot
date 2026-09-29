@@ -7,7 +7,7 @@ use crate::pbs::{
 };
 use crate::policy;
 use crate::rng::Rng;
-use crate::search::{think, uniform, Oracle, Query};
+use crate::search::{think, uniform, Oracle, Query, Search};
 use crate::state::{Cont, State};
 
 const SUPPORT: usize = 128;
@@ -17,7 +17,7 @@ const EPS: f32 = 0.05;
 pub enum Brain {
     Random,
     Greedy,
-    Search { sims: u32, oracle: Arc<dyn Oracle> },
+    Search { search: Search, oracle: Arc<dyn Oracle> },
 }
 
 impl Brain {
@@ -31,7 +31,7 @@ impl Brain {
                 let net = crate::net::Net::load_bin(weights.to_str().ok_or("invalid weights path")?)
                     .map_err(|e| format!("{}: {e}", weights.display()))?;
                 let oracle = crate::cuda::Gpu::new(devices, &net)?;
-                Ok(Brain::Search { sims: m.sims, oracle: Arc::new(oracle) })
+                Ok(Brain::Search { search: Search::Full(m.sims), oracle: Arc::new(oracle) })
             }
             other => Err(format!("unknown mind {other}")),
         }
@@ -42,7 +42,7 @@ impl Brain {
             _ if acts.len() == 1 => return (vec![1.0], 0),
             Brain::Random => vec![1.0 / acts.len() as f32; acts.len()],
             Brain::Greedy => policy::greedy(s, acts),
-            Brain::Search { sims, oracle } => return think(oracle.as_ref(), *sims, s, ctx, opp, rng),
+            Brain::Search { search, oracle } => return think(oracle.as_ref(), *search, s, ctx, opp, rng),
         };
         let weights: Vec<f64> = probs.iter().map(|&p| p as f64).collect();
         let pick = rng.weighted_index(&weights);

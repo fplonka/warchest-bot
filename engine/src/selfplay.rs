@@ -74,7 +74,13 @@ impl Data {
     }
 }
 
-pub fn play(brain: &Brain, rng: &mut Rng, open: impl Fn() -> bool) -> Option<Data> {
+pub struct Playout {
+    pub full: Brain,
+    pub fast: Brain,
+    pub p_full: f64,
+}
+
+pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option<Data> {
     let draft = dealt(rng);
     let mut s = draft.state().expect("a dealt draft is legal");
     let mut seats = [WHITE, BLACK].map(|p| Session::new(&draft, p, rng.next_u64()).expect("a dealt draft is legal"));
@@ -85,7 +91,7 @@ pub fn play(brain: &Brain, rng: &mut Rng, open: impl Fn() -> bool) -> Option<Dat
             let code = resolve_chance(&mut s, p, rng).encode();
             for (seat, sess) in seats.iter_mut().enumerate() {
                 let obs = Obs::Draw { player: p, code: (seat == p as usize).then_some(code) };
-                sess.observe(&obs, brain).expect("a seat follows every draw");
+                sess.observe(&obs, &playout.full).expect("a seat follows every draw");
             }
         }
         if crate::finished(&s) {
@@ -95,10 +101,13 @@ pub fn play(brain: &Brain, rng: &mut Rng, open: impl Fn() -> bool) -> Option<Dat
             return None;
         }
         let p = s.to_act() as usize;
+        let full = rng.unit_f64() < playout.p_full;
+        let brain = if full { &playout.full } else { &playout.fast };
         let (acts, probs, pick) = seats[p].think(brain).expect("the seat to act can think");
         if acts.len() > 1 {
-            seats[p].query(&acts, &mut d.q);
-            d.target.extend_from_slice(&probs);
+            let taught = if full { &acts[..] } else { &[] };
+            seats[p].query(taught, &mut d.q);
+            d.target.extend_from_slice(&probs[..taught.len()]);
             actors.push(p);
         }
         let a = acts[pick];
@@ -106,7 +115,7 @@ pub fn play(brain: &Brain, rng: &mut Rng, open: impl Fn() -> bool) -> Option<Dat
         d.count(a);
         s.apply_inplace(a);
         let obs = Obs::Act { player: p as u8, key: obs_key(&a) };
-        seats[1 - p].observe(&obs, brain).expect("a seat follows every move");
+        seats[1 - p].observe(&obs, &playout.full).expect("a seat follows every move");
     }
     d.z = actors.iter().map(|&p| crate::score(&s, p)).collect();
     d.games = 1;
@@ -118,10 +127,11 @@ pub fn play(brain: &Brain, rng: &mut Rng, open: impl Fn() -> bool) -> Option<Dat
     Some(d)
 }
 
-pub fn warm(brain: &Brain, games: usize, seed: u64) -> Data {
+pub fn warm(games: usize, seed: u64) -> Data {
+    let greedy = Playout { full: Brain::Greedy, fast: Brain::Greedy, p_full: 1.0 };
     (0..games)
         .into_par_iter()
-        .map(|i| play(brain, &mut Rng::new(worker_seed(seed, i)), || true).expect("a warm game runs to its end"))
+        .map(|i| play(&greedy, &mut Rng::new(worker_seed(seed, i)), || true).expect("a warm game runs to its end"))
         .reduce(Data::default, |mut a, b| {
             a.merge(b);
             a
@@ -135,11 +145,11 @@ pub struct Farm {
 }
 
 impl Farm {
-    pub fn new(seed: u64, games: usize, brain: Arc<Brain>, limit: usize) -> Farm {
+    pub fn new(seed: u64, games: usize, playout: Arc<Playout>, limit: usize) -> Farm {
         let pool = Arc::new((Mutex::new((Data::default(), false)), Condvar::new()));
         let threads = (0..games)
             .map(|i| {
-                let (brain, pool) = (Arc::clone(&brain), Arc::clone(&pool));
+                let (playout, pool) = (Arc::clone(&playout), Arc::clone(&pool));
                 std::thread::Builder::new()
                     .name(format!("game-{i}"))
                     .spawn(move || {
@@ -149,7 +159,7 @@ impl Farm {
                             pool.1.wait_while(&mut held, |(d, stop)| d.q.len() >= limit && !*stop);
                             !held.1
                         };
-                        while let Some(d) = play(&brain, &mut rng, open) {
+                        while let Some(d) = play(&playout, &mut rng, open) {
                             pool.0.lock().0.merge(d);
                         }
                     })
@@ -207,41 +217,56 @@ fn worker_seed(seed: u64, i: usize) -> u64 {
 mod tests {
     use super::*;
     use crate::pbs::ROW_BYTES;
-    use crate::search::{Flat, ACT_BYTES};
+    use crate::search::{Flat, Search, ACT_BYTES};
 
-    fn searcher() -> Brain {
-        Brain::Search { sims: 32, oracle: Arc::new(Flat) }
+    fn searcher(p_full: f64) -> Playout {
+        let search = |search| Brain::Search { search, oracle: Arc::new(Flat) };
+        Playout { full: search(Search::Full(32)), fast: search(Search::Fast(16)), p_full }
     }
 
-    fn check(d: &Data) {
+    fn taught(d: &Data) -> usize {
         assert!(d.games > 0 && d.q.len() > 20, "{} rows over {} games", d.q.len(), d.games);
         assert_eq!(d.q.rows.len(), d.q.len() * ROW_BYTES);
         assert_eq!(d.q.desc.len(), d.target.len() * ACT_BYTES);
         assert_eq!(d.z.len(), d.q.len());
+        let mut taught = 0;
         for i in 0..d.q.len() {
             let total: f32 = d.target[d.q.actions(i)].iter().sum();
-            assert!((total - 1.0).abs() < 1e-4, "row {i} target sums to {total}");
+            assert!((total - 1.0).abs() < 1e-4 || d.q.actions(i).is_empty(), "row {i} target sums to {total}");
+            taught += !d.q.actions(i).is_empty() as usize;
         }
+        taught
     }
 
     #[test]
-    fn a_searching_game_yields_one_row_per_real_choice() {
-        let d = play(&searcher(), &mut Rng::new(3), || true).expect("an unstopped game ends");
-        check(&d);
+    fn a_searching_game_yields_one_taught_row_per_real_choice() {
+        let d = play(&searcher(1.0), &mut Rng::new(3), || true).expect("an unstopped game ends");
+        assert_eq!(taught(&d), d.q.len());
         assert_eq!(d.wins[0] + d.wins[1] + d.draws + d.timeouts, 1);
         assert!(d.z.iter().all(|z| z.abs() <= 1.0));
     }
 
     #[test]
-    fn greedy_warm_games_label_every_row() {
-        check(&warm(&Brain::Greedy, 4, 11));
+    fn fast_searches_record_rows_without_a_policy_target() {
+        let mut d = Data::default();
+        for seed in 0..4 {
+            d.merge(play(&searcher(0.5), &mut Rng::new(seed), || true).expect("an unstopped game ends"));
+        }
+        let frac = taught(&d) as f64 / d.q.len() as f64;
+        assert!((0.4..0.6).contains(&frac), "{frac} of rows are taught");
+    }
+
+    #[test]
+    fn greedy_warm_games_teach_every_row() {
+        let d = warm(4, 11);
+        assert_eq!(taught(&d), d.q.len());
     }
 
     #[test]
     fn a_farm_of_searching_games_collects_rows() {
-        let farm = Farm::new(5, 4, Arc::new(searcher()), 200);
+        let farm = Farm::new(5, 4, Arc::new(searcher(0.5)), 200);
         let d = farm.collect().expect("no game thread dies");
         drop(farm);
-        check(&d);
+        taught(&d);
     }
 }

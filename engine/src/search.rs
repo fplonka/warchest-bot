@@ -10,7 +10,6 @@ use crate::state::State;
 use crate::units::{ENSIGN, MARSHAL, ROYAL_COIN};
 
 pub const ACT_BYTES: usize = 6;
-const CONSIDERED: usize = 16;
 const C_VISIT: f32 = 50.0;
 const C_SCALE: f32 = 1.0;
 
@@ -333,7 +332,13 @@ impl Tree {
     }
 }
 
-pub fn think(oracle: &dyn Oracle, sims: u32, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> (Vec<f32>, usize) {
+#[derive(Clone, Copy)]
+pub enum Search {
+    Full(u32),
+    Fast(u32),
+}
+
+pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> (Vec<f32>, usize) {
     let acts = root.legal_actions();
     let mut q = Query::default();
     q.push(root, ctx, &acts);
@@ -341,10 +346,14 @@ pub fn think(oracle: &dyn Oracle, sims: u32, root: &State, ctx: &Ctx, opp: &Beli
     let mut tree = Tree::default();
     let node = tree.node(root.to_act());
     tree.expand(node, &acts, &answer.prior, answer.value[0]);
-    let gumbel: Vec<f32> = acts.iter().map(|_| rng.gumbel()).collect();
+    let (sims, considered, noisy) = match search {
+        Search::Full(sims) => (sims, 8, true),
+        Search::Fast(sims) => (sims, 4, false),
+    };
+    let gumbel: Vec<f32> = acts.iter().map(|_| if noisy { rng.gumbel() } else { 0.0 }).collect();
     let score = |tree: &Tree| -> Vec<f32> { tree.logits(0).zip(&gumbel).map(|(l, g)| g + l).collect() };
     let mut alive: Vec<u32> = (0..acts.len() as u32).collect();
-    for (k, n) in halving(acts.len().min(CONSIDERED), sims) {
+    for (k, n) in halving(acts.len().min(considered), sims) {
         let s = score(&tree);
         alive.sort_by(|&a, &b| s[b as usize].total_cmp(&s[a as usize]));
         alive.truncate(k);
@@ -433,9 +442,9 @@ mod tests {
                 }
                 let me = s.to_act();
                 let wins: Vec<bool> = acts.iter().map(|&a| s.apply(a).winner() == Some(me)).collect();
-                if acts.len() <= CONSIDERED && wins.iter().filter(|&&w| w).count() == 1 {
+                if acts.len() <= 8 && wins.iter().filter(|&&w| w).count() == 1 {
                     let opp = Belief::point(true_config(&s, 1 - me, &ctx));
-                    let (target, pick) = think(&Flat, 32, &s, &ctx, &opp, &mut rng);
+                    let (target, pick) = think(&Flat, Search::Full(32), &s, &ctx, &opp, &mut rng);
                     assert!(wins[pick], "the search missed the win");
                     assert!(target[pick] > 0.9, "the target gives the win only {}", target[pick]);
                     found += 1;

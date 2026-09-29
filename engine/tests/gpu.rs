@@ -7,8 +7,8 @@ use warchest::cuda::Gpu;
 use warchest::net::Net;
 use warchest::pbs::Ctx;
 use warchest::rng::Rng;
-use warchest::search::{Oracle, Query};
-use warchest::selfplay::{game, Farm};
+use warchest::search::{Oracle, Query, Search};
+use warchest::selfplay::{game, Farm, Playout};
 
 fn positions(games: u64) -> Query {
     let mut q = Query::default();
@@ -66,8 +66,9 @@ fn a_position_evaluates_the_same_alone_or_in_a_crowd() {
 #[test]
 fn a_farm_searches_on_the_card() {
     let gpu = Arc::new(Gpu::new(&[0], &Net::random(3)).unwrap());
-    let brain = Brain::Search { sims: 32, oracle: gpu.clone() };
-    let farm = Farm::new(1, 64, Arc::new(brain), 2000);
+    let search = |search| Brain::Search { search, oracle: gpu.clone() };
+    let playout = Playout { full: search(Search::Full(128)), fast: search(Search::Fast(16)), p_full: 0.5 };
+    let farm = Farm::new(1, 64, Arc::new(playout), 2000);
     let t0 = std::time::Instant::now();
     let d = farm.collect().expect("no game thread dies");
     let seconds = t0.elapsed().as_secs_f64();

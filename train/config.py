@@ -8,9 +8,9 @@ from dataclasses import dataclass
 
 @dataclass
 class Cfg:
-    minutes: float = 60.0
+    minutes: float = 20160.0
     warm_minutes: float = 3.0
-    snapshot_every: float = 15.0
+    snapshot_every: float = 240.0
     init_weights: str = ""
     resume: str = ""
 
@@ -28,6 +28,10 @@ class Cfg:
     warm_games: int = 96
 
     sims: int = 32
+    pcr_from: float = 0.5
+    pcr_sims: int = 128
+    fast_sims: int = 16
+    pcr_full: float = 0.5
     games: int = 2048
     collect_rows: int = 65536
 
@@ -45,6 +49,10 @@ class Cfg:
         lr = self.lr_final + (self.lr - self.lr_final) * (1.0 + math.cos(math.pi * cooled)) / 2.0
         return min(1.0, elapsed / (self.lr_warmup * 60.0)) * lr
 
+    def playout_at(self, elapsed):
+        if elapsed < self.pcr_from * self.minutes * 60.0:
+            return self.sims, self.fast_sims, 1.0
+        return self.pcr_sims, self.fast_sims, self.pcr_full
 
 
 BASELINE = Cfg()
