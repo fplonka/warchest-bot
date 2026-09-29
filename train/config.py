@@ -14,9 +14,10 @@ class Cfg:
     resume: str = ""
 
     batch: int = 8192
-    lr: float = 2.8e-3
+    micro: int = 2048
+    lr: float = 1e-3
     wd: float = 0.01
-    lr_final: float = 2.8e-4
+    lr_final: float = 1e-4
     lr_stable_frac: float = 0.75
     replay_ratio: float = 1.0
     target_every: float = 1.0

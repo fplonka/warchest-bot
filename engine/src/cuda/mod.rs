@@ -11,9 +11,9 @@ use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 use half::f16;
 use parking_lot::{Condvar, Mutex};
 
-use crate::board::{board, NONE, N_HEXES};
+use crate::board::{board, N_HEXES};
 use crate::memo::Memo;
-use crate::net::{ln_block, Flat, Net, NetLayout, BINS, BLOCKS, C, D, HIDDEN, LN_ACT, LN_TRUNK};
+use crate::net::{ln_block, Flat, Net, NetLayout, Span, BINS, BLOCKS, C, D, HIDDEN, LN_ACT, LN_TRUNK};
 use crate::pbs::{
     HEX_BLOCK, HEX_CH, HEX_FACTS, LOOSE, MAX_COINS, NSLOT, NTYPE, OFF_CARDS, OFF_LOOSE, OFF_PILES, PILE_COUNTS,
     PLAYER_SCALARS, PUBFEAT, ROW_BAG_SIZE, ROW_BYTES, ROW_FD_SIZE, ROW_HAND_SIZE, ROW_HEX_HEIGHT, ROW_HEX_MARKER,
@@ -36,7 +36,6 @@ const PIPELINE: usize = 5;
 const TILE: usize = 2048;
 const ACT_TILE: usize = 64 * TILE;
 const MERGE: usize = 1024;
-const THREADS: u32 = 256;
 
 macro_rules! kernels {
     ($($name:ident,)*) => {
@@ -56,7 +55,10 @@ macro_rules! kernels {
 
 kernels! {
     expand_rows,
-    trunk,
+    stem,
+    dense,
+    mix,
+    out,
     heads,
 }
 
@@ -70,38 +72,23 @@ impl LaunchUnit for LaunchArgs<'_> {
     }
 }
 
-fn blocks(n: usize) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: (n.max(1) as u32, 1, 1),
-        block_dim: (THREADS, 1, 1),
-        shared_mem_bytes: 0,
-    }
+fn grid(x: usize, y: usize, threads: u32) -> LaunchConfig {
+    LaunchConfig { grid_dim: (x.max(1) as u32, y as u32, 1), block_dim: (threads, 1, 1), shared_mem_bytes: 0 }
 }
 
-fn pack_mma(w: &[f32], base: usize, k: usize, n: usize) -> Vec<u32> {
+fn pack_mma(w: &[f32], k: usize, n: usize, tiles: usize) -> Vec<u32> {
+    let column = |nt: usize, j: usize| {
+        let i = nt % tiles;
+        8 * (nt - i) + 32 * (i / 4) + 8 * (j / 2) + 2 * (i % 4) + j % 2
+    };
     let mut out = Vec::with_capacity(k * n / 2);
     for kt in 0..k / 16 {
         for nt in 0..n / 8 {
             for lane in 0..32 {
                 let (g, t) = (lane / 4, lane % 4);
-                let at = |i: usize| f16::from_f32(w[base + (16 * kt + i) * n + 8 * nt + g]).to_bits();
+                let at = |i: usize| f16::from_f32(w[(16 * kt + i) * n + column(nt, g)]).to_bits();
                 let pair = |i: usize| at(i) as u32 | ((at(i + 1) as u32) << 16);
                 out.extend([pair(2 * t), pair(2 * t + 8)]);
-            }
-        }
-    }
-    out
-}
-
-fn pack_mma_a(w: &[f32], base: usize, k: usize, m: usize) -> Vec<u32> {
-    let mut out = Vec::with_capacity(k * m / 2);
-    for mt in 0..m / 16 {
-        for kt in 0..k / 16 {
-            for lane in 0..32 {
-                let (g, t) = (lane / 4, lane % 4);
-                let at = |r: usize, c: usize| f16::from_f32(w[base + (16 * kt + c) * m + 16 * mt + r]).to_bits();
-                let pair = |r: usize, c: usize| at(r, c) as u32 | ((at(r, c + 1) as u32) << 16);
-                out.extend([pair(g, 2 * t), pair(g + 8, 2 * t), pair(g, 2 * t + 8), pair(g + 8, 2 * t + 8)]);
             }
         }
     }
@@ -117,6 +104,8 @@ struct Stem {
     b_hex: u64,
     pos: u64,
     w_glob: u64,
+    gamma: u64,
+    beta: u64,
 }
 
 unsafe impl cudarc::driver::DeviceRepr for Stem {}
@@ -124,10 +113,6 @@ unsafe impl cudarc::driver::DeviceRepr for Stem {}
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Head {
-    w_board: u64,
-    b_board: u64,
-    w_mid: u64,
-    b_hidden: u64,
     w_value: u64,
     b_value: u64,
     kind: u64,
@@ -139,83 +124,49 @@ struct Head {
 
 unsafe impl cudarc::driver::DeviceRepr for Head {}
 
-const HEAD_ROWS: usize = 16;
-const POOLED: usize = 2 * C + LOOSE;
-
+const KC: usize = 32;
 const TRUNK_BOARDS: usize = 3;
-const TRUNK_WARPS: usize = 12;
-const TRUNK_THREADS: u32 = 32 * TRUNK_WARPS as u32;
-const TRUNK_PITCH: usize = N_HEXES.next_multiple_of(16);
-const TRUNK_SHARED: u32 = {
-    let rows = (TRUNK_BOARDS * N_HEXES).next_multiple_of(16);
-    let stem = 2 * (TRUNK_BOARDS * NTYPE * C + 3 * TRUNK_BOARDS * C + TRUNK_BOARDS * LOOSE);
-    let pitched = TRUNK_BOARDS * TRUNK_PITCH * (C + 8);
-    let buf = if pitched > rows * (C + 8) + stem { pitched } else { rows * (C + 8) + stem };
-    (buf * 2 + TRUNK_BOARDS * (2 * C + 8) * 2 + TRUNK_BOARDS * C * 4 + rows * 12) as u32
-};
-const HEX_K: usize = HEX_FACTS.next_multiple_of(16);
-
-fn adjacency() -> Vec<u32> {
-    let rows = (TRUNK_BOARDS * N_HEXES).next_multiple_of(16);
-    let pitched = TRUNK_BOARDS * TRUNK_PITCH;
-    let mut adj = vec![0.0f32; pitched * rows];
-    for b in 0..TRUNK_BOARDS {
-        for (hex, near) in board().neighbors.iter().enumerate() {
-            for &n in near.iter().filter(|&&n| n != NONE) {
-                adj[(b * TRUNK_PITCH + n as usize) * rows + b * N_HEXES + hex] = 1.0;
-            }
-        }
-    }
-    pack_mma_a(&adj, 0, pitched, rows)
-}
+const TRUNK_WARPS: usize = 8;
+const DENSE_ROWS: usize = 32;
+const DENSE_COLS: usize = 128;
+const DENSE_WARPS: usize = 4;
+const HEAD_ROWS: usize = 16;
+const TRUNK_TILES: usize = C / 8 / TRUNK_WARPS;
+const DENSE_TILES: usize = DENSE_COLS / 8 / DENSE_WARPS;
+const POOLED: usize = 2 * C + LOOSE;
+const HK: usize = POOLED.next_multiple_of(KC);
+const BLOCK_PACK: usize = 5 * C * C / 2;
 
 struct Weights {
     w: CudaSlice<f32>,
     b: CudaSlice<f32>,
     ln: CudaSlice<f32>,
     tok: CudaSlice<f32>,
-    trunk_w: CudaSlice<u32>,
-    trunk_g: CudaSlice<u32>,
-    trunk_b: CudaSlice<f32>,
-    trunk_ln: CudaSlice<f32>,
-    trunk_hex: CudaSlice<u32>,
-    head_board: CudaSlice<u32>,
-    head_mid: CudaSlice<u32>,
+    trunk: CudaSlice<u32>,
+    board: CudaSlice<u32>,
+    mid: CudaSlice<u32>,
+    mid_b: CudaSlice<f32>,
 }
 
 impl Weights {
     fn new(stream: &Arc<CudaStream>, l: &NetLayout, net: &Net) -> Res<Weights> {
         let flat: &Flat = net.flat();
-        let (mut tw, mut tg, mut tb, mut tln) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for (i, blk) in l.blocks.iter().enumerate() {
-            let mut mix = vec![0.0f32; C * 2 * C];
-            for k in 0..C {
-                mix[k * 2 * C..k * 2 * C + C].copy_from_slice(&flat.w[blk.mix.w + (C + k) * C..][..C]);
-                mix[k * 2 * C + C..(k + 1) * 2 * C].copy_from_slice(&flat.w[blk.mix.w + k * C..][..C]);
-            }
-            tw.extend(pack_mma(&mix, 0, C, 2 * C));
-            tw.extend(pack_mma(&flat.w, blk.out.w, C, C));
-            tg.extend(pack_mma_a(&flat.w, blk.pool.w, 2 * C, C));
-            tb.extend((0..C).map(|j| flat.b[blk.mix.b + j] + flat.b[blk.pool.b + j]));
-            tb.extend_from_slice(&flat.b[blk.out.b..blk.out.b + C]);
-            for k in 0..2 {
-                let n = l.norms[ln_block(i, k)];
-                tln.extend_from_slice(&flat.ln[n.g..n.g + C]);
-                tln.extend_from_slice(&flat.ln[n.b..n.b + C]);
-            }
+        let mat = |s: Span| &flat.w[s.w..s.w + s.i * s.o];
+        let mut trunk = Vec::with_capacity(BLOCKS * BLOCK_PACK);
+        for blk in &l.blocks {
+            trunk.extend(pack_mma(mat(blk.mix), 2 * C, C, TRUNK_TILES));
+            trunk.extend(pack_mma(mat(blk.pool), 2 * C, C, DENSE_TILES));
+            trunk.extend(pack_mma(mat(blk.out), C, C, TRUNK_TILES));
         }
-        let n = l.norms[LN_TRUNK];
-        tln.extend_from_slice(&flat.ln[n.g..n.g + C]);
-        tln.extend_from_slice(&flat.ln[n.b..n.b + C]);
-        let mut board = vec![0.0f32; POOLED.next_multiple_of(16) * D];
-        board[..POOLED * D].copy_from_slice(&flat.w[l.board_out.w..l.board_out.w + POOLED * D]);
+        let mut board = vec![0.0f32; HK * D];
+        board[..POOLED * D].copy_from_slice(mat(l.board_out));
         let mut mid = vec![0.0f32; D * D];
         for k in 0..D {
             mid[k * D..k * D + HIDDEN].copy_from_slice(&flat.w[l.value_hidden.w + k * HIDDEN..][..HIDDEN]);
             mid[k * D + HIDDEN..(k + 1) * D].copy_from_slice(&flat.w[l.act_board.w + k * C..][..C]);
         }
-        let mut hex = vec![0.0f32; HEX_K * C];
-        hex[..HEX_FACTS * C].copy_from_slice(&flat.w[l.hex_stem.w..l.hex_stem.w + HEX_FACTS * C]);
+        let mut mid_b = vec![0.0f32; D];
+        mid_b[..HIDDEN].copy_from_slice(&flat.b[l.value_hidden.b..l.value_hidden.b + HIDDEN]);
         let up = |x: &[f32]| stream.memcpy_stod(x).map_err(err);
         let upu = |x: &[u32]| stream.memcpy_stod(x).map_err(err);
         Ok(Weights {
@@ -223,13 +174,10 @@ impl Weights {
             b: up(&flat.b)?,
             ln: up(&flat.ln)?,
             tok: up(&net.tokens())?,
-            trunk_w: upu(&tw)?,
-            trunk_g: upu(&tg)?,
-            trunk_b: up(&tb)?,
-            trunk_ln: up(&tln)?,
-            trunk_hex: upu(&pack_mma(&hex, 0, HEX_K, C))?,
-            head_board: upu(&pack_mma(&board, 0, POOLED.next_multiple_of(16), D))?,
-            head_mid: upu(&pack_mma(&mid, 0, D, D))?,
+            trunk: upu(&trunk)?,
+            board: upu(&pack_mma(&board, HK, D, DENSE_TILES))?,
+            mid: upu(&pack_mma(&mid, D, D, DENSE_TILES))?,
+            mid_b: up(&mid_b)?,
         })
     }
 }
@@ -299,8 +247,13 @@ struct Scratch {
     desc: Wire<u8>,
     off: Wire<u32>,
     xpub: CudaSlice<f32>,
-    pooled: CudaSlice<f32>,
-    spatial: CudaSlice<f16>,
+    x: CudaSlice<f16>,
+    a: CudaSlice<f16>,
+    h: CudaSlice<f16>,
+    pooled: CudaSlice<f16>,
+    g: CudaSlice<f16>,
+    board: CudaSlice<f16>,
+    mid: CudaSlice<f16>,
     tokens: CudaSlice<f16>,
     out: CudaSlice<f32>,
     down: Host<f32>,
@@ -308,17 +261,22 @@ struct Scratch {
 
 impl Scratch {
     fn new(s: &Arc<CudaStream>) -> Res<Scratch> {
-        let zeros = |n: usize| s.alloc_zeros::<f32>(n).map_err(err);
         let halves = |n: usize| s.alloc_zeros::<f16>(n).map_err(err);
+        let rows = TILE * N_HEXES;
         Ok(Scratch {
             rows: Wire::new(s, TILE * ROW_BYTES)?,
             desc: Wire::new(s, ACT_TILE * ACT_BYTES)?,
             off: Wire::new(s, TILE + 1)?,
-            xpub: zeros(TILE * PUBFEAT)?,
-            pooled: zeros(TILE * POOLED)?,
-            spatial: halves(TILE * N_HEXES * C)?,
+            xpub: s.alloc_zeros(TILE * PUBFEAT).map_err(err)?,
+            x: halves(rows * C)?,
+            a: halves(rows * C)?,
+            h: halves(rows * C)?,
+            pooled: halves(TILE * HK)?,
+            g: halves(TILE * C)?,
+            board: halves(TILE * D)?,
+            mid: halves(TILE * D)?,
             tokens: halves(TILE * NTYPE * C)?,
-            out: zeros(TILE + ACT_TILE)?,
+            out: s.alloc_zeros(TILE + ACT_TILE).map_err(err)?,
             down: Host::new(s, TILE + ACT_TILE)?,
         })
     }
@@ -329,10 +287,16 @@ struct Card {
     k: Arc<Kernels>,
     layout: NetLayout,
     weights: Weights,
-    adjacency: CudaSlice<u32>,
+    near: CudaSlice<u8>,
     card_facts: CudaSlice<f32>,
     locations: CudaSlice<u8>,
     s: Scratch,
+}
+
+macro_rules! launch {
+    ($stream:expr, $kernel:expr, $cfg:expr, $($arg:expr),* $(,)?) => {
+        unsafe { $stream.launch_builder(&$kernel)$(.arg($arg))*.launch_unit($cfg) }.map_err(err)?
+    };
 }
 
 impl Card {
@@ -343,11 +307,12 @@ impl Card {
             write_card_features(u as u8, &mut facts[u * CARD_FEATS..(u + 1) * CARD_FEATS]);
         }
         let locations: Vec<u8> = board().is_location.iter().map(|&x| x as u8).collect();
+        let near: Vec<u8> = board().neighbors.iter().flatten().copied().collect();
         let layout = NetLayout::new();
         Ok(Card {
             k: Arc::clone(&module.k),
             weights: Weights::new(&stream, &layout, net)?,
-            adjacency: stream.memcpy_stod(&adjacency()).map_err(err)?,
+            near: stream.memcpy_stod(&near).map_err(err)?,
             card_facts: stream.memcpy_stod(&facts).map_err(err)?,
             locations: stream.memcpy_stod(&locations).map_err(err)?,
             s: Scratch::new(&stream)?,
@@ -376,10 +341,9 @@ impl Card {
     }
 
     fn tile(&mut self, q: &Query, r0: usize, r1: usize) -> Res<Vec<f32>> {
-        let Card { stream, k, layout: l, weights: w, adjacency, card_facts, locations, s } = self;
+        let Card { stream, k, layout: l, weights: w, near, card_facts, locations, s } = self;
         let n = r1 - r0;
         let (a0, a1) = (q.off[r0] as usize, q.off[r1] as usize);
-        let na = a1 - a0;
         s.rows.put(stream, copy(&q.rows[r0 * ROW_BYTES..r1 * ROW_BYTES]))?;
         s.desc.put(stream, copy(&q.desc[a0 * ACT_BYTES..a1 * ACT_BYTES]))?;
         s.off.put(stream, |dst| {
@@ -388,81 +352,61 @@ impl Card {
             }
             n + 1
         })?;
-        let n_i = n as i32;
-        unsafe {
-            stream
-                .launch_builder(&k.expand_rows)
-                .arg(&s.rows.dev)
-                .arg(&*card_facts)
-                .arg(&*locations)
-                .arg(&mut s.xpub)
-                .arg(&n_i)
-                .launch_unit(blocks(n))
-        }
-        .map_err(err)?;
-        let ptr = |x: &CudaSlice<f32>, at: usize| x.slice(at..).device_ptr(stream).0;
+        let (n_i, rows) = (n as i32, (n * N_HEXES) as i32);
+        let f32s = |x: &CudaSlice<f32>, at: usize| x.slice(at..).device_ptr(stream).0;
+        let u32s = |at: usize| w.trunk.slice(at..).device_ptr(stream).0;
+        let dense_grid = |cols: usize| grid(n.div_ceil(DENSE_ROWS), cols / DENSE_COLS, 32 * DENSE_WARPS as u32);
+        let trunk_grid = grid(n.div_ceil(TRUNK_BOARDS), 1, 32 * TRUNK_WARPS as u32);
+        let (c, c2, hk, d) = (C as i32, (2 * C) as i32, HK as i32, D as i32);
+        let entry = |i: usize| l.norms[if i < BLOCKS { ln_block(i, 0) } else { LN_TRUNK }];
+        launch!(stream, k.expand_rows, grid(n, 1, 256), &s.rows.dev, &*card_facts, &*locations, &mut s.xpub, &n_i);
         let stem = Stem {
-            tok: ptr(&w.tok, 0),
+            tok: f32s(&w.tok, 0),
             ids: s.rows.dev.device_ptr(stream).0,
-            w_hex: w.trunk_hex.device_ptr(stream).0,
-            b_hex: ptr(&w.b, l.hex_stem.b),
-            pos: ptr(&w.w, l.pos),
-            w_glob: ptr(&w.w, l.glob_stem.w),
+            w_hex: f32s(&w.w, l.hex_stem.w),
+            b_hex: f32s(&w.b, l.hex_stem.b),
+            pos: f32s(&w.w, l.pos),
+            w_glob: f32s(&w.w, l.glob_stem.w),
+            gamma: f32s(&w.ln, entry(0).g),
+            beta: f32s(&w.ln, entry(0).b),
         };
-        unsafe {
-            stream
-                .launch_builder(&k.trunk)
-                .arg(&s.xpub)
-                .arg(&stem)
-                .arg(&w.trunk_w)
-                .arg(&w.trunk_g)
-                .arg(&w.trunk_b)
-                .arg(&w.trunk_ln)
-                .arg(&*adjacency)
-                .arg(&mut s.pooled)
-                .arg(&mut s.spatial)
-                .arg(&mut s.tokens)
-                .arg(&n_i)
-                .launch_unit(LaunchConfig {
-                    grid_dim: (n.div_ceil(TRUNK_BOARDS) as u32, 1, 1),
-                    block_dim: (TRUNK_THREADS, 1, 1),
-                    shared_mem_bytes: TRUNK_SHARED,
-                })
+        launch!(stream, k.stem, grid(n, 1, C as u32), &s.xpub, &stem, &mut s.x, &mut s.a, &mut s.tokens, &mut s.pooled);
+        for (i, blk) in l.blocks.iter().enumerate() {
+            let (ln2, next) = (l.norms[ln_block(i, 1)], entry(i + 1));
+            let (w1, wg, w2) = (u32s(i * BLOCK_PACK), u32s(i * BLOCK_PACK + C * C), u32s(i * BLOCK_PACK + 2 * C * C));
+            let (g2, b2, gn, bn) = (f32s(&w.ln, ln2.g), f32s(&w.ln, ln2.b), f32s(&w.ln, next.g), f32s(&w.ln, next.b));
+            let (bias_mix, bias_pool, bias_out) = (f32s(&w.b, blk.mix.b), f32s(&w.b, blk.pool.b), f32s(&w.b, blk.out.b));
+            launch!(stream, k.dense, dense_grid(C), &s.pooled, &hk, &c2, &wg, &c, &bias_pool, &mut s.g, &n_i);
+            launch!(stream, k.mix, trunk_grid, &s.a, &w1, &*near, &bias_mix, &s.g, &g2, &b2, &mut s.h, &rows);
+            launch!(stream, k.out, trunk_grid, &s.h, &w2, &bias_out, &gn, &bn, &mut s.x, &mut s.a, &mut s.pooled, &rows);
         }
-        .map_err(err)?;
+        let board_b = f32s(&w.b, l.board_out.b);
+        launch!(stream, k.dense, dense_grid(D), &s.pooled, &hk, &hk, &w.board, &d, &board_b, &mut s.board, &n_i);
+        launch!(stream, k.dense, dense_grid(D), &s.board, &d, &d, &w.mid, &d, &w.mid_b, &mut s.mid, &n_i);
         let norm = l.norms[LN_ACT];
         let head = Head {
-            w_board: w.head_board.device_ptr(stream).0,
-            b_board: ptr(&w.b, l.board_out.b),
-            w_mid: w.head_mid.device_ptr(stream).0,
-            b_hidden: ptr(&w.b, l.value_hidden.b),
-            w_value: ptr(&w.w, l.value_out.w),
-            b_value: ptr(&w.b, l.value_out.b),
-            kind: ptr(&w.w, l.act_kind),
-            role: ptr(&w.w, l.act_role),
-            gamma: ptr(&w.ln, norm.g),
-            beta: ptr(&w.ln, norm.b),
-            w_logit: ptr(&w.w, l.act_out.w),
+            w_value: f32s(&w.w, l.value_out.w),
+            b_value: f32s(&w.b, l.value_out.b),
+            kind: f32s(&w.w, l.act_kind),
+            role: f32s(&w.w, l.act_role),
+            gamma: f32s(&w.ln, norm.g),
+            beta: f32s(&w.ln, norm.b),
+            w_logit: f32s(&w.w, l.act_out.w),
         };
-        unsafe {
-            stream
-                .launch_builder(&k.heads)
-                .arg(&s.pooled)
-                .arg(&head)
-                .arg(&s.desc.dev)
-                .arg(&s.off.dev)
-                .arg(&s.tokens)
-                .arg(&s.spatial)
-                .arg(&mut s.out)
-                .arg(&n_i)
-                .launch_unit(LaunchConfig {
-                    grid_dim: (n.div_ceil(HEAD_ROWS) as u32, 1, 1),
-                    block_dim: (TRUNK_THREADS, 1, 1),
-                    shared_mem_bytes: 0,
-                })
-        }
-        .map_err(err)?;
-        s.down.recv(stream, &s.out, n + na)
+        launch!(
+            stream,
+            k.heads,
+            grid(n.div_ceil(HEAD_ROWS), 1, 256),
+            &s.mid,
+            &head,
+            &s.desc.dev,
+            &s.off.dev,
+            &s.tokens,
+            &s.a,
+            &mut s.out,
+            &n_i,
+        );
+        s.down.recv(stream, &s.out, n + a1 - a0)
     }
 }
 
@@ -524,8 +468,13 @@ fn compile_options(major: i32, minor: i32) -> CompileOptions {
     options.extend([
         format!("--gpu-architecture=compute_{major}{minor}"),
         format!("-DTRUNK_C={C}"),
+        format!("-DKC={KC}"),
+        format!("-DHK={HK}"),
+        format!("-DTB={TRUNK_BOARDS}"),
         format!("-DTWARPS={TRUNK_WARPS}"),
-        format!("-DHEX_K={HEX_K}"),
+        format!("-DDM={DENSE_ROWS}"),
+        format!("-DDN={DENSE_COLS}"),
+        format!("-DDWARPS={DENSE_WARPS}"),
         format!("-DHR={HEAD_ROWS}"),
         format!("-DMAX_COINS={MAX_COINS:.1}f"),
     ]);
@@ -548,12 +497,6 @@ impl Module {
         let (major, minor) = ctx.compute_capability().map_err(err)?;
         let ptx = compile_ptx_with_opts(KERNELS, compile_options(major, minor)).map_err(|e| format!("nvrtc: {e:?}"))?;
         let k = Kernels::load(&ctx.load_module(ptx).map_err(err)?)?;
-        k.trunk
-            .set_attribute(
-                cudarc::driver::sys::CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                TRUNK_SHARED as i32,
-            )
-            .map_err(err)?;
         let torch = ctx.new_stream().map_err(err)?;
         let m = Arc::new(Module { ctx, k: Arc::new(k), torch });
         modules.insert(ordinal, Arc::clone(&m));
@@ -585,7 +528,7 @@ pub fn expand_rows_torch(rows: u64, cards: u64, locations: u64, out: u64, n: usi
             .arg(&locations)
             .arg(&mut out)
             .arg(&n_i)
-            .launch_unit(blocks(n))
+            .launch_unit(grid(n, 1, 256))
             .map_err(err)?;
     }
     rows.leak();

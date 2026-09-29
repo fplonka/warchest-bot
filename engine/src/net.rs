@@ -4,10 +4,10 @@ use crate::pbs::{HEX_FACTS, LOOSE, PILE_COUNTS};
 use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
 
 pub const TYPE: usize = 64;
-pub const C: usize = 192;
-pub const BLOCKS: usize = 12;
-pub const D: usize = 384;
-pub const HIDDEN: usize = 192;
+pub const C: usize = 512;
+pub const BLOCKS: usize = 24;
+pub const D: usize = 1024;
+pub const HIDDEN: usize = 512;
 pub const BINS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Default)]

@@ -22,6 +22,8 @@ def random_net(seed):
         for parameter in net.parameters():
             parameter.normal_(0, 0.08)
         for module in net.modules():
+            if isinstance(module, nn.Linear):
+                module.weight.normal_(0, 1.6 * module.in_features ** -0.5)
             if isinstance(module, nn.LayerNorm):
                 module.weight.normal_(1, 0.2)
                 module.bias.normal_(0, 0.1)

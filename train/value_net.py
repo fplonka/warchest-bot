@@ -19,10 +19,10 @@ LOOSE = warchest.LOOSE
 N_KINDS = warchest.N_KINDS
 
 TYPE = 64
-C = 192
-BLOCKS = 12
-D = 384
-HIDDEN = 192
+C = 512
+BLOCKS = 24
+D = 1024
+HIDDEN = 512
 BINS = 16
 
 

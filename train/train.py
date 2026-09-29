@@ -146,26 +146,27 @@ def losses(net, x, desc, parow, target, z, wp):
     return value_loss + wp * policy_loss, stats
 
 
-def train_steps(net, acting, opt, buf, steps, batch, rng, device, batch_fn, policy_w):
+def train_steps(net, acting, opt, buf, steps, batch, micro, rng, device, batch_fn, policy_w):
     acc = collections.Counter()
     for _ in range(steps):
-        parts = batch_fn(buf.gather(rng.integers(buf.lo, buf.rows, size=batch)), rng, device)
-        loss, stats = losses(net, *parts, policy_w)
         opt.zero_grad(set_to_none=True)
-        loss.backward()
-        stats["grad_norm"] = nn.utils.clip_grad_norm_(net.parameters(), 5.0)
+        for _ in range(batch // micro):
+            parts = batch_fn(buf.gather(rng.integers(buf.lo, buf.rows, size=micro)), rng, device)
+            loss, stats = losses(net, *parts, policy_w)
+            (loss * (micro / batch)).backward()
+            for key, value in stats.items():
+                acc[key] = acc[key] + value * (micro / batch)
+        acc["grad_norm"] = acc["grad_norm"] + nn.utils.clip_grad_norm_(net.parameters(), 5.0)
         opt.step()
         with torch.no_grad():
             torch._foreach_lerp_(list(acting.parameters()), list(net.parameters()), batch / EMA_ROWS)
-        for key, value in stats.items():
-            acc[key] = acc[key] + value
     if not steps:
         return 0, {}
     return steps, dict(zip(acc, (torch.stack([v.float() for v in acc.values()]) / steps).tolist()))
 
 
-def probe(net, buf, n, batch, rng, device, batch_fn, policy_w):
-    parts = batch_fn(buf.gather(rng.integers(buf.rows - n, buf.rows, size=min(n, batch))), rng, device)
+def probe(net, buf, n, micro, rng, device, batch_fn, policy_w):
+    parts = batch_fn(buf.gather(rng.integers(buf.rows - n, buf.rows, size=min(n, micro))), rng, device)
     with torch.no_grad():
         _, stats = losses(net, *parts, policy_w)
     return {f"fresh_{k}": stats[k] * n for k in FRESH}
@@ -254,6 +255,7 @@ def main():
             (args.snapshot_every <= 0.0, "snapshot_every must be positive minutes"),
             (not 0.0 <= args.warm_minutes <= args.minutes, "warm_minutes must be within the run"),
             (args.lr_final <= 0.0 or args.lr_final > args.lr, "lr_final must be in (0, lr]"),
+            (args.batch % args.micro != 0, "micro must divide batch"),
             (not torch.cuda.is_available(), "training requires a working GPU")):
         if bad:
             raise SystemExit(why)
@@ -338,7 +340,7 @@ def main():
             group["lr"] = scheduled_lr(args.lr, args.lr_final, time.time() - t0, total, args.lr_stable_frac)
         debt = args.replay_ratio * progress["generated_rows"] - progress["optimizer_rows"]
         steps = int(debt // args.batch) if len(buf) >= args.batch else 0
-        done, stats = train_steps(value, acting, opt, buf, steps, args.batch, rng, dev, gpu_batch.make_batch,
+        done, stats = train_steps(value, acting, opt, buf, steps, args.batch, args.micro, rng, dev, gpu_batch.make_batch,
                                   args.policy_w)
         progress["optimizer_rows"] += done * args.batch
         return done, stats
@@ -365,7 +367,7 @@ def main():
         window["z_sum"] += float(np.asarray(data["z"], np.float64).sum())
         for k in GAME_KEYS:
             window[k] += int(data[k])
-        window.update(probe(value, buf, n, args.batch, rng, dev, gpu_batch.make_batch, args.policy_w))
+        window.update(probe(value, buf, n, args.micro, rng, dev, gpu_batch.make_batch, args.policy_w))
 
     if not checkpoint:
         snapshot(0.0, "init")
