@@ -200,6 +200,10 @@ def panels(eps):
                       series("run average", [e.get("solves_per_s") for e in eps])],
                      zero=True))
 
+    out.append(panel("Game length", "decisions / game", m,
+                     [series("game length", [e["decisions"] / e["games"] if e.get("games") and e.get("decisions")
+                                             else None for e in eps], True)]))
+
     kinds = ("attack", "maneuver", "deploy", "bolster", "recruit", "pass",
              "claim_initiative")
     kinds = [kind for kind in kinds
