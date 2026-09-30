@@ -126,7 +126,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
             let code = resolve_chance(&mut s, p, rng).encode();
             for (seat, sess) in seats.iter_mut().enumerate() {
                 let obs = Obs::Draw { player: p, code: (seat == p as usize).then_some(code) };
-                sess.observe(&obs).expect("a seat follows every draw");
+                sess.observe(&obs, None).expect("a seat follows every draw");
             }
         }
         if crate::finished(&s) {
@@ -150,7 +150,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
         d.count(&acts, a);
         s.apply_inplace(a);
         let obs = Obs::Act { player: p as u8, key: obs_key(&a) };
-        seats[1 - p].observe(&obs).expect("a seat follows every move");
+        seats[1 - p].observe(&obs, None).expect("a seat follows every move");
     }
     d.z = targets(&seen, crate::score(&s, WHITE as usize));
     d.games = 1;

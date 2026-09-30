@@ -3,35 +3,14 @@ use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::actions::Action;
 use crate::board::NONE;
-use crate::pbs::{obs_key, pack_row, Belief, Ctx, NSLOT, ROW_BYTES};
+use crate::pbs::{action_coin, obs_key, pack_row, Belief, Ctx, NSLOT, ROW_BYTES};
 use crate::rng::Rng;
 use crate::selfplay::resolve_chance;
 use crate::state::{State, Z_FACEDOWN, Z_HAND, Z_INFLIGHT};
-use crate::units::{ENSIGN, MARSHAL, ROYAL_COIN};
 
 pub const ACT_BYTES: usize = 6;
 const C_VISIT: f32 = 50.0;
 const C_SCALE: f32 = 1.0;
-
-fn action_coin(a: &Action, s: &State) -> u8 {
-    use Action::*;
-    match *a {
-        Deploy { unit, .. } | Bolster { unit, .. } => unit,
-        ClaimInitiative { coin } | Recruit { coin, .. } | Pass { coin } => coin,
-        TacRoyalGuard { .. } => ROYAL_COIN,
-        TacEnsign { .. } => ENSIGN,
-        TacMarshal { .. } => MARSHAL,
-        Move { from, .. }
-        | Control { from }
-        | Attack { from, .. }
-        | TacArcher { from, .. }
-        | TacCavalryMove { from, .. }
-        | TacCrossbow { from, .. }
-        | TacLancer { from, .. }
-        | TacLightCav { from, .. } => s.hex_type[from as usize],
-        _ => NONE,
-    }
-}
 
 pub fn action_desc(a: &Action, s: &State, ctx: &Ctx) -> [u8; ACT_BYTES] {
     let p = s.to_act();
@@ -310,7 +289,7 @@ impl Tree {
             let mut q = Query::default();
             while next < visits.len() {
                 let (mut w, start) = (*root, path.len());
-                opp.deal(&mut w, 1 - root.to_act(), rng);
+                opp.deal(&mut w, rng);
                 match self.descend(&mut w, ctx, rng, visits[next], &mut path) {
                     Leaf::Ended => {
                         self.backup(&path[start..], crate::score(&w, 0));

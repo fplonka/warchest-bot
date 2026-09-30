@@ -3,10 +3,8 @@ use std::collections::BTreeMap;
 use crate::actions::{Action, N_KINDS};
 use crate::board::{board, NONE, N_HEXES};
 use crate::rng::Rng;
-use crate::state::{
-    State, CONT_CAP, N_ZONES, PENDING_KINDS, Z_BAG, Z_ELIM, Z_FACEDOWN, Z_FACEUP, Z_HAND, Z_INFLIGHT, Z_SUPPLY,
-};
-use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
+use crate::state::{State, CONT_CAP, PENDING_KINDS, Z_BAG, Z_ELIM, Z_FACEDOWN, Z_FACEUP, Z_HAND, Z_INFLIGHT, Z_SUPPLY};
+use crate::units::{write_card_features, CARD_FEATS, ENSIGN, MARSHAL, N_UNITS, ROYAL_COIN};
 
 pub const NSLOT: usize = 5;
 const HIDDEN: [usize; 4] = [Z_INFLIGHT, Z_HAND, Z_FACEDOWN, Z_BAG];
@@ -45,121 +43,103 @@ impl Ctx {
 }
 
 fn reserve(s: &State, p: u8, ctx: &Ctx) -> [u8; NSLOT] {
-    let n = hidden(s, p);
-    ctx.slots[p as usize].map(|u| n[u as usize])
+    ctx.slots[p as usize].map(|u| HIDDEN.iter().map(|&z| s.zones[p as usize][z][u as usize]).sum())
 }
 
-fn hidden(s: &State, p: u8) -> [u8; N_UNITS] {
-    std::array::from_fn(|u| HIDDEN.iter().map(|&z| s.zones[p as usize][z][u]).sum())
+type Layout = [[u8; N_UNITS]; HIDDEN.len()];
+
+fn layout(s: &State, p: u8) -> Layout {
+    HIDDEN.map(|z| s.zones[p as usize][z])
 }
 
-fn spread(n: [u8; N_UNITS]) -> Vec<u8> {
-    (0..N_UNITS as u8)
-        .flat_map(|u| std::iter::repeat_n(u, n[u as usize] as usize))
-        .collect()
-}
-
-pub fn unseen(s: &State, p: u8) -> Vec<u8> {
-    spread(hidden(s, p))
-}
-
-pub fn deal(s: &mut State, p: u8, coins: &[u8]) {
-    let z = &mut s.zones[p as usize];
-    let mut rest = coins;
-    for zone in HIDDEN {
-        let (dealt, left) = rest.split_at(z[zone].iter().sum::<u8>() as usize);
-        z[zone] = [0; N_UNITS];
-        for &u in dealt {
-            z[zone][u as usize] += 1;
-        }
-        rest = left;
+fn put(s: &mut State, p: u8, k: &Layout) {
+    for (z, zone) in HIDDEN.into_iter().zip(k) {
+        s.zones[p as usize][z] = *zone;
     }
-    debug_assert!(rest.is_empty(), "every unseen coin lands in a hidden zone");
-}
-
-const ANCHOR: usize = N_UNITS;
-type Layout = [[u8; N_UNITS + 1]; N_ZONES];
-
-fn free(k: &Layout, hidden: [u8; N_UNITS]) -> [u8; N_UNITS] {
-    std::array::from_fn(|u| hidden[u] - HIDDEN.iter().map(|&z| k[z][u]).sum::<u8>())
 }
 
 pub struct Belief {
+    p: u8,
     layouts: Vec<Layout>,
     weights: Vec<f64>,
 }
 
 impl Belief {
     pub fn new(s: &State, p: u8) -> Belief {
-        let mut k = [[0; N_UNITS + 1]; N_ZONES];
-        for z in HIDDEN {
-            k[z][ANCHOR] = s.zones[p as usize][z].iter().sum();
-        }
-        Belief { layouts: vec![k], weights: vec![1.0] }
+        Belief { p, layouts: vec![layout(s, p)], weights: vec![1.0] }
     }
 
-    pub fn observe(&mut self, before: &State, after: &State, p: u8) {
-        let size = |s: &State, z: usize| s.zones[p as usize][z].iter().sum::<u8>();
-        let held = [Z_HAND, Z_INFLIGHT];
-        if let Some(to) = held.into_iter().find(|&z| size(after, z) > size(before, z)) {
-            if size(before, Z_BAG) == 0 {
-                let faceup = before.zones[p as usize][Z_FACEUP];
-                for k in &mut self.layouts {
-                    let down = std::mem::take(&mut k[Z_FACEDOWN]);
-                    k[Z_BAG] = std::array::from_fn(|c| down[c] + faceup.get(c).unwrap_or(&0));
-                }
-            }
-            self.take(Z_BAG, Some(to), |_, _| 1.0);
-        } else if let Some(from) = held.into_iter().find(|&z| size(after, z) < size(before, z)) {
-            let (was, now) = (hidden(before, p), hidden(after, p));
-            match (0..N_UNITS).find(|&u| now[u] < was[u]) {
-                None => self.take(from, Some(Z_FACEDOWN), |_, _| 1.0),
-                Some(t) => self.take(from, None, |k, c| match c {
-                    _ if c == t => 1.0,
-                    ANCHOR => {
-                        let f = free(k, was);
-                        f[t] as f64 / f.iter().sum::<u8>() as f64
-                    }
-                    _ => 0.0,
-                }),
-            }
-        }
-        if HIDDEN.iter().filter(|&&z| size(after, z) > 0).count() <= 1 {
-            *self = Belief::new(after, p);
-        }
+    pub fn deal(&self, s: &mut State, rng: &mut Rng) {
+        put(s, self.p, &self.layouts[rng.weighted_index(&self.weights)]);
     }
 
-    fn take(&mut self, from: usize, to: Option<usize>, fit: impl Fn(&Layout, usize) -> f64) {
-        let mut next = BTreeMap::new();
-        for (k, w) in self.layouts.iter().zip(&self.weights) {
-            for c in 0..=N_UNITS {
-                let w = w * k[from][c] as f64 * fit(k, c);
-                if w > 0.0 {
-                    let mut k = *k;
-                    k[from][c] -= 1;
-                    if let Some(to) = to {
-                        k[to][c] += 1;
-                    }
-                    *next.entry(k).or_insert(0.0) += w;
+    pub fn update(
+        &mut self,
+        s: &State,
+        seen: impl Fn(&Action) -> bool,
+        likelihood: impl FnOnce(&[(State, Vec<Action>)]) -> Vec<f64>,
+    ) -> Option<State> {
+        let (worlds, weights): (Vec<_>, Vec<f64>) = self
+            .layouts
+            .iter()
+            .zip(&self.weights)
+            .filter_map(|(k, &x)| {
+                let mut w = *s;
+                put(&mut w, self.p, k);
+                let acts = w.legal_actions();
+                acts.iter().any(&seen).then_some(((w, acts), x))
+            })
+            .unzip();
+        let mut odds = likelihood(&worlds).into_iter();
+        let (mut next, mut after) = (BTreeMap::new(), None);
+        for ((w, acts), x) in worlds.iter().zip(weights) {
+            for (a, l) in acts.iter().zip(odds.by_ref()) {
+                if seen(a) {
+                    let child = w.apply(*a);
+                    *next.entry(layout(&child, self.p)).or_insert(0.0) += x * l;
+                    after = Some(child);
                 }
             }
         }
+        let after = after?;
         let total: f64 = next.values().sum();
-        (self.layouts, self.weights) = next.into_iter().map(|(k, w)| (k, w / total)).unzip();
+        (self.layouts, self.weights) = next.into_iter().map(|(k, x)| (k, x / total)).unzip();
+        Some(after)
     }
+}
 
-    pub fn deal(&self, s: &mut State, p: u8, rng: &mut Rng) {
-        let k = &self.layouts[rng.weighted_index(&self.weights)];
-        let mut coins = spread(free(k, hidden(s, p)));
-        rng.shuffle(&mut coins);
-        let mut coins = coins.into_iter();
-        for z in HIDDEN {
-            let zone = &mut s.zones[p as usize][z];
-            zone.copy_from_slice(&k[z][..N_UNITS]);
-            for u in coins.by_ref().take(k[z][ANCHOR] as usize) {
-                zone[u as usize] += 1;
-            }
-        }
+pub fn ways(worlds: &[(State, Vec<Action>)]) -> Vec<f64> {
+    worlds.iter().flat_map(|(s, acts)| acts.iter().map(|a| copies(s, a) as f64)).collect()
+}
+
+fn copies(s: &State, a: &Action) -> u8 {
+    let p = s.to_act();
+    match *a {
+        Action::DrawCoin { unit } if unit != NONE => s.draw_pool(p)[unit as usize],
+        _ => match action_coin(a, s) {
+            NONE => 1,
+            coin => s.zones[p as usize][s.pay_zone()][coin as usize],
+        },
+    }
+}
+
+pub(crate) fn action_coin(a: &Action, s: &State) -> u8 {
+    use Action::*;
+    match *a {
+        Deploy { unit, .. } | Bolster { unit, .. } => unit,
+        ClaimInitiative { coin } | Recruit { coin, .. } | Pass { coin } => coin,
+        TacRoyalGuard { .. } => ROYAL_COIN,
+        TacEnsign { .. } => ENSIGN,
+        TacMarshal { .. } => MARSHAL,
+        Move { from, .. }
+        | Control { from }
+        | Attack { from, .. }
+        | TacArcher { from, .. }
+        | TacCavalryMove { from, .. }
+        | TacCrossbow { from, .. }
+        | TacLancer { from, .. }
+        | TacLightCav { from, .. } => s.hex_type[from as usize],
+        _ => NONE,
     }
 }
 
@@ -418,126 +398,97 @@ pub fn expand_row(row: &[u8], out: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rng::Rng;
-    use crate::state::{N_ZONES, WHITE};
-    use crate::units::{ARCHER, PIKEMAN, SWORDSMAN};
-    use std::collections::HashMap;
+    use crate::selfplay::resolve_chance;
+    use crate::state::WHITE;
 
-    #[derive(Clone, Copy)]
-    enum Ev {
-        Draw,
-        Show(u8),
-        Hide,
-    }
-
-    fn branches(s: &State, e: Ev) -> Vec<(State, f64)> {
-        let mut s = *s;
-        let z = &mut s.zones[0];
-        if matches!(e, Ev::Draw) && z[Z_BAG].iter().all(|&n| n == 0) {
-            for u in 0..N_UNITS {
-                z[Z_BAG][u] = std::mem::take(&mut z[Z_FACEUP][u]) + std::mem::take(&mut z[Z_FACEDOWN][u]);
-            }
-        }
-        let (from, to) = match e {
-            Ev::Draw => (Z_BAG, Z_HAND),
-            Ev::Show(_) => (Z_HAND, Z_FACEUP),
-            Ev::Hide => (Z_HAND, Z_FACEDOWN),
-        };
-        (0..N_UNITS)
-            .filter(|&u| s.zones[0][from][u] > 0 && !matches!(e, Ev::Show(t) if t as usize != u))
-            .map(|u| {
-                let mut t = s;
-                t.zones[0][from][u] -= 1;
-                t.zones[0][to][u] += 1;
-                (t, s.zones[0][from][u] as f64)
+    fn toy(worlds: &[(State, Vec<Action>)]) -> Vec<f64> {
+        worlds
+            .iter()
+            .flat_map(|(s, acts)| {
+                let r: u32 = s.zones[WHITE as usize].as_flattened().iter().enumerate().map(|(i, &n)| i as u32 * n as u32).sum();
+                acts.iter().map(move |a| (1 + (r + a.encode()) % 7) as f64)
             })
             .collect()
     }
 
-    fn posterior(s: &State, events: &[Ev]) -> (State, Belief, HashMap<[[u8; N_UNITS]; N_ZONES], f64>) {
-        let mut worlds = vec![(*s, 1.0)];
-        let (mut truth, mut belief) = (*s, Belief::new(s, WHITE));
-        for &e in events {
-            let next = branches(&truth, e)[0].0;
-            belief.observe(&truth, &next, WHITE);
-            truth = next;
-            worlds = worlds
-                .iter()
-                .flat_map(|(w, p)| branches(w, e).into_iter().map(move |(v, q)| (v, p * q)))
-                .collect();
-        }
-        let mut exact = HashMap::new();
-        let total: f64 = worlds.iter().map(|w| w.1).sum();
-        for (w, p) in worlds {
-            *exact.entry(w.zones[0]).or_insert(0.0) += p / total;
-        }
-        (truth, belief, exact)
-    }
-
-    fn matches_brute_force(s: &State, events: &[Ev]) {
-        let (truth, belief, exact) = posterior(s, events);
-        let (mut rng, n) = (Rng::new(11), 100_000);
-        let mut got: HashMap<[[u8; N_UNITS]; N_ZONES], f64> = HashMap::new();
-        for _ in 0..n {
-            let mut w = truth;
-            belief.deal(&mut w, WHITE, &mut rng);
-            *got.entry(w.zones[0]).or_insert(0.0) += 1.0 / n as f64;
-        }
-        for w in exact.keys().chain(got.keys()) {
-            let (a, b) = (exact.get(w).copied().unwrap_or(0.0), got.get(w).copied().unwrap_or(0.0));
-            assert!((a - b).abs() < 0.01, "world {w:?}: exact {a}, dealt {b}");
-        }
-    }
-
     #[test]
-    fn a_partial_reshuffle_keeps_the_old_coin_in_hand() {
-        let mut s = State::blank(WHITE);
-        s.add_zone(WHITE, Z_BAG, SWORDSMAN, 1);
-        s.add_zone(WHITE, Z_FACEUP, PIKEMAN, 5);
-        let (truth, belief, _) = posterior(&s, &[Ev::Draw, Ev::Draw, Ev::Draw]);
-        let mut rng = Rng::new(1);
-        for _ in 0..1000 {
-            let mut w = truth;
-            belief.deal(&mut w, WHITE, &mut rng);
-            assert_eq!(w.zones[0][Z_HAND][SWORDSMAN as usize], 1);
-            assert_eq!(w.zones[0][Z_HAND][PIKEMAN as usize], 2);
-        }
-    }
-
-    #[test]
-    fn a_reveal_after_a_partial_reshuffle_matches_brute_force() {
-        let mut s = State::blank(WHITE);
-        s.add_zone(WHITE, Z_BAG, SWORDSMAN, 1);
-        s.add_zone(WHITE, Z_BAG, ARCHER, 2);
-        s.add_zone(WHITE, Z_BAG, PIKEMAN, 1);
-        s.add_zone(WHITE, Z_FACEUP, PIKEMAN, 2);
-        s.add_zone(WHITE, Z_FACEUP, SWORDSMAN, 1);
-        let (draw, hide) = (Ev::Draw, Ev::Hide);
-        matches_brute_force(&s, &[draw, draw, draw, Ev::Show(ARCHER), hide, draw]);
-        matches_brute_force(&s, &[draw, draw, draw, hide, hide, draw, draw, draw, Ev::Show(PIKEMAN), hide]);
-    }
-
-    #[test]
-    fn a_dealt_world_places_each_unseen_coin_by_zone_size() {
-        let mut s = State::blank(WHITE);
-        s.add_zone(WHITE, Z_BAG, SWORDSMAN, 3);
-        s.add_zone(WHITE, Z_FACEDOWN, SWORDSMAN, 2);
-        s.add_zone(WHITE, Z_HAND, PIKEMAN, 1);
-        let (mut rng, mut coins, n) = (Rng::new(5), unseen(&s, WHITE), 60_000);
-        let mut seen = [0usize; N_ZONES];
-        for _ in 0..n {
-            rng.shuffle(&mut coins);
-            let mut w = s;
-            deal(&mut w, WHITE, &coins);
-            assert_eq!(unseen(&w, WHITE), unseen(&s, WHITE));
-            for z in HIDDEN {
-                assert_eq!(w.zones[0][z].iter().sum::<u8>(), s.zones[0][z].iter().sum::<u8>());
-                seen[z] += w.zones[0][z][PIKEMAN as usize] as usize;
+    fn the_filter_matches_exact_enumeration_through_a_partial_reshuffle() {
+        for likelihood in [toy, ways] {
+            let mut start = State::from_draft(&[17, 12, 4, 9], &[1, 3, 8, 16], WHITE);
+            let z = &mut start.zones[WHITE as usize];
+            for u in 0..N_UNITS {
+                let n = z[Z_BAG][u] / 2;
+                z[Z_BAG][u] -= n;
+                z[Z_FACEUP][u] += n;
+            }
+            let (mut rng, mut belief, mut s, mut seen) = (Rng::new(3), Belief::new(&start, WHITE), start, start);
+            let (mut worlds, mut reshuffled, mut after) = (vec![(start, 1.0)], false, 0);
+            while after < 3 {
+                let (p, chance) = (s.to_act(), s.is_chance());
+                let a = if chance {
+                    reshuffled |= p == WHITE && s.bag_size(p) == 0 && s.zones[p as usize][Z_FACEDOWN].iter().sum::<u8>() > 0;
+                    resolve_chance(&mut s, p, &mut rng)
+                } else {
+                    let acts = s.legal_actions();
+                    let hidden: Vec<Action> = acts.iter().copied().filter(|a| obs_key(a) != a.encode()).collect();
+                    let pool = if p == WHITE && !hidden.is_empty() { hidden } else { acts };
+                    let a = pool[rng.below(pool.len())];
+                    s.apply_inplace(a);
+                    a
+                };
+                if p == WHITE {
+                    let saw = |b: &Action| chance || obs_key(b) == obs_key(&a);
+                    seen = belief.update(&seen, saw, likelihood).unwrap();
+                    worlds = worlds
+                        .into_iter()
+                        .flat_map(|(w, x)| {
+                            let acts = w.legal_actions();
+                            let odds = likelihood(&[(w, acts.clone())]);
+                            acts.into_iter().zip(odds).filter(|(b, _)| saw(b)).map(move |(b, l)| (w.apply(b), x * l))
+                        })
+                        .collect();
+                } else {
+                    seen.apply_inplace(a);
+                    worlds.iter_mut().for_each(|(w, _)| w.apply_inplace(a));
+                }
+                after += reshuffled as usize;
+            }
+            let mut exact = BTreeMap::new();
+            for (w, x) in &worlds {
+                *exact.entry(layout(w, WHITE)).or_insert(0.0) += x;
+            }
+            let total: f64 = exact.values().sum();
+            assert!(exact.len() > 1 && exact.contains_key(&layout(&s, WHITE)));
+            assert_eq!(belief.layouts, exact.keys().copied().collect::<Vec<_>>());
+            for (w, x) in belief.weights.iter().zip(exact.values()) {
+                assert!((w - x / total).abs() < 1e-12, "{w} is not {}", x / total);
             }
         }
-        for (z, want) in [(Z_HAND, 1.0 / 6.0), (Z_FACEDOWN, 2.0 / 6.0), (Z_BAG, 3.0 / 6.0)] {
-            let got = seen[z] as f64 / n as f64;
-            assert!((got - want).abs() < 0.01, "zone {z}: {got} is not {want}");
+    }
+
+    #[test]
+    fn a_revealed_coin_weighs_each_hand_by_its_copies() {
+        let mut s = State::from_draft(&[17, 12, 4, 9], &[1, 3, 8, 16], WHITE);
+        let mut belief = Belief::new(&s, WHITE);
+        while s.is_chance() {
+            s = match s.to_act() {
+                WHITE => belief.update(&s, |_| true, ways).unwrap(),
+                _ => s.apply(s.legal_actions()[0]),
+            };
         }
+        let [t, x, y] = [17, 12, 4].map(|id| crate::units::index_of_id(id).unwrap());
+        let deploy = Action::Deploy { unit: t, hex: board().location_hexes[0] };
+        belief.update(&s, |a| *a == deploy, ways).unwrap();
+        let weight = |coins: &[u8]| {
+            let mut hand = [0; N_UNITS];
+            coins.iter().for_each(|&c| hand[c as usize] += 1);
+            let holds = |k: &Layout| {
+                let mut w = s;
+                put(&mut w, WHITE, k);
+                w.zones[WHITE as usize][Z_HAND] == hand
+            };
+            belief.layouts.iter().zip(&belief.weights).find(|(k, _)| holds(k)).unwrap().1
+        };
+        assert!((weight(&[t, x]) / weight(&[x, y]) - 0.5).abs() < 1e-12);
     }
 }

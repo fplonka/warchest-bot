@@ -3,8 +3,25 @@ use std::collections::HashMap;
 use warchest::pbs::*;
 use warchest::rng::Rng;
 use warchest::selfplay::game;
-use warchest::state::State;
-use warchest::units::{write_card_features, CARD_FEATS};
+use warchest::state::{State, Z_BAG, Z_FACEDOWN, Z_HAND, Z_INFLIGHT};
+use warchest::units::{write_card_features, CARD_FEATS, N_UNITS};
+
+fn reversed(s: &State, p: usize) -> State {
+    let zones = [Z_INFLIGHT, Z_HAND, Z_FACEDOWN, Z_BAG];
+    let mut coins: Vec<usize> = zones
+        .iter()
+        .flat_map(|&z| (0..N_UNITS).flat_map(move |u| std::iter::repeat_n(u, s.zones[p][z][u] as usize)))
+        .collect();
+    coins.reverse();
+    let (mut w, mut coins) = (*s, coins.into_iter());
+    for z in zones {
+        w.zones[p][z] = [0; N_UNITS];
+        for u in coins.by_ref().take(s.zones[p][z].iter().sum::<u8>() as usize) {
+            w.zones[p][z][u] += 1;
+        }
+    }
+    w
+}
 
 fn features(s: &State, ctx: &Ctx) -> Vec<f32> {
     let (mut row, mut x) = ([0u8; ROW_BYTES], vec![0.0f32; PUBFEAT]);
@@ -24,11 +41,7 @@ fn a_row_shows_the_actor_its_hand_and_hides_the_other_hand() {
                 break;
             }
             for p in 0..2u8 {
-                let mut coins = unseen(&s, p);
-                let (mut a, mut b) = (s, s);
-                deal(&mut a, p, &coins);
-                coins.reverse();
-                deal(&mut b, p, &coins);
+                let (a, b) = (s, reversed(&s, p as usize));
                 let same = features(&a, &ctx) == features(&b, &ctx);
                 if p != s.to_act() {
                     assert!(same, "features changed when only the waiting player's hidden coins changed");
