@@ -322,6 +322,7 @@ def main():
                "timeout_frac": round(window["timeouts"] / games, 3), "buf_s": round(buf.span_seconds(), 1),
                "tgt_mean": round(window["z_sum"] / max(window["rows"], 1), 4),
                **{f"fresh_{k}": round(float(window[f"fresh_{k}"]) / max(window["rows"], 1), 5) for k in FRESH},
+               "kinds": {k: v for k, v in progress["totals"].items() if v[1]},
                **{k: round(v, 5) for k, v in stats.items()}, **extra}
         tick(rec, f"[t={time.time() - t0:6.1f}s] {phase} games={rec['games']} rows={rec['rows']} "
                   f"W{rec['white_wins']}/B{rec['black_wins']}/D{rec['draws']}/T{rec['timeouts']} "
@@ -337,6 +338,8 @@ def main():
         window["z_sum"] += float(data["z"][:, 0].sum())
         for k in GAME_KEYS:
             window[k] += int(data[k])
+        for kind, got in data["kinds"].items():
+            progress["totals"][kind] = [a + b for a, b in zip(progress["totals"].get(kind, (0, 0)), got)]
         window.update(probe(value, buf, n, args.micro, rng, dev, gpu_batch.make_batch, args.policy_w))
 
     if not checkpoint:

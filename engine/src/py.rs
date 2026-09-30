@@ -4,7 +4,7 @@ use numpy::{IntoPyArray, PyArray1, PyArrayMethods, PyReadonlyArray1};
 use parking_lot::RwLock;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{IntoPyDict, PyDict};
 
 use crate::board::board;
 use crate::net::Net;
@@ -43,6 +43,7 @@ fn data_to_dict(py: Python<'_>, d: Data) -> PyResult<PyObject> {
     for (name, v) in PLAYS.iter().zip(d.plays) {
         out.set_item(format!("plays_{name}"), v)?;
     }
+    out.set_item("kinds", crate::actions::KIND_NAMES.iter().zip(d.kinds.0).collect::<Vec<_>>().into_py_dict_bound(py))?;
     out.set_item("rows", d.q.rows.into_pyarray_bound(py))?;
     out.set_item("desc", d.q.desc.into_pyarray_bound(py))?;
     out.set_item("off", d.q.off.into_pyarray_bound(py))?;

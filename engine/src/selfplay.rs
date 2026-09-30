@@ -4,7 +4,7 @@ use std::thread::JoinHandle;
 use parking_lot::{Condvar, Mutex};
 use rayon::prelude::*;
 
-use crate::actions::{Action, N_PLAYS};
+use crate::actions::{Action, N_KINDS, N_PLAYS};
 use crate::arena::{Draft, Obs};
 use crate::board::NONE;
 use crate::bot::{Brain, Session};
@@ -53,6 +53,14 @@ fn targets(seen: &[(usize, f32)], white: f32) -> Vec<[f32; 4]> {
     z
 }
 
+pub struct KindCounts(pub [[usize; 2]; N_KINDS]);
+
+impl Default for KindCounts {
+    fn default() -> Self {
+        KindCounts([[0; 2]; N_KINDS])
+    }
+}
+
 #[derive(Default)]
 pub struct Data {
     pub q: Query,
@@ -64,6 +72,7 @@ pub struct Data {
     pub draws: usize,
     pub timeouts: usize,
     pub plays: [usize; N_PLAYS],
+    pub kinds: KindCounts,
 }
 
 impl Data {
@@ -81,13 +90,22 @@ impl Data {
         for (a, b) in self.plays.iter_mut().zip(o.plays) {
             *a += b;
         }
+        for (a, b) in self.kinds.0.iter_mut().zip(o.kinds.0) {
+            a[0] += b[0];
+            a[1] += b[1];
+        }
     }
 
-    fn count(&mut self, chosen: Action) {
+    fn count(&mut self, acts: &[Action], chosen: Action) {
         self.decisions += 1;
         if let Some(n) = self.plays.get_mut(chosen.play() as usize) {
             *n += 1;
         }
+        let offered = acts.iter().fold(0u64, |m, a| m | 1 << a.kind());
+        for (k, counts) in self.kinds.0.iter_mut().enumerate() {
+            counts[1] += (offered >> k & 1) as usize;
+        }
+        self.kinds.0[chosen.kind()][0] += 1;
     }
 }
 
@@ -129,7 +147,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
         }
         let a = acts[c.pick];
         seats[p].play(a);
-        d.count(a);
+        d.count(&acts, a);
         s.apply_inplace(a);
         let obs = Obs::Act { player: p as u8, key: obs_key(&a) };
         seats[1 - p].observe(&obs).expect("a seat follows every move");
@@ -290,6 +308,8 @@ mod tests {
     fn greedy_warm_games_teach_every_row() {
         let d = warm(4, 11);
         assert_eq!(taught(&d), d.q.len());
+        assert_eq!(d.kinds.0.iter().map(|[chosen, _]| chosen).sum::<usize>(), d.decisions);
+        assert!(d.kinds.0.iter().all(|[chosen, offered]| chosen <= offered));
     }
 
     #[test]
