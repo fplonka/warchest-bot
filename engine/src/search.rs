@@ -164,6 +164,7 @@ struct Edge {
     logit: f32,
     n: u32,
     w: f32,
+    pending: u32,
 }
 
 struct Step {
@@ -207,7 +208,7 @@ impl Tree {
         n.first = self.edges.len() as u32;
         n.len = acts.len() as u32;
         n.value = value;
-        self.edges.extend(acts.iter().zip(prior).map(|(&action, &prior)| Edge { action, prior, logit: prior.ln(), n: 0, w: 0.0 }));
+        self.edges.extend(acts.iter().zip(prior).map(|(&action, &prior)| Edge { action, prior, logit: prior.ln(), n: 0, w: 0.0, pending: 0 }));
     }
 
     fn edges(&self, node: u32) -> &[Edge] {
@@ -247,10 +248,10 @@ impl Tree {
 
     fn select(&self, node: u32) -> u32 {
         let edges = self.edges(node);
-        let total = (1 + edges.iter().map(|e| e.n).sum::<u32>()) as f32;
+        let total = (1 + edges.iter().map(|e| e.n + e.pending).sum::<u32>()) as f32;
         let top = self.logits(node).fold(f32::NEG_INFINITY, f32::max);
         let z: f32 = self.logits(node).map(|l| (l - top).exp()).sum();
-        let score = self.logits(node).zip(edges).map(|(l, e)| (l - top).exp() / z - e.n as f32 / total);
+        let score = self.logits(node).zip(edges).map(|(l, e)| (l - top).exp() / z - (e.n + e.pending) as f32 / total);
         let best = score.enumerate().max_by(|a, b| a.1.total_cmp(&b.1)).expect("an expanded node has an edge").0;
         self.nodes[node as usize].first + best as u32
     }
@@ -259,8 +260,7 @@ impl Tree {
         let (mut node, mut h) = (0, 0u64);
         loop {
             let e = &mut self.edges[edge as usize];
-            e.n += 1;
-            e.w -= 1.0;
+            e.pending += 1;
             path.push(Step { node, edge });
             let action = e.action;
             debug_assert!(w.legal_actions().contains(&action), "an information set offers the same moves in every world");
@@ -290,15 +290,16 @@ impl Tree {
     fn backup(&mut self, path: &[Step], white: f32) {
         for s in path {
             let sign = if self.nodes[s.node as usize].player == 0 { 1.0 } else { -1.0 };
-            self.edges[s.edge as usize].w += 1.0 + sign * white;
+            let e = &mut self.edges[s.edge as usize];
+            e.pending -= 1;
+            e.n += 1;
+            e.w += sign * white;
         }
     }
 
     fn undo(&mut self, path: &[Step]) {
         for s in path {
-            let e = &mut self.edges[s.edge as usize];
-            e.n -= 1;
-            e.w += 1.0;
+            self.edges[s.edge as usize].pending -= 1;
         }
     }
 
@@ -446,6 +447,14 @@ mod tests {
         close(&root(&[0.8, 0.2], 0.0, &[(1, 0.0), (1, 0.1)]).improved(0), &[0.2380, 0.7620]);
         close(&root(&[0.8, 0.2], 0.0, &[]).improved(0), &[0.8, 0.2]);
         assert!(root(&[0.8, 0.2], 0.0, &[(1, -1.0), (1, 1.0)]).improved(0)[1] > 0.99);
+    }
+
+    #[test]
+    fn a_pending_visit_turns_the_next_walk_away_without_changing_the_policy() {
+        let mut tree = root(&[0.6, 0.4], 0.0, &[]);
+        tree.edges[0].pending = 1;
+        close(&tree.improved(0), &[0.6, 0.4]);
+        assert_eq!(tree.select(0), 1);
     }
 
     #[test]
