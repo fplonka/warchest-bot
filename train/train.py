@@ -268,7 +268,7 @@ def main():
     if checkpoint:
         rewind_epochs(args, epoch)
     progress = checkpoint["progress"] if checkpoint else {
-        "optimizer_rows": 0, "generated_rows": 0, "farm_runs": 0, "totals": {}}
+        "optimizer_rows": 0, "generated_rows": 0, "farm_runs": 0, "search_decisions": 0, "search_rows": 0, "kinds": {}}
     snaps = [s for s in checkpoint["snapshots"] if os.path.exists(f"{args.out}/{s['file']}")] if checkpoint else []
     write_log(args, snaps)
 
@@ -322,7 +322,7 @@ def main():
                "timeout_frac": round(window["timeouts"] / games, 3), "buf_s": round(buf.span_seconds(), 1),
                "tgt_mean": round(window["z_sum"] / max(window["rows"], 1), 4),
                **{f"fresh_{k}": round(float(window[f"fresh_{k}"]) / max(window["rows"], 1), 5) for k in FRESH},
-               "kinds": {k: v for k, v in progress["totals"].items() if v[1]},
+               "kinds": {k: v for k, v in progress["kinds"].items() if v[1]},
                **{k: round(v, 5) for k, v in stats.items()}, **extra}
         tick(rec, f"[t={time.time() - t0:6.1f}s] {phase} games={rec['games']} rows={rec['rows']} "
                   f"W{rec['white_wins']}/B{rec['black_wins']}/D{rec['draws']}/T{rec['timeouts']} "
@@ -339,7 +339,7 @@ def main():
         for k in GAME_KEYS:
             window[k] += int(data[k])
         for kind, got in data["kinds"].items():
-            progress["totals"][kind] = [a + b for a, b in zip(progress["totals"].get(kind, (0, 0)), got)]
+            progress["kinds"][kind] = [a + b for a, b in zip(progress["kinds"].get(kind, (0, 0)), got)]
         window.update(probe(value, buf, n, args.micro, rng, dev, gpu_batch.make_batch, args.policy_w))
 
     if not checkpoint:
@@ -377,9 +377,12 @@ def main():
                 continue
             now, span = time.time(), max(time.time() - at, 1e-9)
             calls, evals = map(sum, zip(*farm.gpu_stats()))
+            progress["search_decisions"] += window["decisions"]
+            progress["search_rows"] += window["rows"]
+            searched = now - t0 - warm
             extra = {"evals_per_s": round((evals - seen[1]) / span, 1),
-                     "decisions_per_s": round(window["decisions"] / span, 1),
-                     "rows_per_s": round(window["rows"] / span, 1),
+                     "decisions_per_s": round(progress["search_decisions"] / searched, 1),
+                     "rows_per_s": round(progress["search_rows"] / searched, 1),
                      "rows_per_call": round((evals - seen[1]) / max(calls - seen[0], 1), 1)}
             seen = (calls, evals)
             report("search", window, stats, extra)
