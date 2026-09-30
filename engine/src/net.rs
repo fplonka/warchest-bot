@@ -8,7 +8,6 @@ pub const C: usize = 512;
 pub const BLOCKS: usize = 24;
 pub const D: usize = 1024;
 pub const HIDDEN: usize = 512;
-pub const BINS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Span {
@@ -120,7 +119,7 @@ impl NetLayout {
             }),
             board_out: c.lin(2 * C + LOOSE, D, true),
             value_hidden: c.lin(D, HIDDEN, true),
-            value_out: c.lin(HIDDEN, BINS, true),
+            value_out: c.lin(HIDDEN, 1, true),
             act_kind: c.embed(N_KINDS * C),
             act_role: c.embed(5 * C),
             act_board: c.lin(D, C, false),

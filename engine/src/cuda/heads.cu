@@ -1,6 +1,6 @@
 static_assert(HIDDEN + TRUNK_C == D, "the mid layer holds the value hidden layer and the action board term");
-static_assert(32 % BINS == 0 && HR * BINS == 256 && TRUNK_C % 32 == 0,
-              "a thread holds one value bin of one row and a warp one action row");
+static_assert(256 % HR == 0 && 32 % (256 / HR) == 0 && TRUNK_C % 32 == 0,
+              "a row's value is summed within one warp and a warp holds one action row");
 
 struct Head {
     const float* w_value;
@@ -61,18 +61,12 @@ k_heads(const __half* __restrict__ mid, const Head h, const unsigned char* __res
     }
     __syncthreads();
     {
-        const int r = tid / BINS, bin = tid % BINS;
-        float logit = h.b_value[bin];
+        const int lanes = 256 / HR, r = tid / lanes, part = tid % lanes;
+        float logit = 0.0f;
 #pragma unroll 8
-        for (int k = 0; k < HIDDEN; ++k) logit += hidden[r][k] * h.w_value[k * BINS + bin];
-        float top = logit;
-        for (int m = BINS / 2; m > 0; m >>= 1) top = fmaxf(top, __shfl_xor_sync(0xffffffff, top, m, BINS));
-        float e = expf(logit - top), centre = e * ((bin + 0.5f) / (BINS / 2) - 1.0f);
-        for (int m = BINS / 2; m > 0; m >>= 1) {
-            e += __shfl_xor_sync(0xffffffff, e, m, BINS);
-            centre += __shfl_xor_sync(0xffffffff, centre, m, BINS);
-        }
-        if (bin == 0 && r < rows) out[first + r] = centre / e;
+        for (int k = part; k < HIDDEN; k += lanes) logit += hidden[r][k] * h.w_value[k];
+        for (int m = lanes / 2; m > 0; m >>= 1) logit += __shfl_xor_sync(0xffffffff, logit, m, lanes);
+        if (part == 0 && r < rows) out[first + r] = tanhf(0.5f * (logit + h.b_value[0]));
     }
     float* prior = out + n;
     for (unsigned i = off[first] + warp; i < off[first + rows]; i += 8) {

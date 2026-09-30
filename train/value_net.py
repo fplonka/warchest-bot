@@ -23,7 +23,7 @@ C = 512
 BLOCKS = 24
 D = 1024
 HIDDEN = 512
-BINS = 16
+SHORT = len(warchest.HORIZONS) - 1
 
 
 def gelu(x):
@@ -53,9 +53,11 @@ class Net(nn.Module):
         self.board_out = nn.Linear(2 * C + LOOSE, D)
 
         self.value_hidden = nn.Linear(D, HIDDEN)
-        self.value_out = nn.Linear(HIDDEN, BINS)
-        nn.init.zeros_(self.value_out.weight)
-        nn.init.zeros_(self.value_out.bias)
+        self.value_out = nn.Linear(HIDDEN, 1)
+        self.short_out = nn.Linear(HIDDEN, SHORT)
+        for head in (self.value_out, self.short_out):
+            nn.init.zeros_(head.weight)
+            nn.init.zeros_(head.bias)
         self.act_kind = nn.Embedding(N_KINDS, C)
         self.act_role = nn.Embedding(5, C)
         self.act_board = nn.Linear(D, C, bias=False)
@@ -68,7 +70,6 @@ class Net(nn.Module):
         adj = F.one_hot(nb, N_HEXES + 1).sum(1)[:, :N_HEXES].float()
         self.register_buffer("adj", adj, persistent=False)
         self.register_buffer("seat_of", torch.arange(NTYPE) // NSLOT, persistent=False)
-        self.register_buffer("centres", (torch.arange(BINS) + 0.5) / (BINS / 2) - 1, persistent=False)
 
     def cards(self, xpub):
         facts = xpub[:, OFF_CARDS:OFF_CARDS + NTYPE * CARD_FEATS].reshape(-1, NTYPE, CARD_FEATS)
@@ -101,7 +102,8 @@ class Net(nn.Module):
         spatial = self.trunk(xpub, projected)
         loose = xpub[:, OFF_LOOSE:OFF_LOOSE + LOOSE]
         board = self.board_out(torch.cat([spatial.mean(1), spatial.amax(1), loose], -1))
-        return self.value_out(gelu(self.value_hidden(board))), (board, projected, spatial)
+        hidden = gelu(self.value_hidden(board))
+        return self.value_out(hidden).squeeze(-1), torch.tanh(self.short_out(hidden)), (board, projected, spatial)
 
     def actions(self, desc, pieces, row):
         board, projected, spatial = pieces
@@ -118,8 +120,8 @@ class Net(nn.Module):
         z = self.act_kind(desc[:, 0].long()) + local + self.act_board(board)[row]
         return self.act_out(gelu(self.ln_act(z))).squeeze(-1)
 
-    def value(self, logits):
-        return logits.softmax(-1) @ self.centres
+    def value(self, logit):
+        return 2 * torch.sigmoid(logit) - 1
 
     def tensors(self):
         blocks = [m for i in range(BLOCKS) for m in (self.blk1[i], self.blkg[i], self.blk2[i])]

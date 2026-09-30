@@ -16,19 +16,23 @@ import numpy as np
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import warchest
 import config
 import export_weights
-from value_net import BINS, Net
+from value_net import Net
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 ROW_BYTES = warchest.ROW_BYTES
 ACT_BYTES = warchest.ACT_BYTES
 EMA_ROWS = 1_024_000
+HORIZONS = warchest.HORIZONS
+SHORTS = tuple(f"short_{h:g}_loss" for h in HORIZONS[1:])
+SHORT_W = 0.1
 PLAYS = ("attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative")
-FRESH = ("value_loss", "value_sq_err", "policy_loss")
+FRESH = ("value_loss", "value_sq_err", "policy_loss", *SHORTS)
 GAME_KEYS = ("games", "decisions", "timeouts", "white_wins", "black_wins", "draws",
              *(f"plays_{p}" for p in PLAYS))
 
@@ -46,36 +50,13 @@ class Buffer:
     def __init__(self, cap):
         self.cap, self.acap = cap, cap * 32
         self.x = np.zeros((cap, ROW_BYTES), np.uint8)
-        self.z = np.zeros(cap, np.float32)
+        self.z = np.zeros((cap, len(HORIZONS)), np.float32)
         self.astart = np.zeros(cap, np.int64)
         self.alen = np.zeros(cap, np.int32)
         self.written_at = np.zeros(cap, np.float64)
         self.pa = np.zeros((self.acap, ACT_BYTES), np.uint8)
         self.pp = np.zeros(self.acap, np.float16)
         self.rows = self.acts = self.lo = 0
-
-    _ROW_FIELDS = ("x", "z", "astart", "alen", "written_at")
-
-    def state_dict(self):
-        ring = np.arange(self.lo, self.rows, dtype=np.int64) % self.cap
-        state = {name: getattr(self, name)[ring].copy() for name in self._ROW_FIELDS}
-        base = int(state["astart"].min()) if len(ring) else self.acts
-        state["astart"] -= base
-        at = np.arange(base, self.acts, dtype=np.int64) % self.acap
-        state.update(pa=self.pa[at].copy(), pp=self.pp[at].copy())
-        state = {name: torch.from_numpy(value) for name, value in state.items()}
-        state.update(rows=self.rows, acts=self.acts, lo=self.lo)
-        return state
-
-    def load_state_dict(self, state):
-        self.lo, self.rows, self.acts = int(state["lo"]), int(state["rows"]), int(state["acts"])
-        ring = np.arange(self.lo, self.rows, dtype=np.int64) % self.cap
-        for name in self._ROW_FIELDS:
-            getattr(self, name)[ring] = state[name].numpy()
-        base = self.acts - len(state["pa"])
-        at = (np.arange(len(state["pa"]), dtype=np.int64) + base) % self.acap
-        self.pa[at], self.pp[at] = state["pa"].numpy(), state["pp"].numpy()
-        self.astart[ring] += base
 
     def add(self, rows, desc, off, target, z):
         n, na = len(rows), len(desc)
@@ -107,19 +88,14 @@ class Buffer:
         return self.x[s], self.pa[at], parow, self.pp[at].astype(np.float32), self.z[s]
 
 
-def bins(y):
-    edges = torch.linspace(-1.0, 1.0, BINS + 1, device=y.device)
-    cdf = torch.special.ndtr((edges - y.unsqueeze(1)) * (BINS / 1.5))
-    return cdf.diff(dim=1) / (cdf[:, -1:] - cdf[:, :1])
-
-
 @torch.compile(dynamic=True)
 def losses(net, x, desc, parow, target, z, wp):
     with torch.autocast("cuda", torch.bfloat16):
-        logits, pieces = net.evaluate(x)
+        win, short, pieces = net.evaluate(x)
         logit = net.actions(desc, pieces, parow)
-    logits, logit = logits.float(), logit.float()
-    value_loss = -(bins(z) * logits.log_softmax(-1)).sum(1).mean()
+    win, short, logit = win.float(), short.float(), logit.float()
+    value_loss = F.binary_cross_entropy_with_logits(win, (z[:, 0] + 1) / 2)
+    short_loss = (short - z[:, 1:]).square().mean(0)
     n = x.shape[0]
     top = torch.full((n,), -1e30, device=x.device).scatter_reduce(0, parow, logit.detach(), reduce="amax")
     shifted = logit - top[parow]
@@ -132,8 +108,9 @@ def losses(net, x, desc, parow, target, z, wp):
              "policy_loss": policy_loss.detach(),
              "policy_target_entropy": entropy,
              "policy_kl": policy_loss.detach() - entropy,
-             "value_sq_err": (net.value(logits.detach()) - z).square().mean()}
-    return value_loss + wp * policy_loss, stats
+             "value_sq_err": (net.value(win.detach()) - z[:, 0]).square().mean(),
+             **dict(zip(SHORTS, short_loss.detach().unbind()))}
+    return value_loss + wp * policy_loss + SHORT_W * short_loss.sum(), stats
 
 
 def train_steps(net, acting, opt, buf, steps, batch, micro, rng, device, batch_fn, policy_w):
@@ -167,7 +144,7 @@ def ingest(buf, data):
     if len(rows):
         buf.add(rows, np.asarray(data["desc"], np.uint8).reshape(-1, ACT_BYTES),
                 np.asarray(data["off"], np.int64), np.asarray(data["target"], np.float16),
-                np.asarray(data["z"], np.float32))
+                data["z"])
     return len(rows)
 
 
@@ -275,7 +252,6 @@ def main():
         rng.bit_generator.state = checkpoint["numpy_rng"]
         torch.set_rng_state(checkpoint["torch_rng"])
         torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
-        buf.load_state_dict(checkpoint.pop("buffer"))
     else:
         if args.init_weights:
             for net in (value, acting):
@@ -305,15 +281,15 @@ def main():
             "value": value.state_dict(), "acting": acting.state_dict(), "optimizer": opt.state_dict(),
             "target": target_state, "numpy_rng": rng.bit_generator.state,
             "torch_rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state_all(),
-            "buffer": buf.state_dict(), "elapsed": float(el), "next_snapshot": float(el + snap_gap),
+            "elapsed": float(el), "next_snapshot": float(el + snap_gap),
             "epoch": epoch, "snapshots": snaps, "progress": progress,
             "cfg": dataclasses.asdict(args), "label": label, "git": args.git,
         }
         torch.save(state, path + ".tmp")
         os.replace(path + ".tmp", path)
-        for old in snaps[:-2]:
+        for old in snaps[:-1]:
             os.remove(f"{args.out}/{old['file']}")
-        del snaps[:-2]
+        del snaps[:-1]
         write_log(args, snaps)
         export_weights.bot(args.out, label, acting, args.git, el / 60.0)
         print(f"[t={el:6.1f}s] --- snapshot {snaps[-1]['file']} ({label}) ---", flush=True)
@@ -358,7 +334,7 @@ def main():
         progress["generated_rows"] += n
         window["rows"] += n
         window["policy_rows"] += int(np.count_nonzero(np.diff(data["off"])))
-        window["z_sum"] += float(np.asarray(data["z"], np.float64).sum())
+        window["z_sum"] += float(data["z"][:, 0].sum())
         for k in GAME_KEYS:
             window[k] += int(data[k])
         window.update(probe(value, buf, n, args.micro, rng, dev, gpu_batch.make_batch, args.policy_w))

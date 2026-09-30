@@ -56,13 +56,14 @@ def evaluation_parity(device):
     rows, desc, off = positions(12, 5)
     value, prior = warchest.evaluate(rows.ravel().tolist(), desc.ravel().tolist(), off.tolist(), device.index)
     net = net.to(device).eval()
-    logits, pieces = net.evaluate(expand(rows, device))
+    win, _, pieces = net.evaluate(expand(rows, device))
     parow = torch.as_tensor(np.repeat(np.arange(len(rows)), np.diff(off)), device=device)
     logit = net.actions(torch.as_tensor(desc, device=device), pieces, parow)
     top = torch.full((len(rows),), -1e30, device=device).scatter_reduce(0, parow, logit, reduce="amax")
     e = (logit - top[parow]).exp()
     want_prior = e / torch.zeros(len(rows), device=device).index_add_(0, parow, e)[parow]
-    for name, got, want in (("value", value, net.value(logits)), ("prior", prior, want_prior)):
+    assert np.ptp(value) > 1.0, f"the win head spans only {np.ptp(value):.3f}, too little to test"
+    for name, got, want in (("value", value, net.value(win)), ("prior", prior, want_prior)):
         err = np.abs(np.asarray(got) - want.cpu().numpy())
         assert err.max() < 2e-2 and err.mean() < 2e-3, f"{name} drift: max {err.max():.4f} mean {err.mean():.5f}"
         print(f"{name} CUDA parity ok over {len(err)}: max {err.max():.2e} mean {err.mean():.2e}")

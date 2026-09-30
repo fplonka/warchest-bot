@@ -1,13 +1,31 @@
+import importlib.util
 import os
+import pathlib
+import sys
+import types
 
 os.environ["TORCHDYNAMO_DISABLE"] = "1"
 
 import torch
 
 import config
-from test_buffer_snapshot import load_train_module
 
 HOUR = 3600.0
+HORIZONS = [float("inf"), 6.0, 16.0, 50.0]
+
+
+def load_train_module():
+    warchest = types.ModuleType("warchest")
+    warchest.ROW_BYTES, warchest.ACT_BYTES, warchest.HORIZONS = 7, 6, HORIZONS
+    value_net = types.ModuleType("value_net")
+    value_net.Net = object
+    sys.modules.update({"warchest": warchest, "value_net": value_net,
+                        "config": types.ModuleType("config"), "export_weights": types.ModuleType("export_weights")})
+    path = pathlib.Path(__file__).with_name("train.py")
+    spec = importlib.util.spec_from_file_location("train_recipe_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_lr_warms_up_holds_the_peak_then_cools_down():
@@ -31,19 +49,19 @@ def test_playout_switches_at_half_the_run():
 
 class Net:
     def evaluate(self, x):
-        return x, None
+        return x[:, 0], x[:, 1:len(HORIZONS)].tanh(), None
 
     def actions(self, desc, pieces, parow):
         return desc.float().sum(1)
 
-    def value(self, logits):
-        return logits.mean(1)
+    def value(self, logit):
+        return logit
 
 
 def test_value_only_rows_leave_the_policy_loss_alone():
     train = load_train_module()
     torch.manual_seed(0)
-    x, z = torch.randn(5, 16), torch.rand(5) * 2 - 1
+    x, z = torch.randn(5, 16), torch.rand(5, len(HORIZONS)) * 2 - 1
     desc = torch.randint(0, 9, (9, 6), dtype=torch.uint8)
     parow = torch.tensor([0, 0, 0, 1, 1, 3, 3, 3, 3])
     target = torch.tensor([0.2, 0.5, 0.3, 0.9, 0.1, 0.25, 0.25, 0.25, 0.25])

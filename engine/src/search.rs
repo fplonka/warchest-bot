@@ -215,18 +215,22 @@ impl Tree {
         &self.edges[n.first as usize..(n.first + n.len) as usize]
     }
 
-    fn sigma(&self, node: u32) -> impl Fn(&Edge) -> f32 {
+    fn completed(&self, node: u32) -> impl Fn(&Edge) -> f32 {
         let edges = self.edges(node);
         let visits = edges.iter().map(|e| e.n).sum::<u32>() as f32;
-        let most = edges.iter().map(|e| e.n).max().unwrap_or(0) as f32;
         let (pq, p) = edges.iter().filter(|e| e.n > 0).fold((0.0, 0.0), |(pq, p), e| {
             let prior = e.prior.max(f32::MIN_POSITIVE);
             (pq + prior * e.w / e.n as f32, p + prior)
         });
         let mean = if p > 0.0 { pq / p } else { 0.0 };
         let mix = (self.nodes[node as usize].value + visits * mean) / (1.0 + visits);
-        let scale = (C_VISIT + most) * C_SCALE;
-        move |e| scale * (if e.n > 0 { e.w / e.n as f32 } else { mix } + 1.0) / 2.0
+        move |e| if e.n > 0 { e.w / e.n as f32 } else { mix }
+    }
+
+    fn sigma(&self, node: u32) -> impl Fn(&Edge) -> f32 {
+        let most = self.edges(node).iter().map(|e| e.n).max().unwrap_or(0) as f32;
+        let (q, scale) = (self.completed(node), (C_VISIT + most) * C_SCALE);
+        move |e| scale * (q(e) + 1.0) / 2.0
     }
 
     fn logits(&self, node: u32) -> impl Iterator<Item = f32> + '_ {
@@ -340,13 +344,19 @@ impl Tree {
     }
 }
 
+pub struct Choice {
+    pub probs: Vec<f32>,
+    pub pick: usize,
+    pub value: f32,
+}
+
 #[derive(Clone, Copy)]
 pub enum Search {
     Full(u32),
     Fast(u32),
 }
 
-pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> (Vec<f32>, usize) {
+pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> Choice {
     let acts = root.legal_actions();
     let mut q = Query::default();
     q.push(root, ctx, &acts);
@@ -374,7 +384,9 @@ pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: 
         .filter(|&i| edges[i].n == most)
         .max_by(|&a, &b| s[a].total_cmp(&s[b]))
         .expect("a most visited move exists");
-    (tree.improved(0), pick)
+    let (probs, q) = (tree.improved(0), tree.completed(0));
+    let value = probs.iter().zip(edges).map(|(p, e)| p * q(e)).sum();
+    Choice { probs, pick, value }
 }
 
 #[cfg(test)]
@@ -451,9 +463,10 @@ mod tests {
                 let me = s.to_act();
                 let wins: Vec<bool> = acts.iter().map(|&a| s.apply(a).winner() == Some(me)).collect();
                 if acts.len() <= 8 && wins.iter().filter(|&&w| w).count() == 1 {
-                    let (target, pick) = think(&Flat, Search::Full(32), &s, &ctx, &Belief::new(&s, 1 - me), &mut rng);
-                    assert!(wins[pick], "the search missed the win");
-                    assert!(target[pick] > 0.9, "the target gives the win only {}", target[pick]);
+                    let c = think(&Flat, Search::Full(32), &s, &ctx, &Belief::new(&s, 1 - me), &mut rng);
+                    assert!(wins[c.pick], "the search missed the win");
+                    assert!(c.probs[c.pick] > 0.9, "the target gives the win only {}", c.probs[c.pick]);
+                    assert!(c.value > 0.5, "the root value of a won position is only {}", c.value);
                     found += 1;
                 }
                 let w: Vec<f64> = greedy(&s, &acts).iter().map(|&p| p as f64).collect();

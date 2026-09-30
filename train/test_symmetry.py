@@ -11,12 +11,14 @@ def main():
     desc = np.frombuffer(bytes(desc), np.uint8).reshape(-1, warchest.ACT_BYTES)[:off[-1]].copy()
     parow = np.repeat(np.arange(3), np.diff(off))
     target = np.random.default_rng(0).random(len(desc)).astype(np.float32)
-    parts = (rows, desc, parow, target, np.asarray([1.0, -1.0, 0.0], np.float32))
+    z = np.random.default_rng(1).uniform(-1, 1, (3, len(warchest.HORIZONS))).astype(np.float32)
+    parts = (rows, desc, parow, target, z)
     flipped = np.asarray([True, False, True])
 
     once = mirror.mirror_batch(parts, flipped)
     assert np.array_equal(once[0][0], mirror.mirror_rows(rows[:1])[0])
     assert np.array_equal(once[0][1], rows[1])
+    assert np.array_equal(once[4], z)
     kept = parow == 1
     assert np.array_equal(once[1][kept], desc[kept])
     turned = once[1][parow == 0]

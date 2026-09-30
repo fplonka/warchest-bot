@@ -34,11 +34,30 @@ pub fn game(rng: &mut Rng) -> State {
     dealt(rng).state().expect("a dealt draft is legal")
 }
 
+pub const HORIZONS: [f32; 4] = [f32::INFINITY, 6.0, 16.0, 50.0];
+
+fn targets(seen: &[(usize, f32)], white: f32) -> Vec<[f32; 4]> {
+    let mut t = [white; 4];
+    let mut z: Vec<[f32; 4]> = seen
+        .iter()
+        .rev()
+        .map(|&(p, v)| {
+            let sign = if p == WHITE as usize { 1.0 } else { -1.0 };
+            for (t, h) in t.iter_mut().zip(HORIZONS) {
+                *t += (sign * v - *t) / h;
+            }
+            t.map(|x| sign * x)
+        })
+        .collect();
+    z.reverse();
+    z
+}
+
 #[derive(Default)]
 pub struct Data {
     pub q: Query,
     pub target: Vec<f32>,
-    pub z: Vec<f32>,
+    pub z: Vec<[f32; 4]>,
     pub games: usize,
     pub decisions: usize,
     pub wins: [usize; 2],
@@ -82,7 +101,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
     let draft = dealt(rng);
     let mut s = draft.state().expect("a dealt draft is legal");
     let mut seats = [WHITE, BLACK].map(|p| Session::new(&draft, p, rng.next_u64()).expect("a dealt draft is legal"));
-    let (mut d, mut actors) = (Data::default(), Vec::new());
+    let (mut d, mut seen) = (Data::default(), Vec::new());
     loop {
         while s.is_chance() {
             let p = s.to_act();
@@ -101,21 +120,21 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
         let p = s.to_act() as usize;
         let full = rng.unit_f64() < playout.p_full;
         let brain = if full { &playout.full } else { &playout.fast };
-        let (acts, probs, pick) = seats[p].think(brain).expect("the seat to act can think");
+        let (acts, c) = seats[p].think(brain).expect("the seat to act can think");
         if acts.len() > 1 {
             let taught = if full { &acts[..] } else { &[] };
             seats[p].query(taught, &mut d.q);
-            d.target.extend_from_slice(&probs[..taught.len()]);
-            actors.push(p);
+            d.target.extend_from_slice(&c.probs[..taught.len()]);
+            seen.push((p, c.value));
         }
-        let a = acts[pick];
+        let a = acts[c.pick];
         seats[p].play(a);
         d.count(a);
         s.apply_inplace(a);
         let obs = Obs::Act { player: p as u8, key: obs_key(&a) };
         seats[1 - p].observe(&obs).expect("a seat follows every move");
     }
-    d.z = actors.iter().map(|&p| crate::score(&s, p)).collect();
+    d.z = targets(&seen, crate::score(&s, WHITE as usize));
     d.games = 1;
     match s.winner() {
         Some(w) => d.wins[w as usize] += 1,
@@ -241,7 +260,20 @@ mod tests {
         let d = play(&searcher(1.0), &mut Rng::new(3), || true).expect("an unstopped game ends");
         assert_eq!(taught(&d), d.q.len());
         assert_eq!(d.wins[0] + d.wins[1] + d.draws + d.timeouts, 1);
-        assert!(d.z.iter().all(|z| z.abs() <= 1.0));
+        assert!(d.z.as_flattened().iter().all(|z| z.abs() <= 1.0));
+    }
+
+    #[test]
+    fn short_term_targets_average_the_coming_root_values_and_leave_the_rest_to_the_result() {
+        let z = targets(&[(0, 0.5), (1, 0.2), (0, -0.1)], 1.0);
+        let six = [0.622_685, -0.647_222, 0.816_667];
+        for (i, row) in z.iter().enumerate() {
+            let sign = if i == 1 { -1.0 } else { 1.0 };
+            assert_eq!(row[0], sign, "row {i} keeps the result");
+            assert!((row[1] - six[i]).abs() < 1e-5, "row {i}: {} is not {}", row[1], six[i]);
+        }
+        let fifty = 0.02 * 0.5 - 0.02 * 0.98 * 0.2 - 0.02 * 0.98 * 0.98 * 0.1 + 0.98f32.powi(3);
+        assert!((z[0][3] - fifty).abs() < 1e-5, "{} is not {fifty}", z[0][3]);
     }
 
     #[test]

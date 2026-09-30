@@ -1,6 +1,6 @@
 use std::sync::{Arc, LazyLock};
 
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
+use numpy::{IntoPyArray, PyArray1, PyArrayMethods, PyReadonlyArray1};
 use parking_lot::RwLock;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -47,7 +47,8 @@ fn data_to_dict(py: Python<'_>, d: Data) -> PyResult<PyObject> {
     out.set_item("desc", d.q.desc.into_pyarray_bound(py))?;
     out.set_item("off", d.q.off.into_pyarray_bound(py))?;
     out.set_item("target", d.target.into_pyarray_bound(py))?;
-    out.set_item("z", d.z.into_pyarray_bound(py))?;
+    let shape = [d.z.len(), crate::selfplay::HORIZONS.len()];
+    out.set_item("z", d.z.into_flattened().into_pyarray_bound(py).reshape(shape)?)?;
     Ok(out.into())
 }
 
@@ -271,6 +272,7 @@ fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(opening, m)?)?;
     m.add_class::<Online>()?;
     m.add("PUBFEAT", PUBFEAT)?;
+    m.add("HORIZONS", crate::selfplay::HORIZONS.to_vec())?;
     m.add("ROW_BYTES", ROW_BYTES)?;
     m.add("ACT_BYTES", crate::search::ACT_BYTES)?;
     m.add("N_HEXES", crate::board::N_HEXES)?;

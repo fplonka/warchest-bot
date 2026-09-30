@@ -5,7 +5,7 @@ use crate::arena::{Draft, Obs};
 use crate::pbs::{deal, obs_key, unseen, Belief, Ctx};
 use crate::policy;
 use crate::rng::Rng;
-use crate::search::{think, Oracle, Query, Search};
+use crate::search::{think, Choice, Oracle, Query, Search};
 use crate::state::State;
 
 pub enum Brain {
@@ -31,16 +31,16 @@ impl Brain {
         }
     }
 
-    fn policy(&self, s: &State, ctx: &Ctx, opp: &Belief, acts: &[Action], rng: &mut Rng) -> (Vec<f32>, usize) {
+    fn policy(&self, s: &State, ctx: &Ctx, opp: &Belief, acts: &[Action], rng: &mut Rng) -> Choice {
         let probs = match self {
-            _ if acts.len() == 1 => return (vec![1.0], 0),
+            _ if acts.len() == 1 => return Choice { probs: vec![1.0], pick: 0, value: 0.0 },
             Brain::Random => vec![1.0 / acts.len() as f32; acts.len()],
             Brain::Greedy => policy::greedy(s, acts),
             Brain::Search { search, oracle } => return think(oracle.as_ref(), *search, s, ctx, opp, rng),
         };
         let weights: Vec<f64> = probs.iter().map(|&p| p as f64).collect();
         let pick = rng.weighted_index(&weights);
-        (probs, pick)
+        Choice { probs, pick, value: 0.0 }
     }
 }
 
@@ -120,13 +120,13 @@ impl Session {
         !self.s.is_terminal() && !self.s.is_chance() && self.s.to_act() == player
     }
 
-    pub fn think(&mut self, brain: &Brain) -> Result<(Vec<Action>, Vec<f32>, usize), String> {
+    pub fn think(&mut self, brain: &Brain) -> Result<(Vec<Action>, Choice), String> {
         if !self.to_move(self.seat) {
             return Err("the bot was asked to move out of turn".into());
         }
         let acts = self.s.legal_actions();
-        let (probs, pick) = brain.policy(&self.s, &self.ctx, &self.opp, &acts, &mut self.rng);
-        Ok((acts, probs, pick))
+        let choice = brain.policy(&self.s, &self.ctx, &self.opp, &acts, &mut self.rng);
+        Ok((acts, choice))
     }
 
     pub fn play(&mut self, action: Action) {
@@ -134,9 +134,9 @@ impl Session {
     }
 
     pub fn decide(&mut self, brain: &Brain) -> Result<u32, String> {
-        let (acts, _, pick) = self.think(brain)?;
-        self.play(acts[pick]);
-        Ok(acts[pick].encode())
+        let (acts, c) = self.think(brain)?;
+        self.play(acts[c.pick]);
+        Ok(acts[c.pick].encode())
     }
 
     pub fn query(&self, acts: &[Action], q: &mut Query) {

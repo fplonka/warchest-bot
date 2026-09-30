@@ -13,7 +13,7 @@ use parking_lot::{Condvar, Mutex};
 
 use crate::board::{board, N_HEXES};
 use crate::memo::Memo;
-use crate::net::{ln_block, Flat, Net, NetLayout, Span, BINS, BLOCKS, C, D, HIDDEN, LN_ACT, LN_TRUNK};
+use crate::net::{ln_block, Flat, Net, NetLayout, Span, BLOCKS, C, D, HIDDEN, LN_ACT, LN_TRUNK};
 use crate::pbs::{
     HEX_BLOCK, HEX_CH, HEX_FACTS, LOOSE, MAX_COINS, NSLOT, NTYPE, OFF_CARDS, OFF_LOOSE, OFF_PILES, PILE_COUNTS,
     PLAYER_SCALARS, PUBFEAT, ROW_BAG_SIZE, ROW_BYTES, ROW_FD_SIZE, ROW_HAND_SIZE, ROW_HEX_HEIGHT, ROW_HEX_MARKER,
@@ -462,7 +462,6 @@ fn compile_options(major: i32, minor: i32) -> CompileOptions {
         LOOSE,
         D,
         HIDDEN,
-        BINS,
         ACT_BYTES,
     ];
     options.extend([

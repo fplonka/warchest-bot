@@ -23,7 +23,7 @@ class Cfg:
     lr_stable_frac: float = 0.9
     replay_ratio: float = 1.0
     target_every: float = 1.0
-    cap: int = 4_000_000
+    cap: int = 50_000_000
     policy_w: float = 1.0
     warm_games: int = 96
 

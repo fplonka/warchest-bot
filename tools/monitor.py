@@ -122,6 +122,8 @@ def panel(title, ylabel, x, ss, zero=False, hlines=()):
 PANELS = (
     ("Value loss", "cross-entropy", (("value", "value_loss"),), False, ()),
     ("Value error against game results", "squared error", (("value", "value_sq_err"),), True, ()),
+    ("Short-term value loss", "squared error",
+     tuple((f"{h} decisions", f"short_{h}_loss") for h in (6, 16, 50)), True, ()),
     ("Policy loss", "cross-entropy", (("policy", "policy_loss"),), True, ()),
     ("Search target vs prior", "nats",
      (("KL", "policy_kl"), ("target entropy", "policy_target_entropy")), True, ()),
