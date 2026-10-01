@@ -53,7 +53,7 @@ impl Memo {
         s.now.insert(key, entry);
     }
 
-    pub fn eval(&self, q: Query, compute: impl FnOnce(Query) -> Answer) -> Answer {
+    pub fn eval(&self, q: &Query, compute: impl FnOnce(Query) -> Answer) -> Answer {
         let epoch = self.epoch.load(Ordering::SeqCst);
         let seen: Vec<(u64, Option<Arc<[f32]>>)> = (0..q.len())
             .map(|i| {
@@ -114,12 +114,12 @@ mod tests {
             seen.set(seen.get() + q.len());
             Answer { value: (0..q.len()).map(|i| i as f32).collect(), prior: uniform(&q) }
         };
-        let first = memo.eval(q.clone(), compute);
-        let again = memo.eval(q.clone(), compute);
+        let first = memo.eval(&q, compute);
+        let again = memo.eval(&q, compute);
         assert_eq!(seen.get(), q.len());
         assert_eq!((first.value, first.prior), (again.value, again.prior));
         memo.forget();
-        memo.eval(q.clone(), compute);
+        memo.eval(&q, compute);
         assert_eq!(seen.get(), 2 * q.len());
     }
 }

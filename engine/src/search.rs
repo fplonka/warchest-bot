@@ -115,7 +115,7 @@ pub struct Answer {
 }
 
 pub trait Oracle: Send + Sync {
-    fn eval(&self, q: Query) -> Answer;
+    fn eval(&self, q: &Query) -> Answer;
 }
 
 #[derive(Default)]
@@ -151,20 +151,30 @@ struct Node {
     len: u32,
     player: u8,
     value: f32,
+    stale: bool,
 }
 
 struct Edge {
     action: Action,
     prior: f32,
-    logit: f32,
     n: u32,
     w: f32,
     pending: u32,
+    pi: f32,
 }
 
 struct Step {
     node: u32,
     edge: u32,
+}
+
+#[derive(Default)]
+struct Batch {
+    q: Query,
+    path: Vec<Step>,
+    fresh: Vec<(u32, Range<usize>, Range<usize>)>,
+    acts: Vec<Action>,
+    legal: Vec<Action>,
 }
 
 enum Leaf {
@@ -185,7 +195,6 @@ fn halving(m: usize, sims: u32) -> Vec<(usize, u32)> {
     phases
 }
 
-#[derive(Default)]
 struct Tree {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
@@ -193,8 +202,13 @@ struct Tree {
 }
 
 impl Tree {
+    fn new(sims: u32) -> Tree {
+        let nodes = 1 + sims as usize;
+        Tree { nodes: Vec::with_capacity(nodes), edges: Vec::new(), index: HashMap::with_capacity_and_hasher(nodes, Default::default()) }
+    }
+
     fn node(&mut self, player: u8) -> u32 {
-        self.nodes.push(Node { first: 0, len: 0, player, value: 0.0 });
+        self.nodes.push(Node { first: 0, len: 0, player, value: 0.0, stale: true });
         (self.nodes.len() - 1) as u32
     }
 
@@ -203,12 +217,16 @@ impl Tree {
         n.first = self.edges.len() as u32;
         n.len = acts.len() as u32;
         n.value = value;
-        self.edges.extend(acts.iter().zip(prior).map(|(&action, &prior)| Edge { action, prior, logit: prior.ln(), n: 0, w: 0.0, pending: 0 }));
+        self.edges.extend(acts.iter().zip(prior).map(|(&action, &prior)| Edge { action, prior, n: 0, w: 0.0, pending: 0, pi: 0.0 }));
+    }
+
+    fn span(&self, node: u32) -> Range<usize> {
+        let n = &self.nodes[node as usize];
+        n.first as usize..(n.first + n.len) as usize
     }
 
     fn edges(&self, node: u32) -> &[Edge] {
-        let n = &self.nodes[node as usize];
-        &self.edges[n.first as usize..(n.first + n.len) as usize]
+        &self.edges[self.span(node)]
     }
 
     fn completed(&self, node: u32) -> impl Fn(&Edge) -> f32 {
@@ -231,24 +249,30 @@ impl Tree {
 
     fn logits(&self, node: u32) -> impl Iterator<Item = f32> + '_ {
         let sigma = self.sigma(node);
-        self.edges(node).iter().map(move |e| e.logit + sigma(e))
+        self.edges(node).iter().map(move |e| e.prior.ln() + sigma(e))
     }
 
-    fn improved(&self, node: u32) -> Vec<f32> {
-        let logits: Vec<f32> = self.logits(node).collect();
-        let top = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let z: f32 = logits.iter().map(|l| (l - top).exp()).sum();
-        logits.iter().map(|l| (l - top).exp() / z).collect()
+    fn improved(&mut self, node: u32) -> &[Edge] {
+        let span = self.span(node);
+        if std::mem::take(&mut self.nodes[node as usize].stale) {
+            let sigma = self.sigma(node);
+            let edges = &mut self.edges[span.clone()];
+            edges.iter_mut().for_each(|e| e.pi = e.prior.ln() + sigma(e));
+            let top = edges.iter().map(|e| e.pi).fold(f32::NEG_INFINITY, f32::max);
+            edges.iter_mut().for_each(|e| e.pi = (e.pi - top).exp());
+            let total: f32 = edges.iter().map(|e| e.pi).sum();
+            edges.iter_mut().for_each(|e| e.pi /= total);
+        }
+        &self.edges[span]
     }
 
-    fn select(&self, node: u32) -> u32 {
-        let edges = self.edges(node);
+    fn select(&mut self, node: u32) -> u32 {
+        let first = self.nodes[node as usize].first;
+        let edges = self.improved(node);
         let total = (1 + edges.iter().map(|e| e.n + e.pending).sum::<u32>()) as f32;
-        let top = self.logits(node).fold(f32::NEG_INFINITY, f32::max);
-        let z: f32 = self.logits(node).map(|l| (l - top).exp()).sum();
-        let score = self.logits(node).zip(edges).map(|(l, e)| (l - top).exp() / z - (e.n + e.pending) as f32 / total);
+        let score = edges.iter().map(|e| e.pi - (e.n + e.pending) as f32 / total);
         let best = score.enumerate().max_by(|a, b| a.1.total_cmp(&b.1)).expect("an expanded node has an edge").0;
-        self.nodes[node as usize].first + best as u32
+        first + best as u32
     }
 
     fn descend(&mut self, w: &mut State, ctx: &Ctx, rng: &mut Rng, mut edge: u32, path: &mut Vec<Step>) -> Leaf {
@@ -284,7 +308,9 @@ impl Tree {
 
     fn backup(&mut self, path: &[Step], white: f32) {
         for s in path {
-            let sign = if self.nodes[s.node as usize].player == 0 { 1.0 } else { -1.0 };
+            let node = &mut self.nodes[s.node as usize];
+            node.stale = true;
+            let sign = if node.player == 0 { 1.0 } else { -1.0 };
             let e = &mut self.edges[s.edge as usize];
             e.pending -= 1;
             e.n += 1;
@@ -298,15 +324,15 @@ impl Tree {
         }
     }
 
-    fn simulate(&mut self, oracle: &dyn Oracle, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng, visits: &[u32]) {
-        let (mut path, mut acts, mut legal, mut fresh) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    fn simulate(&mut self, batch: &mut Batch, oracle: &dyn Oracle, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng, visits: &[u32]) {
+        let Batch { q, path, fresh, acts, legal } = batch;
         let mut next = 0;
         while next < visits.len() {
-            let mut q = Query::default();
+            q.clear();
             while next < visits.len() {
                 let (mut w, start) = (*root, path.len());
                 opp.deal(&mut w, rng);
-                match self.descend(&mut w, ctx, rng, visits[next], &mut path) {
+                match self.descend(&mut w, ctx, rng, visits[next], path) {
                     Leaf::Ended => {
                         self.backup(&path[start..], crate::score(&w, 0));
                         path.truncate(start);
@@ -317,10 +343,10 @@ impl Tree {
                         break;
                     }
                     Leaf::Fresh(node) => {
-                        w.legal_actions_into(&mut legal);
-                        q.push(&w, ctx, &legal);
+                        w.legal_actions_into(legal);
+                        q.push(&w, ctx, legal);
                         fresh.push((node, start..path.len(), acts.len()..acts.len() + legal.len()));
-                        acts.extend_from_slice(&legal);
+                        acts.extend_from_slice(legal);
                     }
                 }
                 next += 1;
@@ -353,17 +379,16 @@ pub enum Search {
 }
 
 pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> Choice {
-    let acts = root.legal_actions();
-    let mut q = Query::default();
-    q.push(root, ctx, &acts);
-    let answer = oracle.eval(q);
-    let mut tree = Tree::default();
-    let node = tree.node(root.to_act());
-    tree.expand(node, &acts, &answer.prior, answer.value[0]);
+    let (acts, mut batch) = (root.legal_actions(), Batch::default());
+    batch.q.push(root, ctx, &acts);
+    let answer = oracle.eval(&batch.q);
     let (sims, considered, noisy) = match search {
         Search::Full(sims) => (sims, 8, true),
         Search::Fast(sims) => (sims, 4, false),
     };
+    let mut tree = Tree::new(sims);
+    let node = tree.node(root.to_act());
+    tree.expand(node, &acts, &answer.prior, answer.value[0]);
     let gumbel: Vec<f32> = acts.iter().map(|_| if noisy { rng.gumbel() } else { 0.0 }).collect();
     let score = |tree: &Tree| -> Vec<f32> { tree.logits(0).zip(&gumbel).map(|(l, g)| g + l).collect() };
     let mut alive: Vec<u32> = (0..acts.len() as u32).collect();
@@ -372,7 +397,7 @@ pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: 
         alive.sort_by(|&a, &b| s[b as usize].total_cmp(&s[a as usize]));
         alive.truncate(k);
         let visits: Vec<u32> = (0..n as usize).map(|j| alive[j % k]).collect();
-        tree.simulate(oracle, root, ctx, opp, rng, &visits);
+        tree.simulate(&mut batch, oracle, root, ctx, opp, rng, &visits);
     }
     let (s, edges) = (score(&tree), tree.edges(0));
     let most = edges.iter().map(|e| e.n).max().expect("a root has a move");
@@ -380,18 +405,18 @@ pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: 
         .filter(|&i| edges[i].n == most)
         .max_by(|&a, &b| s[a].total_cmp(&s[b]))
         .expect("a most visited move exists");
-    let (probs, q) = (tree.improved(0), tree.completed(0));
-    let value = probs.iter().zip(edges).map(|(p, e)| p * q(e)).sum();
+    let q = tree.completed(0);
+    let edges = tree.improved(0);
+    let probs = edges.iter().map(|e| e.pi).collect();
+    let value = edges.iter().map(|e| e.pi * q(e)).sum();
     Choice { probs, pick, value }
 }
 
-#[cfg(test)]
-pub(crate) struct Flat;
+pub struct Flat;
 
-#[cfg(test)]
 impl Oracle for Flat {
-    fn eval(&self, q: Query) -> Answer {
-        Answer { value: vec![0.0; q.len()], prior: uniform(&q) }
+    fn eval(&self, q: &Query) -> Answer {
+        Answer { value: vec![0.0; q.len()], prior: uniform(q) }
     }
 }
 
@@ -401,7 +426,7 @@ mod tests {
     use crate::policy::greedy;
 
     fn root(prior: &[f32], value: f32, visits: &[(u32, f32)]) -> Tree {
-        let mut tree = Tree::default();
+        let mut tree = Tree::new(0);
         let acts: Vec<Action> = (0..prior.len() as u8).map(|coin| Action::Pass { coin }).collect();
         let node = tree.node(0);
         tree.expand(node, &acts, prior, value);
@@ -413,6 +438,10 @@ mod tests {
 
     fn sigma(tree: &Tree) -> Vec<f32> {
         tree.edges(0).iter().map(tree.sigma(0)).collect()
+    }
+
+    fn improved(mut tree: Tree) -> Vec<f32> {
+        tree.improved(0).iter().map(|e| e.pi).collect()
     }
 
     fn close(got: &[f32], want: &[f32]) {
@@ -439,17 +468,17 @@ mod tests {
 
     #[test]
     fn the_improved_policy_follows_the_better_q() {
-        close(&root(&[0.8, 0.2], 0.0, &[(1, 0.0), (1, 0.1)]).improved(0), &[0.2380, 0.7620]);
-        close(&root(&[0.8, 0.2], 0.0, &[]).improved(0), &[0.8, 0.2]);
-        assert!(root(&[0.8, 0.2], 0.0, &[(1, -1.0), (1, 1.0)]).improved(0)[1] > 0.99);
+        close(&improved(root(&[0.8, 0.2], 0.0, &[(1, 0.0), (1, 0.1)])), &[0.2380, 0.7620]);
+        close(&improved(root(&[0.8, 0.2], 0.0, &[])), &[0.8, 0.2]);
+        assert!(improved(root(&[0.8, 0.2], 0.0, &[(1, -1.0), (1, 1.0)]))[1] > 0.99);
     }
 
     #[test]
     fn a_pending_visit_turns_the_next_walk_away_without_changing_the_policy() {
         let mut tree = root(&[0.6, 0.4], 0.0, &[]);
         tree.edges[0].pending = 1;
-        close(&tree.improved(0), &[0.6, 0.4]);
         assert_eq!(tree.select(0), 1);
+        close(&improved(tree), &[0.6, 0.4]);
     }
 
     #[test]

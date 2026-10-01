@@ -645,7 +645,7 @@ impl Gpu {
 }
 
 impl Oracle for Gpu {
-    fn eval(&self, q: Query) -> Answer {
+    fn eval(&self, q: &Query) -> Answer {
         self.memo.eval(q, |q| {
             let (back, answer) = mpsc::channel();
             self.queue.push((q, back));

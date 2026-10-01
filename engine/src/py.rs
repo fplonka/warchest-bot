@@ -105,7 +105,7 @@ fn evaluate(rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>, device: usize) -> PyRes
     use crate::search::Oracle;
     let net = net()?;
     let gpu = crate::cuda::Gpu::new(&[device], &net).map_err(PyRuntimeError::new_err)?;
-    let answer = gpu.eval(crate::search::Query { rows, desc, off });
+    let answer = gpu.eval(&crate::search::Query { rows, desc, off });
     Ok((answer.value, answer.prior))
 }
 

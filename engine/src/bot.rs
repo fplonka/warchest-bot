@@ -16,7 +16,7 @@ fn read(net: &dyn Oracle, ctx: &Ctx, worlds: &[(State, Vec<Action>)]) -> Vec<f64
         q.push(s, ctx, acts);
     }
     let n = worlds.iter().flat_map(|(_, acts)| std::iter::repeat_n(acts.len() as f64, acts.len()));
-    net.eval(q).prior.into_iter().zip(n).map(|(pi, n)| (1.0 - EPS) * pi as f64 + EPS / n).collect()
+    net.eval(&q).prior.into_iter().zip(n).map(|(pi, n)| (1.0 - EPS) * pi as f64 + EPS / n).collect()
 }
 
 pub enum Brain {

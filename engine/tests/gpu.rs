@@ -33,7 +33,7 @@ fn positions(games: u64) -> Query {
 #[test]
 fn priors_are_distributions_and_values_are_bounded() {
     let q = positions(40);
-    let a = Gpu::new(&[0], &Net::random(7)).unwrap().eval(q.clone());
+    let a = Gpu::new(&[0], &Net::random(7)).unwrap().eval(&q);
     assert_eq!(a.value.len(), q.len());
     assert_eq!(a.prior.len(), q.off[q.len()] as usize);
     assert!(a.value.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
@@ -49,13 +49,13 @@ fn priors_are_distributions_and_values_are_bounded() {
 fn a_position_evaluates_the_same_alone_or_in_a_crowd() {
     let q = positions(60);
     let net = Net::random(11);
-    let crowd = Gpu::new(&[0], &net).unwrap().eval(q.clone());
+    let crowd = Gpu::new(&[0], &net).unwrap().eval(&q);
     let gpu = Gpu::new(&[0], &net).unwrap();
     for i in (0..q.len()).step_by(97) {
         let mut one = Query::default();
         one.push_row(q.row(i));
         let r = q.actions(i);
-        let alone = gpu.eval(one);
+        let alone = gpu.eval(&one);
         assert!((alone.value[0] - crowd.value[i]).abs() < 1e-4, "row {i} value");
         for (x, y) in alone.prior.iter().zip(&crowd.prior[r]) {
             assert!((x - y).abs() < 1e-4, "row {i} prior {x} vs {y}");
