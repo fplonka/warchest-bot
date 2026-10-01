@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use warchest::board::{board, NONE, N_HEXES, N_LOCATIONS};
 use warchest::rng::Rng;
 use warchest::selfplay::{game, DRAFT_POOL};
@@ -90,6 +92,8 @@ fn invariants_random_playouts() {
                 "no legal actions at a non-terminal state: {}",
                 s.pending_debug()
             );
+            let distinct: HashSet<u32> = acts.iter().map(|a| a.encode()).collect();
+            assert_eq!(distinct.len(), acts.len(), "a move is listed twice: {}", s.pending_debug());
             let a = acts[rng.below(acts.len())];
             s.apply_inplace(a);
             check_invariants(&s, &init);

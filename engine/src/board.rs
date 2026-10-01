@@ -128,3 +128,17 @@ static BOARD: OnceLock<Board> = OnceLock::new();
 pub fn board() -> &'static Board {
     BOARD.get_or_init(Board::new)
 }
+
+pub fn mask(n: usize, f: impl Fn(usize) -> bool) -> u64 {
+    (0..n).fold(0, |m, i| m | (f(i) as u64) << i)
+}
+
+pub fn bits(mut m: u64) -> impl Iterator<Item = usize> {
+    std::iter::from_fn(move || {
+        (m != 0).then(|| {
+            let i = m.trailing_zeros() as usize;
+            m &= m - 1;
+            i
+        })
+    })
+}
