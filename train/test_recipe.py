@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import os
 import pathlib
 import sys
@@ -6,6 +7,7 @@ import types
 
 os.environ["TORCHDYNAMO_DISABLE"] = "1"
 
+import numpy as np
 import torch
 
 import config
@@ -72,8 +74,29 @@ def test_value_only_rows_leave_the_policy_loss_alone():
         assert torch.allclose(mixed[key], alone[key]), key
 
 
+def test_a_saved_buffer_samples_as_before():
+    train = load_train_module()
+    rng = np.random.default_rng(0)
+    buf = train.Buffer(16)
+    for n in rng.integers(1, 6, 9):
+        off = np.concatenate([[0], np.cumsum(rng.integers(0, 120, n))])
+        buf.add(rng.integers(0, 256, (n, 7), np.uint8), rng.integers(0, 256, (off[-1], 6), np.uint8), off,
+                rng.random(off[-1]).astype(np.float16), rng.random((n, len(HORIZONS)), np.float32))
+    saved = io.BytesIO()
+    buf.save(saved)
+    saved.seek(0)
+    back = train.Buffer(16)
+    back.load(saved)
+    assert buf.lo > 0 and buf.acts > buf.acap
+    assert (back.lo, back.rows, back.acts) == (buf.lo, buf.rows, buf.acts)
+    ids = np.arange(buf.lo, buf.rows)
+    for a, b in zip(buf.gather(ids), back.gather(ids)):
+        assert np.array_equal(a, b)
+
+
 if __name__ == "__main__":
     test_lr_warms_up_holds_the_peak_then_cools_down()
     test_playout_switches_at_half_the_run()
     test_value_only_rows_leave_the_policy_loss_alone()
+    test_a_saved_buffer_samples_as_before()
     print("recipe test OK")

@@ -3,6 +3,7 @@ import argparse
 import collections
 import copy
 import dataclasses
+import gzip
 import json
 import os
 import pathlib
@@ -12,6 +13,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
+from numpy.lib.format import read_array, write_array
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import torch
@@ -72,6 +74,33 @@ class Buffer:
         self.pa[at], self.pp[at] = desc, target
         self.rows += n
         self.acts += na
+
+    def live_rows(self):
+        return np.arange(self.lo, self.rows) % self.cap
+
+    def live_acts(self):
+        return np.arange(self.astart[self.lo % self.cap], self.acts) % self.acap
+
+    def save(self, path):
+        rows, acts = self.live_rows(), self.live_acts()
+        with gzip.open(path, "wb", compresslevel=1) as f:
+            write_array(f, np.array([self.lo, self.rows, self.acts]))
+            write_array(f, time.time() - self.written_at[rows])
+            for a in (self.x, self.z, self.astart, self.alen):
+                write_array(f, a[rows])
+            for a in (self.pa, self.pp):
+                write_array(f, a[acts])
+
+    def load(self, path):
+        with gzip.open(path) as f:
+            self.lo, self.rows, self.acts = read_array(f).tolist()
+            rows = self.live_rows()
+            self.written_at[rows] = time.time() - read_array(f)
+            for a in (self.x, self.z, self.astart, self.alen):
+                a[rows] = read_array(f)
+            acts = self.live_acts()
+            for a in (self.pa, self.pp):
+                a[acts] = read_array(f)
 
     def span_seconds(self):
         return time.time() - self.written_at[self.lo % self.cap] if self.lo < self.rows else 0.0
@@ -170,6 +199,10 @@ def write_log(args, snaps):
     os.replace(tmp, path)
 
 
+def buffer_file(snapshot):
+    return pathlib.Path(snapshot).with_suffix(".buffer")
+
+
 def cpu_state(net):
     return {name: value.detach().cpu().clone() for name, value in net.state_dict().items()}
 
@@ -252,6 +285,8 @@ def main():
         rng.bit_generator.state = checkpoint["numpy_rng"]
         torch.set_rng_state(checkpoint["torch_rng"])
         torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
+        if buffer_file(resume).exists():
+            buf.load(buffer_file(resume))
     else:
         if args.init_weights:
             for net in (value, acting):
@@ -285,9 +320,13 @@ def main():
             "epoch": epoch, "snapshots": snaps, "progress": progress,
             "cfg": dataclasses.asdict(args), "label": label, "git": args.git,
         }
+        replay = buffer_file(path)
+        buf.save(f"{replay}.tmp")
+        os.replace(f"{replay}.tmp", replay)
         torch.save(state, path + ".tmp")
         os.replace(path + ".tmp", path)
         for old in snaps[:-1]:
+            buffer_file(f"{args.out}/{old['file']}").unlink(missing_ok=True)
             os.remove(f"{args.out}/{old['file']}")
         del snaps[:-1]
         write_log(args, snaps)
