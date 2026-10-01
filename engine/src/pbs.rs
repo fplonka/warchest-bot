@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::actions::{Action, N_KINDS};
-use crate::board::{board, NONE, N_HEXES};
+use crate::board::{bits, board, mask, NONE, N_HEXES};
 use crate::rng::Rng;
 use crate::state::{State, CONT_CAP, PENDING_KINDS, Z_BAG, Z_ELIM, Z_FACEDOWN, Z_FACEUP, Z_HAND, Z_INFLIGHT, Z_SUPPLY};
 use crate::units::{write_card_features, CARD_FEATS, ENSIGN, MARSHAL, N_UNITS, ROYAL_COIN};
@@ -42,12 +42,8 @@ impl Ctx {
     }
 }
 
-fn tally(s: &State, p: u8, ctx: &Ctx, zones: &[usize]) -> [u8; NSLOT] {
-    ctx.slots[p as usize].map(|u| zones.iter().map(|&z| s.zones[p as usize][z][u as usize]).sum())
-}
-
 pub fn unseen(s: &State, p: u8, ctx: &Ctx) -> [u8; NSLOT] {
-    tally(s, p, ctx, &[Z_HAND, Z_FACEDOWN, Z_INFLIGHT])
+    ctx.slots[p as usize].map(|u| [Z_HAND, Z_FACEDOWN, Z_INFLIGHT].iter().map(|&z| s.zones[p as usize][z][u as usize]).sum())
 }
 
 type Layout = [[u8; N_UNITS]; HIDDEN.len()];
@@ -212,18 +208,6 @@ pub fn rules_table_hash() -> u64 {
 
 pub const PUBFEAT: usize = OFF_LOOSE + LOOSE;
 
-fn stack_bits(s: &State) -> ([u8; CONT_CAP], [u64; CONT_CAP]) {
-    let mut kinds = [0xffu8; CONT_CAP];
-    let mut owed = [0u64; CONT_CAP];
-    for (i, c) in s.stack().into_iter().enumerate() {
-        if let Some(c) = c {
-            kinds[i] = c.tag();
-            owed[i] = c.owed_hexes();
-        }
-    }
-    (kinds, owed)
-}
-
 fn stack_from_row(row: &[u8]) -> ([u8; CONT_CAP], [u64; CONT_CAP]) {
     let mut kinds = [0u8; CONT_CAP];
     let mut owed = [0u64; CONT_CAP];
@@ -236,29 +220,22 @@ fn stack_from_row(row: &[u8]) -> ([u8; CONT_CAP], [u64; CONT_CAP]) {
 }
 
 pub fn pack_row(s: &State, ctx: &Ctx, out: &mut [u8]) {
-    debug_assert_eq!(out.len(), ROW_BYTES);
-    for t in 0..2 * NSLOT {
-        out[ROW_IDS + t] = ctx.slots[t / NSLOT][t % NSLOT];
+    let out: &mut [u8; ROW_BYTES] = out.try_into().expect("a row is ROW_BYTES long");
+    out[ROW_IDS..ROW_HEX_OWNER].copy_from_slice(ctx.slots.as_flattened());
+    out[ROW_HEX_OWNER..ROW_HEX_SLOT].copy_from_slice(&s.hex_owner);
+    out[ROW_HEX_SLOT..ROW_HEX_HEIGHT].fill(NONE);
+    for h in bits(mask(N_HEXES, |h| s.hex_owner[h] != NONE)) {
+        out[ROW_HEX_SLOT + h] = ctx.slot_of[s.hex_owner[h] as usize][s.hex_type[h] as usize] as u8;
     }
-    for h in 0..N_HEXES {
-        out[ROW_HEX_OWNER + h] = s.hex_owner[h];
-        out[ROW_HEX_SLOT + h] = if s.hex_owner[h] == NONE {
-            NONE
-        } else {
-            ctx.slot_of[s.hex_owner[h] as usize][s.hex_type[h] as usize] as u8
-        };
-        out[ROW_HEX_HEIGHT + h] = s.hex_height[h];
-        out[ROW_HEX_MARKER + h] = s.loc_marker[h];
-    }
-    let actor = s.to_act() as usize;
-    for p in 0..2usize {
-        let res = tally(s, p as u8, ctx, &HIDDEN);
-        let seen = u8::from(p == actor);
-        for k in 0..NSLOT {
-            let u = ctx.slots[p][k] as usize;
-            let z = &s.zones[p];
+    out[ROW_HEX_HEIGHT..ROW_HEX_MARKER].copy_from_slice(&s.hex_height);
+    out[ROW_HEX_MARKER..ROW_PILES].copy_from_slice(&s.loc_marker);
+    let actor = s.to_act();
+    for p in 0..2 {
+        let (z, seen) = (&s.zones[p], u8::from(p == actor as usize));
+        for (k, &u) in ctx.slots[p].iter().enumerate() {
+            let u = u as usize;
             out[ROW_PILES + (p * NSLOT + k) * PILE_COUNTS..][..PILE_COUNTS].copy_from_slice(&[
-                res[k],
+                HIDDEN.iter().map(|&h| z[h][u]).sum(),
                 seen * z[Z_HAND][u],
                 seen * z[Z_FACEDOWN][u],
                 seen * z[Z_INFLIGHT][u],
@@ -267,19 +244,19 @@ pub fn pack_row(s: &State, ctx: &Ctx, out: &mut [u8]) {
                 z[Z_ELIM][u],
             ]);
         }
-        out[ROW_HAND_SIZE + p] = s.hand_size(p as u8);
-        out[ROW_FD_SIZE + p] = s.zones[p][Z_FACEDOWN].iter().sum();
-        out[ROW_BAG_SIZE + p] = s.bag_size(p as u8);
+        out[ROW_HAND_SIZE + p] = z[Z_HAND].iter().sum();
+        out[ROW_FD_SIZE + p] = z[Z_FACEDOWN].iter().sum();
+        out[ROW_BAG_SIZE + p] = z[Z_BAG].iter().sum();
     }
     out[ROW_INITIATIVE] = s.initiative;
     out[ROW_INIT_MOVED] = s.initiative_moved as u8;
-    out[ROW_TO_ACT] = s.to_act();
+    out[ROW_TO_ACT] = actor;
     out[ROW_WP] = s.wp_v2_triggered as u8;
-    let (kinds, owed) = stack_bits(s);
-    out[ROW_STACK_KIND..ROW_STACK_KIND + CONT_CAP].copy_from_slice(&kinds);
-    for d in 0..CONT_CAP {
-        let o = ROW_STACK_OWED + d * 8;
-        out[o..o + 8].copy_from_slice(&owed[d].to_le_bytes());
+    out[ROW_STACK_KIND..ROW_STACK_OWED].fill(0xff);
+    out[ROW_STACK_OWED..].fill(0);
+    for (d, c) in std::iter::once(&s.pending).chain(s.conts.iter()).take(CONT_CAP).enumerate() {
+        out[ROW_STACK_KIND + d] = c.tag();
+        out[ROW_STACK_OWED + d * 8..][..8].copy_from_slice(&c.owed_hexes().to_le_bytes());
     }
 }
 

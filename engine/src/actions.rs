@@ -26,6 +26,12 @@ macro_rules! actions {
         pub const N_KINDS: usize = [$(Kind::$name),*].len();
 
         impl Action {
+            pub fn kind(&self) -> usize {
+                match self {
+                    $(Action::$name { .. } => Kind::$name as usize),*
+                }
+            }
+
             pub fn encode(&self) -> u32 {
                 match *self {
                     $(
@@ -127,11 +133,6 @@ pub enum Play {
 pub const N_PLAYS: usize = Play::Other as usize;
 
 impl Action {
-    #[inline]
-    pub fn kind(&self) -> usize {
-        (self.encode() & ((1 << KIND_BITS) - 1)) as usize
-    }
-
     #[inline]
     pub fn recruited(&self) -> u8 {
         match *self {

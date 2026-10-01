@@ -404,17 +404,6 @@ impl State {
         &self.pending
     }
 
-    pub fn stack(&self) -> [Option<Cont>; CONT_CAP] {
-        let mut a = [None; CONT_CAP];
-        a[0] = Some(self.pending);
-        for (i, c) in self.conts.iter().enumerate() {
-            if 1 + i < CONT_CAP {
-                a[1 + i] = Some(*c);
-            }
-        }
-        a
-    }
-
     pub fn mirror(&self) -> State {
         let flip = |p: u8| if p == NONE { NONE } else { 1 - p };
         let mut m = *self;
