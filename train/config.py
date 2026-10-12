@@ -12,6 +12,7 @@ class Cfg:
     warm_minutes: float = 3.0
     snapshot_every: float = 240.0
     init_weights: str = ""
+    holdout: str = ""
     resume: str = ""
 
     batch: int = 8192

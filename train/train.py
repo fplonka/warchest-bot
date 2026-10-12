@@ -36,6 +36,7 @@ SHORT_W = 0.1
 WINDOW = 250_000
 OWN_W = 1.0
 UNSEEN_W = 0.1
+HOLDOUT_ROWS = 200_000
 PLAYS = ("attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative")
 FRESH = ("value_loss", "value_sq_err", "policy_loss", "own_loss", "unseen_loss", *SHORTS)
 GAME_KEYS = ("games", "decisions", "timeouts", "white_wins", "black_wins", "draws",
@@ -153,14 +154,15 @@ def losses(net, x, desc, parow, target, z, wp):
     taught = target.sum()
     policy_loss = -(target * logp).sum() / taught
     entropy = -(target * target.clamp(min=1e-30).log()).sum() / taught
-    stats = {"value_loss": value_loss.detach(),
-             "policy_loss": policy_loss.detach(),
-             "own_loss": own_loss.detach(),
-             "unseen_loss": unseen_loss.detach(),
+    stats = {"value_loss": value_loss,
+             "policy_loss": policy_loss,
+             "own_loss": own_loss,
+             "unseen_loss": unseen_loss,
              "policy_target_entropy": entropy,
-             "policy_kl": policy_loss.detach() - entropy,
-             "value_sq_err": (net.value(win.detach()) - z[:, 0]).square().mean(),
-             **dict(zip(SHORTS, short_loss.detach().unbind()))}
+             "prior_entropy": -(logp.exp() * logp).sum() / n,
+             "policy_kl": policy_loss - entropy,
+             "value_sq_err": (net.value(win) - z[:, 0]).square().mean(),
+             **dict(zip(SHORTS, short_loss.unbind()))}
     return value_loss + wp * policy_loss + SHORT_W * short_loss.sum() + OWN_W * own_loss + UNSEEN_W * unseen_loss, stats
 
 
@@ -173,7 +175,7 @@ def train_steps(net, acting, opt, buf, steps, batch, micro, rng, device, batch_f
             loss, stats = losses(net, *parts, policy_w)
             (loss * (micro / batch)).backward()
             for key, value in stats.items():
-                acc[key] = acc[key] + value * (micro / batch)
+                acc[key] = acc[key] + value.detach() * (micro / batch)
         acc["grad_norm"] = acc["grad_norm"] + nn.utils.clip_grad_norm_(net.parameters(), 5.0)
         opt.step()
         with torch.no_grad():
@@ -188,6 +190,27 @@ def probe(net, buf, n, micro, rng, device, batch_fn, policy_w):
     with torch.no_grad():
         _, stats = losses(net, *parts, policy_w)
     return {f"fresh_{k}": stats[k] * n for k in FRESH}
+
+
+def contrast(net, x, desc, parow):
+    h = net.moves(desc, net.evaluate(x)[2], parow)
+    lengths = torch.bincount(parow, minlength=len(x))
+    spread = (h - torch.segment_reduce(h, "mean", lengths=lengths)[parow]).norm(dim=1) / h.norm(dim=1)
+    return torch.segment_reduce(spread, "mean", lengths=lengths)[lengths > 0].mean()
+
+
+def holdout(net, buf, micro, device, batch_fn, policy_w):
+    runs = []
+    with torch.no_grad():
+        for ids in np.array_split(np.arange(buf.lo, buf.rows), -(-len(buf) // micro)):
+            batch = batch_fn(buf.gather(ids), device)
+            runs.append(losses(net, *batch, policy_w)[1] | {"move_contrast": contrast(net, *batch[:3])})
+    block = net.blocks[-1].requires_grad_()
+    value, policy = (nn.utils.parameters_to_vector(torch.autograd.grad(losses(net, *batch, policy_w)[1][k], list(block.parameters()))).norm()
+                     for k in ("value_loss", "policy_loss"))
+    block.requires_grad_(False)
+    return {**{f"holdout_{k}": torch.stack([r[k] for r in runs]).mean().item() for k in ("value_loss", "policy_kl", "move_contrast")},
+            "holdout_grad_ratio": (policy / value).item()}
 
 
 def ingest(buf, data):
@@ -301,6 +324,7 @@ def main():
     origin = resume or args.init_weights
     if origin and buffer_file(origin).exists():
         buf.load(buffer_file(origin))
+    held = Buffer(HOLDOUT_ROWS).load(args.holdout) if args.holdout else None
     if checkpoint:
         value.load_state_dict(checkpoint["value"])
         acting.load_state_dict(checkpoint["acting"])
@@ -332,8 +356,12 @@ def main():
     write_log(args, snaps)
 
     def snapshot(el, label=None):
+        nonlocal epoch
         n = int(snaps[-1]["file"][5:9]) + 1 if snaps else 0
         label = label or f"s{n}"
+        scores = holdout(acting, held, args.micro, dev, gpu_batch.make_batch, args.policy_w) if held is not None else {}
+        append_epoch(args, {"phase": "snapshot", "label": label, "t": round(el, 1), "epoch": epoch, **scores})
+        epoch += 1
         path = f"{args.out}/snap_{n:04d}.pt"
         snaps.append({"label": label, "t": round(el, 1), "file": os.path.basename(path)})
         state = {
@@ -359,7 +387,8 @@ def main():
 
     def tick(rec, line):
         nonlocal epoch, next_snap
-        rec.update(t=round(time.time() - t0, 1), epoch=epoch, buf=len(buf), lr=opt.param_groups[0]["lr"])
+        rec.update(t=round(time.time() - t0, 1), epoch=epoch, buf=len(buf), lr=opt.param_groups[0]["lr"],
+                   **{f"norm_{k}": round(v.norm().item(), 3) for k, v in value.named_parameters() if v.dim() == 2 and k.startswith(("move", "value_"))})
         append_epoch(args, rec)
         print(line, flush=True)
         epoch += 1
