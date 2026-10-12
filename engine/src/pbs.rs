@@ -42,8 +42,12 @@ impl Ctx {
     }
 }
 
-fn reserve(s: &State, p: u8, ctx: &Ctx) -> [u8; NSLOT] {
-    ctx.slots[p as usize].map(|u| HIDDEN.iter().map(|&z| s.zones[p as usize][z][u as usize]).sum())
+fn tally(s: &State, p: u8, ctx: &Ctx, zones: &[usize]) -> [u8; NSLOT] {
+    ctx.slots[p as usize].map(|u| zones.iter().map(|&z| s.zones[p as usize][z][u as usize]).sum())
+}
+
+pub fn unseen(s: &State, p: u8, ctx: &Ctx) -> [u8; NSLOT] {
+    tally(s, p, ctx, &[Z_HAND, Z_FACEDOWN, Z_INFLIGHT])
 }
 
 type Layout = [[u8; N_UNITS]; HIDDEN.len()];
@@ -248,7 +252,7 @@ pub fn pack_row(s: &State, ctx: &Ctx, out: &mut [u8]) {
     }
     let actor = s.to_act() as usize;
     for p in 0..2usize {
-        let res = reserve(s, p as u8, ctx);
+        let res = tally(s, p as u8, ctx, &HIDDEN);
         let seen = u8::from(p == actor);
         for k in 0..NSLOT {
             let u = ctx.slots[p][k] as usize;

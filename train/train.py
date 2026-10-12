@@ -33,8 +33,10 @@ EMA_ROWS = 1_024_000
 HORIZONS = warchest.HORIZONS
 SHORTS = tuple(f"short_{h:g}_loss" for h in HORIZONS[1:])
 SHORT_W = 0.1
+OWN_W = 1.0
+UNSEEN_W = 0.1
 PLAYS = ("attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative")
-FRESH = ("value_loss", "value_sq_err", "policy_loss", *SHORTS)
+FRESH = ("value_loss", "value_sq_err", "policy_loss", "own_loss", "unseen_loss", *SHORTS)
 GAME_KEYS = ("games", "decisions", "timeouts", "white_wins", "black_wins", "draws",
              *(f"plays_{p}" for p in PLAYS))
 
@@ -52,7 +54,7 @@ class Buffer:
     def __init__(self, cap):
         self.cap, self.acap = cap, cap * 32
         self.x = np.zeros((cap, ROW_BYTES), np.uint8)
-        self.z = np.zeros((cap, len(HORIZONS)), np.float32)
+        self.z = np.zeros((cap, len(HORIZONS) + warchest.N_LOCATIONS + warchest.NSLOT), np.float32)
         self.astart = np.zeros(cap, np.int64)
         self.alen = np.zeros(cap, np.int32)
         self.written_at = np.zeros(cap, np.float64)
@@ -96,7 +98,10 @@ class Buffer:
             self.lo, self.rows, self.acts = read_array(f).tolist()
             rows = self.live_rows()
             self.written_at[rows] = time.time() - read_array(f)
-            for a in (self.x, self.z, self.astart, self.alen):
+            self.x[rows] = read_array(f)
+            z = read_array(f)
+            self.z[rows, :z.shape[1]] = z
+            for a in (self.astart, self.alen):
                 a[rows] = read_array(f)
             acts = self.live_acts()
             for a in (self.pa, self.pp):
@@ -122,9 +127,13 @@ def losses(net, x, desc, parow, target, z, wp):
     with torch.autocast("cuda", torch.bfloat16):
         win, short, pieces = net.evaluate(x)
         logit = net.actions(desc, pieces, parow)
-    win, short, logit = win.float(), short.float(), logit.float()
+        own, unseen = net.aux_heads(pieces)
+    win, short, logit, own, unseen = win.float(), short.float(), logit.float(), own.float(), unseen.float()
+    held, coins = z[:, len(HORIZONS):].split([warchest.N_LOCATIONS, warchest.NSLOT], 1)
     value_loss = F.binary_cross_entropy_with_logits(win, (z[:, 0] + 1) / 2)
-    short_loss = (short - z[:, 1:]).square().mean(0)
+    short_loss = (short - z[:, 1:len(HORIZONS)]).square().mean(0)
+    own_loss = F.binary_cross_entropy_with_logits(own, (held + 1) / 2)
+    unseen_loss = (unseen - coins).square().mean()
     n = x.shape[0]
     top = torch.full((n,), -1e30, device=x.device).scatter_reduce(0, parow, logit.detach(), reduce="amax")
     shifted = logit - top[parow]
@@ -135,11 +144,13 @@ def losses(net, x, desc, parow, target, z, wp):
     entropy = -(target * target.clamp(min=1e-30).log()).sum() / taught
     stats = {"value_loss": value_loss.detach(),
              "policy_loss": policy_loss.detach(),
+             "own_loss": own_loss.detach(),
+             "unseen_loss": unseen_loss.detach(),
              "policy_target_entropy": entropy,
              "policy_kl": policy_loss.detach() - entropy,
              "value_sq_err": (net.value(win.detach()) - z[:, 0]).square().mean(),
              **dict(zip(SHORTS, short_loss.detach().unbind()))}
-    return value_loss + wp * policy_loss + SHORT_W * short_loss.sum(), stats
+    return value_loss + wp * policy_loss + SHORT_W * short_loss.sum() + OWN_W * own_loss + UNSEEN_W * unseen_loss, stats
 
 
 def train_steps(net, acting, opt, buf, steps, batch, micro, rng, device, batch_fn, policy_w):
