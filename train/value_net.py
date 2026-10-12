@@ -26,7 +26,6 @@ TOKENS = N_HEXES + NTYPE + 1
 STATE = TOKENS - 1
 NONE = TOKENS
 INDEX = torch.tensor(warchest.ATTENTION_INDEX).view(TOKENS, TOKENS)
-LOCATIONS = torch.tensor(warchest.hex_location_flags()).nonzero().squeeze(1)
 
 
 def gelu(x):
@@ -79,10 +78,7 @@ class Net(nn.Module):
         self.move1 = nn.Linear(7 * D, D)
         self.move2 = nn.Linear(D, 1)
 
-        self.aux = nn.ModuleDict({"own": nn.Linear(D, 1), "unseen": nn.Linear(D, 1)})
-
         self.register_buffer("index", INDEX.clone(), persistent=False)
-        self.register_buffer("locations", LOCATIONS.clone(), persistent=False)
         self.register_buffer("seat_of", torch.arange(NTYPE) // NSLOT, persistent=False)
 
     def evaluate(self, xpub):
@@ -112,20 +108,14 @@ class Net(nn.Module):
     def actions(self, desc, x, row):
         return self.move2(gelu(self.moves(desc, x, row))).squeeze(-1)
 
-    def aux_heads(self, x):
-        return self.aux.own(x[:, self.locations]).squeeze(-1), self.aux.unseen(x[:, N_HEXES + NSLOT:STATE]).squeeze(-1)
-
     def value(self, logit):
         return 2 * torch.sigmoid(logit) - 1
 
-    def deployed(self):
-        return [p for name, p in self.named_parameters() if not name.startswith("aux.")]
-
     def flat(self):
-        return nn.utils.parameters_to_vector(self.deployed()).detach().float().cpu().numpy()
+        return nn.utils.parameters_to_vector(self.parameters()).detach().float().cpu().numpy()
 
     def load_flat(self, flat):
-        nn.utils.vector_to_parameters(torch.as_tensor(flat), self.deployed())
+        nn.utils.vector_to_parameters(torch.as_tensor(flat), self.parameters())
         return self
 
     def grow(self, state):

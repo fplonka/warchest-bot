@@ -40,10 +40,6 @@ impl Ctx {
     }
 }
 
-pub fn unseen(s: &State, p: u8, ctx: &Ctx) -> [u8; NSLOT] {
-    ctx.slots[p as usize].map(|u| [Z_HAND, Z_FACEDOWN, Z_INFLIGHT].iter().map(|&z| s.zones[p as usize][z][u as usize]).sum())
-}
-
 type Layout = [[u8; NSLOT]; HIDDEN.len()];
 
 pub struct Belief {

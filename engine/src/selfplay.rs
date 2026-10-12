@@ -6,9 +6,9 @@ use rayon::prelude::*;
 
 use crate::actions::{Action, N_KINDS, N_PLAYS};
 use crate::arena::{Draft, Obs};
-use crate::board::{board, NONE, N_HEXES, N_LOCATIONS};
+use crate::board::NONE;
 use crate::bot::{Brain, Session};
-use crate::pbs::{obs_key, unseen, Ctx, NSLOT};
+use crate::pbs::obs_key;
 use crate::rng::Rng;
 use crate::search::Query;
 use crate::state::{Cont, State, BLACK, WHITE};
@@ -35,31 +35,18 @@ pub fn game(rng: &mut Rng) -> State {
 }
 
 pub const HORIZONS: [f32; 4] = [f32::INFINITY, 6.0, 16.0, 50.0];
-pub const Z: usize = HORIZONS.len() + N_LOCATIONS + NSLOT;
 
-fn targets(seen: &[(usize, f32, [u8; NSLOT])], end: &State) -> Vec<[f32; Z]> {
-    let held = [*end, end.mirror()].map(|view| {
-        let own = |h: usize| match view.loc_marker[h] {
-            WHITE => 1.0,
-            BLACK => -1.0,
-            _ => 0.0,
-        };
-        (0..N_HEXES).filter(|&h| board().is_location[h]).map(own).collect::<Vec<f32>>()
-    });
-    let mut t = [crate::score(end, WHITE as usize); HORIZONS.len()];
-    let mut z: Vec<[f32; Z]> = seen
+fn targets(seen: &[(usize, f32)], white: f32) -> Vec<[f32; 4]> {
+    let mut t = [white; 4];
+    let mut z: Vec<[f32; 4]> = seen
         .iter()
         .rev()
-        .map(|&(p, v, coins)| {
+        .map(|&(p, v)| {
             let sign = if p == WHITE as usize { 1.0 } else { -1.0 };
             for (t, h) in t.iter_mut().zip(HORIZONS) {
                 *t += (sign * v - *t) / h;
             }
-            let mut row = [0.0; Z];
-            row[..HORIZONS.len()].copy_from_slice(&t.map(|x| sign * x));
-            row[HORIZONS.len()..Z - NSLOT].copy_from_slice(&held[p]);
-            row[Z - NSLOT..].copy_from_slice(&coins.map(f32::from));
-            row
+            t.map(|x| sign * x)
         })
         .collect();
     z.reverse();
@@ -78,7 +65,7 @@ impl Default for KindCounts {
 pub struct Data {
     pub q: Query,
     pub target: Vec<f32>,
-    pub z: Vec<[f32; Z]>,
+    pub z: Vec<[f32; 4]>,
     pub games: usize,
     pub decisions: usize,
     pub wins: [usize; 2],
@@ -131,7 +118,6 @@ pub struct Playout {
 pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option<Data> {
     let draft = dealt(rng);
     let mut s = draft.state().expect("a dealt draft is legal");
-    let ctx = Ctx::new(&s);
     let mut seats = [WHITE, BLACK].map(|p| Session::new(&draft, p, rng.next_u64()).expect("a dealt draft is legal"));
     let (mut d, mut seen) = (Data::default(), Vec::new());
     loop {
@@ -157,7 +143,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
             let taught = if full { &acts[..] } else { &[] };
             seats[p].query(taught, &mut d.q);
             d.target.extend_from_slice(&c.probs[..taught.len()]);
-            seen.push((p, c.value, unseen(&s, 1 - p as u8, &ctx)));
+            seen.push((p, c.value));
         }
         let a = acts[c.pick];
         seats[p].play(a);
@@ -166,7 +152,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
         let obs = Obs::Act { player: p as u8, key: obs_key(&a) };
         seats[1 - p].observe(&obs, None).expect("a seat follows every move");
     }
-    d.z = targets(&seen, &s);
+    d.z = targets(&seen, crate::score(&s, WHITE as usize));
     d.games = 1;
     match s.winner() {
         Some(w) => d.wins[w as usize] += 1,
@@ -265,7 +251,7 @@ fn worker_seed(seed: u64, i: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pbs::{PILE_COUNTS, ROW_BYTES, ROW_FD_SIZE, ROW_HAND_SIZE, ROW_PILES, ROW_TO_ACT};
+    use crate::pbs::ROW_BYTES;
     use crate::search::{Flat, Search, ACT_BYTES};
 
     fn searcher(p_full: f64) -> Playout {
@@ -292,14 +278,12 @@ mod tests {
         let d = play(&searcher(1.0), &mut Rng::new(3), || true).expect("an unstopped game ends");
         assert_eq!(taught(&d), d.q.len());
         assert_eq!(d.wins[0] + d.wins[1] + d.draws + d.timeouts, 1);
-        assert!(d.z.iter().all(|z| z[..Z - NSLOT].iter().all(|x| x.abs() <= 1.0)));
+        assert!(d.z.as_flattened().iter().all(|z| z.abs() <= 1.0));
     }
 
     #[test]
     fn short_term_targets_average_the_coming_root_values_and_leave_the_rest_to_the_result() {
-        let mut end = game(&mut Rng::new(1));
-        end.winner = WHITE;
-        let z = targets(&[(0, 0.5, [0; NSLOT]), (1, 0.2, [0; NSLOT]), (0, -0.1, [0; NSLOT])], &end);
+        let z = targets(&[(0, 0.5), (1, 0.2), (0, -0.1)], 1.0);
         let six = [0.622_685, -0.647_222, 0.816_667];
         for (i, row) in z.iter().enumerate() {
             let sign = if i == 1 { -1.0 } else { 1.0 };
@@ -308,37 +292,6 @@ mod tests {
         }
         let fifty = 0.02 * 0.5 - 0.02 * 0.98 * 0.2 - 0.02 * 0.98 * 0.98 * 0.1 + 0.98f32.powi(3);
         assert!((z[0][3] - fifty).abs() < 1e-5, "{} is not {fifty}", z[0][3]);
-    }
-
-    #[test]
-    fn final_control_is_seen_from_the_actor_in_its_own_mirrored_frame() {
-        let mut end = game(&mut Rng::new(1));
-        let at = |x: i8, y: i8| board().coord.iter().position(|&c| c == (x, y)).unwrap();
-        end.loc_marker[at(2, 1)] = WHITE;
-        let z = targets(&[(0, 0.0, [0; NSLOT]), (1, 0.0, [0; NSLOT])], &end);
-        let held = |row: &[f32; Z], x, y| {
-            let locations = (0..N_HEXES).filter(|&h| board().is_location[h]);
-            row[HORIZONS.len() + locations.take_while(|&h| h != at(x, y)).count()]
-        };
-        for row in &z {
-            assert_eq!((held(row, 4, 0), held(row, 6, 1), held(row, 0, 5), held(row, 2, 6)), (1.0, 1.0, -1.0, -1.0));
-        }
-        assert_eq!((held(&z[0], 2, 1), held(&z[0], 4, 5)), (1.0, 0.0));
-        assert_eq!((held(&z[1], 2, 1), held(&z[1], 4, 5)), (0.0, -1.0));
-    }
-
-    #[test]
-    fn the_unseen_coins_are_the_opponents_hidden_coins_outside_its_bag() {
-        let d = play(&searcher(1.0), &mut Rng::new(3), || true).expect("an unstopped game ends");
-        for (row, z) in d.q.rows.chunks_exact(ROW_BYTES).zip(&d.z) {
-            let o = 1 - row[ROW_TO_ACT] as usize;
-            let coins = &z[Z - NSLOT..];
-            for (k, &c) in coins.iter().enumerate() {
-                assert!(c <= row[ROW_PILES + (o * NSLOT + k) * PILE_COUNTS] as f32);
-            }
-            let held = row[ROW_HAND_SIZE + o] + row[ROW_FD_SIZE + o];
-            assert!((0.0..=1.0).contains(&(coins.iter().sum::<f32>() - held as f32)));
-        }
     }
 
     #[test]

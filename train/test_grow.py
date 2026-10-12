@@ -9,7 +9,7 @@ from value_net import LAYERS, Net
 
 def outputs(net, x, desc, parow):
     win, short, tokens = net.evaluate(x)
-    return win, short, tokens, net.actions(desc, tokens, parow), *net.aux_heads(tokens)
+    return win, short, tokens, net.actions(desc, tokens, parow)
 
 
 @torch.no_grad()
