@@ -1,5 +1,6 @@
 
 import argparse
+import bisect
 import collections
 import copy
 import dataclasses
@@ -70,9 +71,9 @@ class Buffer:
 
     def add(self, rows, desc, off, target, z):
         n, na = len(rows), len(desc)
-        while self.lo < self.rows and (self.rows - self.lo + n > self.window(self.rows + n)
-                                       or self.acts - self.astart[self.lo % self.cap] + na > self.acap):
-            self.lo += 1
+        lo = min(self.rows, max(self.lo, self.rows + n - self.window(self.rows + n)))
+        self.lo = lo + bisect.bisect_left(range(lo, self.rows), self.acts + na - self.acap,
+                                          key=lambda i: self.astart[i % self.cap])
         ring = (np.arange(n) + self.rows) % self.cap
         self.x[ring], self.z[ring] = rows, z
         self.astart[ring] = self.acts + off[:-1]
