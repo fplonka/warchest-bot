@@ -319,7 +319,7 @@ def main():
         publish_state(target_state)
         rng.bit_generator.state = checkpoint["numpy_rng"]
         torch.set_rng_state(checkpoint["torch_rng"])
-        torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
+        torch.cuda.set_rng_state_all(checkpoint["cuda_rng"][:torch.cuda.device_count()])
     else:
         if args.init_weights:
             grown = export_weights.load(args.init_weights).state_dict()
