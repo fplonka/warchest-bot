@@ -424,6 +424,7 @@ impl Oracle for Flat {
 mod tests {
     use super::*;
     use crate::policy::greedy;
+    use crate::rng::cumulative;
 
     fn root(prior: &[f32], value: f32, visits: &[(u32, f32)]) -> Tree {
         let mut tree = Tree::new(0);
@@ -502,8 +503,7 @@ mod tests {
                     assert!(c.value > 0.5, "the root value of a won position is only {}", c.value);
                     found += 1;
                 }
-                let w: Vec<f64> = greedy(&s, &acts).iter().map(|&p| p as f64).collect();
-                s.apply_inplace(acts[rng.weighted_index(&w)]);
+                s.apply_inplace(acts[rng.pick(&cumulative(greedy(&s, &acts).iter().map(|&p| p as f64)))]);
             }
         }
     }

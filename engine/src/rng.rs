@@ -40,19 +40,23 @@ impl Rng {
         }
     }
 
-    pub fn weighted_index(&mut self, weights: &[f64]) -> usize {
-        let total: f64 = weights.iter().copied().sum();
+    pub fn pick(&mut self, cdf: &[f64]) -> usize {
+        let total = cdf[cdf.len() - 1];
         assert!(total > 0.0 && total.is_finite());
-        let mut needle = self.unit_f64() * total;
-        for (i, &weight) in weights.iter().enumerate() {
-            assert!(weight >= 0.0 && weight.is_finite());
-            if needle < weight {
-                return i;
-            }
-            needle -= weight;
-        }
-        weights.len() - 1
+        let needle = self.unit_f64() * total;
+        cdf.partition_point(|&c| c <= needle).min(cdf.len() - 1)
     }
+}
+
+pub fn cumulative(weights: impl IntoIterator<Item = f64>) -> Vec<f64> {
+    weights
+        .into_iter()
+        .scan(0.0, |total, w| {
+            assert!(w >= 0.0 && w.is_finite());
+            *total += w;
+            Some(*total)
+        })
+        .collect()
 }
 
 #[cfg(test)]

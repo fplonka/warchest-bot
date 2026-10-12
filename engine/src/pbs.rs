@@ -1,8 +1,6 @@
-use std::collections::BTreeMap;
-
 use crate::actions::{Action, N_KINDS};
 use crate::board::{bits, board, mask, NONE, N_HEXES};
-use crate::rng::Rng;
+use crate::rng::{cumulative, Rng};
 use crate::state::{State, CONT_CAP, PENDING_KINDS, Z_BAG, Z_ELIM, Z_FACEDOWN, Z_FACEUP, Z_HAND, Z_INFLIGHT, Z_SUPPLY};
 use crate::units::{write_card_features, CARD_FEATS, ENSIGN, MARSHAL, N_UNITS, ROYAL_COIN};
 
@@ -46,31 +44,40 @@ pub fn unseen(s: &State, p: u8, ctx: &Ctx) -> [u8; NSLOT] {
     ctx.slots[p as usize].map(|u| [Z_HAND, Z_FACEDOWN, Z_INFLIGHT].iter().map(|&z| s.zones[p as usize][z][u as usize]).sum())
 }
 
-type Layout = [[u8; N_UNITS]; HIDDEN.len()];
-
-fn layout(s: &State, p: u8) -> Layout {
-    HIDDEN.map(|z| s.zones[p as usize][z])
-}
-
-fn put(s: &mut State, p: u8, k: &Layout) {
-    for (z, zone) in HIDDEN.into_iter().zip(k) {
-        s.zones[p as usize][z] = *zone;
-    }
-}
+type Layout = [[u8; NSLOT]; HIDDEN.len()];
 
 pub struct Belief {
     p: u8,
+    slots: [u8; NSLOT],
     layouts: Vec<Layout>,
     weights: Vec<f64>,
+    cdf: Vec<f64>,
 }
 
 impl Belief {
     pub fn new(s: &State, p: u8) -> Belief {
-        Belief { p, layouts: vec![layout(s, p)], weights: vec![1.0] }
+        let slots = Ctx::new(s).slots[p as usize];
+        let mut belief = Belief { p, slots, layouts: Vec::new(), weights: vec![1.0], cdf: vec![1.0] };
+        belief.layouts.push(belief.layout(s));
+        belief
+    }
+
+    fn layout(&self, s: &State) -> Layout {
+        let z = &s.zones[self.p as usize];
+        HIDDEN.map(|h| self.slots.map(|u| z[h][u as usize]))
+    }
+
+    fn put(&self, s: &mut State, k: &Layout) {
+        let z = &mut s.zones[self.p as usize];
+        for (&h, counts) in HIDDEN.iter().zip(k) {
+            for (&u, &n) in self.slots.iter().zip(counts) {
+                z[h][u as usize] = n;
+            }
+        }
     }
 
     pub fn deal(&self, s: &mut State, rng: &mut Rng) {
-        put(s, self.p, &self.layouts[rng.weighted_index(&self.weights)]);
+        self.put(s, &self.layouts[rng.pick(&self.cdf)]);
     }
 
     pub fn update(
@@ -79,32 +86,36 @@ impl Belief {
         seen: impl Fn(&Action) -> bool,
         likelihood: impl FnOnce(&[(State, Vec<Action>)]) -> Vec<f64>,
     ) -> Option<State> {
+        let mut acts = Vec::new();
         let (worlds, weights): (Vec<_>, Vec<f64>) = self
             .layouts
             .iter()
             .zip(&self.weights)
             .filter_map(|(k, &x)| {
                 let mut w = *s;
-                put(&mut w, self.p, k);
-                let acts = w.legal_actions();
-                acts.iter().any(&seen).then_some(((w, acts), x))
+                self.put(&mut w, k);
+                w.legal_actions_into(&mut acts);
+                acts.iter().any(&seen).then(|| ((w, acts.clone()), x))
             })
             .unzip();
         let mut odds = likelihood(&worlds).into_iter();
-        let (mut next, mut after) = (BTreeMap::new(), None);
+        let (mut next, mut last) = (Vec::new(), None);
         for ((w, acts), x) in worlds.iter().zip(weights) {
             for (a, l) in acts.iter().zip(odds.by_ref()) {
                 if seen(a) {
-                    let child = w.apply(*a);
-                    *next.entry(layout(&child, self.p)).or_insert(0.0) += x * l;
-                    after = Some(child);
+                    next.push((self.layout(&w.apply(*a)), x * l));
+                    last = Some((w, a));
                 }
             }
         }
-        let after = after?;
-        let total: f64 = next.values().sum();
-        (self.layouts, self.weights) = next.into_iter().map(|(k, x)| (k, x / total)).unzip();
-        Some(after)
+        let (w, a) = last?;
+        next.sort_by_key(|e| e.0);
+        (self.layouts, self.weights) =
+            next.chunk_by(|a, b| a.0 == b.0).map(|run| (run[0].0, run.iter().map(|e| e.1).sum::<f64>())).unzip();
+        let total: f64 = self.weights.iter().sum();
+        self.weights.iter_mut().for_each(|x| *x /= total);
+        self.cdf = cumulative(self.weights.iter().copied());
+        Some(w.apply(*a))
     }
 }
 
@@ -386,6 +397,8 @@ pub fn expand_row(row: &[u8], out: &mut [f32]) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::selfplay::resolve_chance;
     use crate::state::WHITE;
@@ -444,10 +457,10 @@ mod tests {
             }
             let mut exact = BTreeMap::new();
             for (w, x) in &worlds {
-                *exact.entry(layout(w, WHITE)).or_insert(0.0) += x;
+                *exact.entry(belief.layout(w)).or_insert(0.0) += x;
             }
             let total: f64 = exact.values().sum();
-            assert!(exact.len() > 1 && exact.contains_key(&layout(&s, WHITE)));
+            assert!(exact.len() > 1 && exact.contains_key(&belief.layout(&s)));
             assert_eq!(belief.layouts, exact.keys().copied().collect::<Vec<_>>());
             for (w, x) in belief.weights.iter().zip(exact.values()) {
                 assert!((w - x / total).abs() < 1e-12, "{w} is not {}", x / total);
@@ -473,7 +486,7 @@ mod tests {
             coins.iter().for_each(|&c| hand[c as usize] += 1);
             let holds = |k: &Layout| {
                 let mut w = s;
-                put(&mut w, WHITE, k);
+                belief.put(&mut w, k);
                 w.zones[WHITE as usize][Z_HAND] == hand
             };
             belief.layouts.iter().zip(&belief.weights).find(|(k, _)| holds(k)).unwrap().1

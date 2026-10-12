@@ -4,7 +4,7 @@ use crate::actions::Action;
 use crate::arena::{Draft, Obs};
 use crate::pbs::{obs_key, ways, Belief, Ctx};
 use crate::policy;
-use crate::rng::Rng;
+use crate::rng::{cumulative, Rng};
 use crate::search::{think, Choice, Oracle, Query, Search};
 use crate::state::State;
 
@@ -56,8 +56,7 @@ impl Brain {
             Brain::Greedy => policy::greedy(s, acts),
             Brain::Search { search, oracle } => return think(oracle.as_ref(), *search, s, ctx, opp, rng),
         };
-        let weights: Vec<f64> = probs.iter().map(|&p| p as f64).collect();
-        let pick = rng.weighted_index(&weights);
+        let pick = rng.pick(&cumulative(probs.iter().map(|&p| p as f64)));
         Choice { probs, pick, value: 0.0 }
     }
 }
