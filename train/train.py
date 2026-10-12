@@ -34,7 +34,6 @@ EMA_ROWS = 1_024_000
 HORIZONS = warchest.HORIZONS
 SHORTS = tuple(f"short_{h:g}_loss" for h in HORIZONS[1:])
 SHORT_W = 0.1
-WINDOW = 250_000
 HOLDOUT_ROWS = 200_000
 PLAYS = ("attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative")
 FRESH = ("value_loss", "value_sq_err", "policy_loss", *SHORTS)
@@ -69,7 +68,7 @@ class Buffer:
 
     def add(self, rows, desc, off, target, z):
         n, na = len(rows), len(desc)
-        lo = min(self.rows, max(self.lo, self.rows + n - self.window(self.rows + n)))
+        lo = min(self.rows, max(self.lo, self.rows + n - self.cap))
         self.lo = lo + bisect.bisect_left(range(lo, self.rows), self.acts + na - self.acap,
                                           key=lambda i: self.astart[i % self.cap])
         ring = (np.arange(n) + self.rows) % self.cap
@@ -81,9 +80,6 @@ class Buffer:
         self.pa[at], self.pp[at] = desc, target
         self.rows += n
         self.acts += na
-
-    def window(self, seen):
-        return min(self.cap, int(WINDOW * (1 + 0.4 * ((max(seen, WINDOW) / WINDOW) ** 0.75 - 1) / 0.75)))
 
     def live_rows(self):
         return np.arange(self.lo, self.rows) % self.cap
