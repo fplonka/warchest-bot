@@ -128,5 +128,12 @@ class Net(nn.Module):
         nn.utils.vector_to_parameters(torch.as_tensor(flat), self.deployed())
         return self
 
+    def grow(self, state):
+        depth = len({k.split(".")[1] for k in state if k.startswith("blocks.")})
+        fresh = {f"blocks.{i}.{k}": torch.zeros_like(v) if k.startswith(("proj.", "down.")) else v
+                 for i in range(depth, LAYERS) for k, v in self.blocks[i].state_dict().items()}
+        self.load_state_dict(state | fresh)
+        return self
+
     def push(self):
         warchest.set_weights(self.flat())

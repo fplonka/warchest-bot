@@ -78,7 +78,7 @@ def test_value_only_rows_leave_the_policy_loss_alone():
         assert torch.allclose(mixed[key], alone[key]), key
 
 
-def test_a_saved_buffer_samples_as_before():
+def test_a_saved_buffer_loads_the_newest_rows_that_fit():
     train = load_train_module()
     rng = np.random.default_rng(0)
     buf = train.Buffer(16)
@@ -88,27 +88,28 @@ def test_a_saved_buffer_samples_as_before():
                 rng.random(off[-1]).astype(np.float16), rng.random((n, Z), np.float32))
     saved = io.BytesIO()
     buf.save(saved)
-    saved.seek(0)
-    back = train.Buffer(16)
-    back.load(saved)
     assert buf.lo > 0 and buf.acts > buf.acap
-    assert (back.lo, back.rows, back.acts) == (buf.lo, buf.rows, buf.acts)
-    ids = np.arange(buf.lo, buf.rows)
-    for a, b in zip(buf.gather(ids), back.gather(ids)):
-        assert np.array_equal(a, b)
+    for cap in (16, 4):
+        saved.seek(0)
+        back = train.Buffer(cap).load(saved)
+        fits = [i for i in range(buf.lo, buf.rows)
+                if buf.rows - i <= back.cap and buf.acts - buf.astart[i % buf.cap] <= back.acap]
+        assert (back.lo, back.rows, back.acts) == (fits[0], buf.rows, buf.acts)
+        ids = np.arange(back.lo, back.rows)
+        for a, b in zip(buf.gather(ids), back.gather(ids)):
+            assert np.array_equal(a, b)
     buf.z = buf.z[:, :len(HORIZONS)]
     saved = io.BytesIO()
     buf.save(saved)
     saved.seek(0)
-    back = train.Buffer(16)
-    back.load(saved)
-    z = back.gather(ids)[4]
-    assert np.array_equal(z[:, :len(HORIZONS)], buf.gather(ids)[4]) and not z[:, len(HORIZONS):].any()
+    back = train.Buffer(16).load(saved)
+    z = back.gather(np.arange(back.lo, back.rows))[4]
+    assert np.array_equal(z[:, :len(HORIZONS)], buf.gather(np.arange(back.lo, back.rows))[4]) and not z[:, len(HORIZONS):].any()
 
 
 if __name__ == "__main__":
     test_lr_warms_up_holds_the_peak_then_cools_down()
     test_playout_switches_at_half_the_run()
     test_value_only_rows_leave_the_policy_loss_alone()
-    test_a_saved_buffer_samples_as_before()
+    test_a_saved_buffer_loads_the_newest_rows_that_fit()
     print("recipe test OK")

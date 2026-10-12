@@ -33,6 +33,7 @@ EMA_ROWS = 1_024_000
 HORIZONS = warchest.HORIZONS
 SHORTS = tuple(f"short_{h:g}_loss" for h in HORIZONS[1:])
 SHORT_W = 0.1
+WINDOW = 250_000
 OWN_W = 1.0
 UNSEEN_W = 0.1
 PLAYS = ("attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative")
@@ -47,6 +48,10 @@ def adam(net, lr, wd):
     return torch.optim.AdamW(
         [{"params": wide, "weight_decay": wd}, {"params": thin, "weight_decay": 0.0}],
         lr=lr, fused=True)
+
+
+def tail(a, n):
+    return a[len(a) - n:]
 
 
 class Buffer:
@@ -64,7 +69,7 @@ class Buffer:
 
     def add(self, rows, desc, off, target, z):
         n, na = len(rows), len(desc)
-        while self.lo < self.rows and (self.rows - self.lo + n > self.cap
+        while self.lo < self.rows and (self.rows - self.lo + n > self.window(self.rows + n)
                                        or self.acts - self.astart[self.lo % self.cap] + na > self.acap):
             self.lo += 1
         ring = (np.arange(n) + self.rows) % self.cap
@@ -76,6 +81,9 @@ class Buffer:
         self.pa[at], self.pp[at] = desc, target
         self.rows += n
         self.acts += na
+
+    def window(self, seen):
+        return min(self.cap, int(WINDOW * (1 + 0.4 * ((max(seen, WINDOW) / WINDOW) ** 0.75 - 1) / 0.75)))
 
     def live_rows(self):
         return np.arange(self.lo, self.rows) % self.cap
@@ -95,17 +103,20 @@ class Buffer:
 
     def load(self, path):
         with gzip.open(path) as f:
-            self.lo, self.rows, self.acts = read_array(f).tolist()
+            lo, self.rows, self.acts = read_array(f).tolist()
+            self.lo = max(lo, self.rows - self.cap)
             rows = self.live_rows()
-            self.written_at[rows] = time.time() - read_array(f)
-            self.x[rows] = read_array(f)
-            z = read_array(f)
+            self.written_at[rows] = time.time() - tail(read_array(f), len(rows))
+            self.x[rows] = tail(read_array(f), len(rows))
+            z = tail(read_array(f), len(rows))
             self.z[rows, :z.shape[1]] = z
             for a in (self.astart, self.alen):
-                a[rows] = read_array(f)
+                a[rows] = tail(read_array(f), len(rows))
+            self.lo += int(np.searchsorted(self.astart[rows], self.acts - self.acap))
             acts = self.live_acts()
             for a in (self.pa, self.pp):
-                a[acts] = read_array(f)
+                a[acts] = tail(read_array(f), len(acts))
+        return self
 
     def span_seconds(self):
         return time.time() - self.written_at[self.lo % self.cap] if self.lo < self.rows else 0.0
@@ -287,6 +298,9 @@ def main():
     acting = copy.deepcopy(value).requires_grad_(False)
     opt = adam(value, args.lr, args.wd)
     buf = Buffer(args.cap)
+    origin = resume or args.init_weights
+    if origin and buffer_file(origin).exists():
+        buf.load(buffer_file(origin))
     if checkpoint:
         value.load_state_dict(checkpoint["value"])
         acting.load_state_dict(checkpoint["acting"])
@@ -296,12 +310,11 @@ def main():
         rng.bit_generator.state = checkpoint["numpy_rng"]
         torch.set_rng_state(checkpoint["torch_rng"])
         torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
-        if buffer_file(resume).exists():
-            buf.load(buffer_file(resume))
     else:
         if args.init_weights:
+            grown = export_weights.load(args.init_weights).state_dict()
             for net in (value, acting):
-                net.load_state_dict(export_weights.load(args.init_weights).state_dict())
+                net.load_state_dict(grown)
         acting.push()
         target_state = cpu_state(acting)
 
