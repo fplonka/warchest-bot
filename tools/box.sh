@@ -59,6 +59,13 @@ pull)
     mkdir -p "$local_dir/runs${name:+/$name}"
     rsync -az -e "ssh ${ssh_opts[*]}" "${filters[@]}" \
         "root@$host:$remote/runs/$name/" "$local_dir/runs${name:+/$name}/"
+    if [ -z "$name" ]; then
+        run_remote "find /workspace -maxdepth 5 -path '*/runs/*/epochs.jsonl' -mmin -2880 -printf '%T@ %h\n'" |
+            sort -rn | awk -v skip="$remote/runs/" 'index($2, skip) != 1 { n = split($2, p, "/"); if (!seen[p[n]]++) print $2 }' |
+            while read -r dir; do
+                rsync -azu -e "ssh ${ssh_opts[*]}" "${filters[@]}" "root@$host:$dir/" "$local_dir/runs/${dir##*/}/" < /dev/null
+            done
+    fi
     echo "pulled ${name:-runs}"
     ;;
 build)
