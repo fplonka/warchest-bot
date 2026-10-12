@@ -11,15 +11,15 @@ import export_weights
 import mirror
 import warchest
 from gpu_batch import expand
-from value_net import Net
+from value_net import D, Net
 
 ROW_BYTES = warchest.ROW_BYTES
 ACT_BYTES = warchest.ACT_BYTES
 
 
-def random_net(seed):
+def random_net(seed, d=D):
     torch.manual_seed(seed)
-    net = Net()
+    net = Net(d)
     with torch.no_grad():
         for parameter in net.parameters():
             parameter.normal_(0, 0.08)

@@ -20,8 +20,8 @@ SHORT = len(warchest.HORIZONS) - 1
 
 TYPE = 64
 D = 384
+DH = 64
 LAYERS = 10
-HEADS = 6
 TOKENS = N_HEXES + NTYPE + 1
 STATE = TOKENS - 1
 NONE = TOKENS
@@ -32,51 +32,62 @@ def gelu(x):
     return F.gelu(x, approximate="tanh")
 
 
+def widen(v, shape, d, f, fan_in):
+    for axis, (n, m) in enumerate(zip(v.shape, shape)):
+        if m == f * n != n:
+            v = torch.stack([v.unflatten(axis, (-1, min(n, d)))] * f, axis + 1)
+            if fan_in and axis == 1:
+                e = 0.1 * torch.randn_like(v)
+                v = v * (1 + e - e.mean(axis + 1, keepdim=True)) / f
+            v = v.flatten(axis, axis + 2)
+    return v
+
+
 class Block(nn.Module):
 
-    def __init__(self):
+    def __init__(self, d):
         super().__init__()
-        self.ln1 = nn.LayerNorm(D)
-        self.qkv = nn.Linear(D, 3 * D)
-        self.proj = nn.Linear(D, D)
-        self.bias = nn.Parameter(torch.zeros(HEADS, int(INDEX.max()) + 1))
-        self.ln2 = nn.LayerNorm(D)
-        self.up = nn.Linear(D, 2 * D)
-        self.down = nn.Linear(2 * D, D)
+        self.ln1 = nn.LayerNorm(d)
+        self.qkv = nn.Linear(d, 3 * d)
+        self.proj = nn.Linear(d, d)
+        self.bias = nn.Parameter(torch.zeros(d // DH, int(INDEX.max()) + 1))
+        self.ln2 = nn.LayerNorm(d)
+        self.up = nn.Linear(d, 2 * d)
+        self.down = nn.Linear(2 * d, d)
 
     def forward(self, x, index):
-        b, t, _ = x.shape
-        q, k, v = self.qkv(self.ln1(x)).view(b, t, 3, HEADS, D // HEADS).permute(2, 0, 3, 1, 4)
+        b, t, d = x.shape
+        q, k, v = self.qkv(self.ln1(x)).view(b, t, 3, -1, DH).permute(2, 0, 3, 1, 4)
         a = F.scaled_dot_product_attention(q, k, v, attn_mask=self.bias[:, index].to(q.dtype))
-        x = x + self.proj(a.transpose(1, 2).reshape(b, t, D))
+        x = x + self.proj(a.transpose(1, 2).reshape(b, t, d))
         return x + self.down(gelu(self.up(self.ln2(x))))
 
 
 class Net(nn.Module):
 
-    def __init__(self):
+    def __init__(self, d=D):
         super().__init__()
         self.card1 = nn.Linear(CARD_FEATS, TYPE)
-        self.card2 = nn.Linear(TYPE, D)
-        self.pile = nn.Linear(PILE_COUNTS, D, bias=False)
-        self.seat = nn.Embedding(2, D)
-        self.hex_stem = nn.Linear(HEX_FACTS, D)
-        self.pos = nn.Embedding(N_HEXES, D)
-        self.state_stem = nn.Linear(LOOSE, D)
-        self.blocks = nn.ModuleList(Block() for _ in range(LAYERS))
-        self.ln = nn.LayerNorm(D)
+        self.card2 = nn.Linear(TYPE, d)
+        self.pile = nn.Linear(PILE_COUNTS, d, bias=False)
+        self.seat = nn.Embedding(2, d)
+        self.hex_stem = nn.Linear(HEX_FACTS, d)
+        self.pos = nn.Embedding(N_HEXES, d)
+        self.state_stem = nn.Linear(LOOSE, d)
+        self.blocks = nn.ModuleList(Block(d) for _ in range(LAYERS))
+        self.ln = nn.LayerNorm(d)
 
-        self.value_hidden = nn.Linear(D, D)
-        self.value_out = nn.Linear(D, 1)
-        self.short_out = nn.Linear(D, SHORT)
+        self.value_hidden = nn.Linear(d, d)
+        self.value_out = nn.Linear(d, 1)
+        self.short_out = nn.Linear(d, SHORT)
         for head in (self.value_out, self.short_out):
             nn.init.zeros_(head.weight)
             nn.init.zeros_(head.bias)
 
-        self.kind = nn.Embedding(N_KINDS, D)
-        self.none = nn.Parameter(torch.randn(D))
-        self.move1 = nn.Linear(7 * D, D)
-        self.move2 = nn.Linear(D, 1)
+        self.kind = nn.Embedding(N_KINDS, d)
+        self.none = nn.Parameter(torch.randn(d))
+        self.move1 = nn.Linear(7 * d, d)
+        self.move2 = nn.Linear(d, 1)
 
         self.register_buffer("index", INDEX.clone(), persistent=False)
         self.register_buffer("seat_of", torch.arange(NTYPE) // NSLOT, persistent=False)
@@ -97,7 +108,7 @@ class Net(nn.Module):
         return self.value_out(hidden).squeeze(-1), torch.tanh(self.short_out(hidden)), x
 
     def moves(self, desc, x, row):
-        tokens = torch.cat([x, self.none.expand(x.shape[0], 1, D)], 1)
+        tokens = torch.cat([x, self.none.expand(x.shape[0], 1, -1)], 1)
         desc = desc.long()
         coins = torch.where(desc[:, 1:3] < NTYPE, desc[:, 1:3] + N_HEXES, NONE)
         hexes = torch.where(desc[:, 3:6] < N_HEXES, desc[:, 3:6], NONE)
@@ -119,10 +130,14 @@ class Net(nn.Module):
         return self
 
     def grow(self, state):
+        d = len(state["ln.weight"])
+        f = len(self.ln.weight) // d
+        linear = {f"{name}.weight" for name, m in self.named_modules() if isinstance(m, nn.Linear)}
+        wide = {k: widen(v, self.get_parameter(k).shape, d, f, k in linear) for k, v in state.items()}
         depth = len({k.split(".")[1] for k in state if k.startswith("blocks.")})
         fresh = {f"blocks.{i}.{k}": torch.zeros_like(v) if k.startswith(("proj.", "down.")) else v
                  for i in range(depth, LAYERS) for k, v in self.blocks[i].state_dict().items()}
-        self.load_state_dict(state | fresh)
+        self.load_state_dict(wide | fresh)
         return self
 
     def push(self):
