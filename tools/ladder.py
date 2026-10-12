@@ -163,19 +163,23 @@ def report(names, ages, trained, mean, covariance, played):
           f"seat {mean[-2]:+.1f} Elo, draws {mean[-1].exp():.3f}")
 
 
-def main():
-    campaign = Path(sys.argv[1])
-    matches_path = campaign / "matches.jsonl"
-    matches_path.touch()
+def ratings(campaign):
     bots = {}
     for pattern in (campaign / "bots").read_text().split():
         for spec in sorted(ROOT.glob(f"{pattern}/bot.json")):
             bot = json.loads(spec.read_text())
             bots[bot["name"]] = (bot["minutes"], str(spec.parent.relative_to(ROOT)))
     names = sorted(bots)
+    played = load(campaign / "matches.jsonl", {name: i for i, name in enumerate(names)})
+    return bots, names, played, *fit(played, len(names))
+
+
+def main():
+    campaign = Path(sys.argv[1])
+    matches_path = campaign / "matches.jsonl"
+    matches_path.touch()
+    bots, names, played, mean, covariance = ratings(campaign)
     ages = [round(bots[name][0]) for name in names]
-    played = load(matches_path, {name: i for i, name in enumerate(names)})
-    mean, covariance = fit(played, len(names))
     if sys.argv[2:] == ["report"]:
         trained = list(optimizer_rows(bots[name] for name in names))
         report(names, ages, trained, mean, covariance, played)

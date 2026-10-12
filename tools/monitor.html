@@ -49,6 +49,7 @@ pre{max-height:340px;overflow:auto;margin:4px 0;font:inherit;white-space:pre-wra
  <h1><span id=title></span><a id=loglink target=_blank>train.log</a></h1>
  <p class=meta id=meta></p><p class=note id=note></p>
  <div class=delta id=cfg></div>
+ <div class=panel id=elo></div>
  <p class=meta id=charthelp>drag zoom · wheel zoom · middle-drag pan · double-click reset</p>
  <div class=grid id=panels></div>
  <dl id=health></dl>
@@ -67,7 +68,7 @@ const $ = id => document.getElementById(id);
 const E = (tag, cls, text) => { const n = document.createElement(tag);
   if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 let sel = decodeURIComponent(location.hash.slice(1)) || null;
-let shape = "", plots = [];
+let shape = "", plots = [], eloKey = "", eloPlot = null;
 
 const api = async u => { try { const r = await fetch(u); return r.ok ? r.json() : null; }
                          catch (e) { return null; } };
@@ -132,9 +133,14 @@ function plotData(p) {
     ...p.h.map(h => p.x.map(() => h[1]))];
 }
 
-function makePlot(box, p, snaps) {
+function axes() {
   const dark = matchMedia("(prefers-color-scheme:dark)").matches;
-  const axis = dark ? "#999" : "#666", grid = dark ? "#333" : "#ddd";
+  const stroke = dark ? "#999" : "#666", grid = dark ? "#333" : "#ddd";
+  return [{stroke, grid: {stroke: grid}, values: (u, ticks) => ticks.map(fmt)},
+    {stroke, grid: {stroke: grid}, size: 65, values: (u, ticks) => ticks.map(fmt)}];
+}
+
+function makePlot(box, p, snaps) {
   const state = {panel: p, snaps};
   const series = [{label: "training time", value: (u, v) => fmt(v) + " min"}];
   p.s.forEach((s, i) => {
@@ -150,16 +156,49 @@ function makePlot(box, p, snaps) {
     width: 1, dash: [5, 5], points: {show: false}}));
   const opts = {title: p.t + " · " + p.y, width: box.clientWidth, height: 230,
     plugins: [navigation(), overlays(state)], scales: {x: {time: false}, y: {}},
-    cursor: {drag: {x: true, y: false, setScale: true}}, series,
-    axes: [{stroke: axis, grid: {stroke: grid}, values: (u, ticks) => ticks.map(fmt)},
-      {stroke: axis, grid: {stroke: grid}, size: 65,
-       values: (u, ticks) => ticks.map(fmt)}]};
+    cursor: {drag: {x: true, y: false, setScale: true}}, series, axes: axes()};
   if (p.zero) opts.scales.y.range = (u, min, max) => {
     const lo = Math.min(0, min), hi = Math.max(0, max);
     return lo === hi ? [0, 1] : [lo, hi];
   };
   const u = new uPlot(opts, plotData(p), box);
   return {u, box, state};
+}
+
+function drawElo(e) {
+  const key = JSON.stringify(e);
+  if (key === eloKey) return;
+  eloKey = key;
+  if (eloPlot) eloPlot.destroy();
+  eloPlot = null;
+  if (!e) return;
+  const x = e.bots.map(b => b.hours), anchors = Object.entries(e.anchors);
+  const lo = e.bots.map(b => b.elo - b.se), hi = e.bots.map(b => b.elo + b.se);
+  const bars = {hooks: {draw: u => {
+    const {ctx, bbox} = u;
+    ctx.save(); ctx.beginPath(); ctx.rect(bbox.left, bbox.top, bbox.width, bbox.height); ctx.clip();
+    ctx.lineWidth = devicePixelRatio || 1; ctx.strokeStyle = COLORS[0];
+    x.forEach((h, i) => {
+      const px = u.valToPos(h, "x", true);
+      ctx.beginPath(); ctx.moveTo(px, u.valToPos(lo[i], "y", true));
+      ctx.lineTo(px, u.valToPos(hi[i], "y", true)); ctx.stroke();
+    });
+    ctx.restore();
+  }}};
+  const box = $("elo");
+  eloPlot = new uPlot({title: "Elo over time · Elo ± standard error", width: box.clientWidth,
+    height: 230, plugins: [bars, overlays({snaps: e.switches})], axes: axes(),
+    scales: {x: {time: false, distr: 3, log: 2}, y: {range: (u, min, max) =>
+      uPlot.rangeNum(Math.min(min, ...lo), Math.max(max, ...hi), .1, true)}},
+    series: [{label: "training time", value: (u, v) => fmt(v) + " h"},
+      {label: "Elo", stroke: COLORS[0], paths: () => null,
+       points: {show: true, size: 6, fill: COLORS[0]},
+       value: (u, v, si, i) => v == null ? "—" : fmt(v) + " ± " + fmt(e.bots[i].se)},
+      {label: "log fit", stroke: COLORS[1], width: 1.5, points: {show: false}},
+      ...anchors.map(([name], i) => ({label: name, stroke: COLORS[2 + i], width: 1,
+        dash: [5, 5], points: {show: false}}))]},
+    [x, e.bots.map(b => b.elo), x.map(h => e.fit.a + e.fit.b * Math.log2(h)),
+     ...anchors.map(([, elo]) => x.map(() => elo))], box);
 }
 
 function clearPlots() {
@@ -181,6 +220,7 @@ function render(d) {
   $("title").textContent = d.name;
   $("meta").textContent = [d.git, d.epochs + " ReBeL epochs"].filter(Boolean).join(" · ");
   $("note").textContent = d.note || "";
+  drawElo(d.elo);
   const log = $("loglink");
   log.href = "/run/" + encodeURIComponent(d.name) + "/train.log";
   log.style.display = d.log ? "" : "none";
@@ -262,8 +302,10 @@ async function poll() {
   if (d) render(d);
 }
 
-addEventListener("resize", () => plots.forEach(p =>
-  p.u.setSize({width: p.box.clientWidth, height: 230})));
+addEventListener("resize", () => {
+  plots.forEach(p => p.u.setSize({width: p.box.clientWidth, height: 230}));
+  if (eloPlot) eloPlot.setSize({width: $("elo").clientWidth, height: 230});
+});
 addEventListener("hashchange", () => {   // the hash is the deep link, so honour Back
   sel = decodeURIComponent(location.hash.slice(1)) || sel; shape = ""; poll(); });
 setInterval(poll, 3000);

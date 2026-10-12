@@ -351,6 +351,7 @@ def detail(runs_dir, name):
             "git": cfg.get("git", ""), "log": read_text(f"{path}/train.log"),
             "notes": read_text(f"{path}/NOTES.md"),
             "ladder": read_json(f"{path}/ladder.json"),
+            "elo": read_json(f"{path}/elo.json"),
             "comparisons": [report for report in
                             (read_json(p) for p in sorted(glob.glob(
                                 f"{path}/comparisons/*.json"))) if report],
