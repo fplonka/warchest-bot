@@ -332,9 +332,11 @@ def main():
         acting.push()
         target_state = cpu_state(acting)
 
+    elapsed = float(checkpoint["elapsed"]) if checkpoint else 0.0
+    if len(buf):
+        args.warm_minutes = min(args.warm_minutes, elapsed / 60.0)
     total, warm = args.minutes * 60.0, args.warm_minutes * 60.0
     snap_gap = args.snapshot_every * 60.0
-    elapsed = float(checkpoint["elapsed"]) if checkpoint else 0.0
     next_snap = float(checkpoint["next_snapshot"]) if checkpoint else snap_gap
     t0 = time.time() - elapsed
     epoch = int(checkpoint["epoch"]) if checkpoint else 0
