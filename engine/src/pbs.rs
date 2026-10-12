@@ -280,45 +280,32 @@ pub fn mover_row(src: &[u8], dst: &mut [u8]) {
 }
 
 pub fn mirror_row(src: &[u8], dst: &mut [u8]) {
-    debug_assert_eq!(src.len(), ROW_BYTES);
-    debug_assert_eq!(dst.len(), ROW_BYTES);
+    let src: &[u8; ROW_BYTES] = src.try_into().expect("a row is ROW_BYTES long");
+    let dst: &mut [u8; ROW_BYTES] = dst.try_into().expect("a row is ROW_BYTES long");
     let flip = |v: u8| match v {
         0 => 1,
         1 => 0,
         other => other,
     };
+    let mirror = &board().mirror;
     dst.copy_from_slice(src);
-    for h in 0..N_HEXES {
-        let m = crate::state::mirror_hex(h);
+    for (h, &m) in mirror.iter().enumerate() {
+        let m = m as usize;
         dst[ROW_HEX_OWNER + h] = flip(src[ROW_HEX_OWNER + m]);
         dst[ROW_HEX_SLOT + h] = src[ROW_HEX_SLOT + m];
         dst[ROW_HEX_HEIGHT + h] = src[ROW_HEX_HEIGHT + m];
         dst[ROW_HEX_MARKER + h] = flip(src[ROW_HEX_MARKER + m]);
     }
-    for k in 0..NSLOT {
-        dst[ROW_IDS + k] = src[ROW_IDS + NSLOT + k];
-        dst[ROW_IDS + NSLOT + k] = src[ROW_IDS + k];
-    }
-    let piles = NSLOT * PILE_COUNTS;
-    for k in 0..piles {
-        dst[ROW_PILES + k] = src[ROW_PILES + piles + k];
-        dst[ROW_PILES + piles + k] = src[ROW_PILES + k];
-    }
+    dst[ROW_IDS..ROW_HEX_OWNER].rotate_left(NSLOT);
+    dst[ROW_PILES..ROW_HAND_SIZE].rotate_left(NSLOT * PILE_COUNTS);
     for at in [ROW_HAND_SIZE, ROW_FD_SIZE, ROW_BAG_SIZE] {
-        dst[at] = src[at + 1];
-        dst[at + 1] = src[at];
+        dst.swap(at, at + 1);
     }
     dst[ROW_INITIATIVE] = flip(src[ROW_INITIATIVE]);
     dst[ROW_TO_ACT] = flip(src[ROW_TO_ACT]);
-    for d in 0..CONT_CAP {
-        let at = ROW_STACK_OWED + d * 8;
-        dst[at..at + 8].fill(0);
-        for h in 0..N_HEXES {
-            if src[at + h / 8] >> (h % 8) & 1 == 1 {
-                let m = crate::state::mirror_hex(h);
-                dst[at + m / 8] |= 1 << (m % 8);
-            }
-        }
+    for owed in dst[ROW_STACK_OWED..].chunks_exact_mut(8) {
+        let mask = u64::from_le_bytes((&*owed).try_into().expect("an owed mask is 8 bytes"));
+        owed.copy_from_slice(&bits(mask).fold(0u64, |m, h| m | 1 << mirror[h]).to_le_bytes());
     }
 }
 
