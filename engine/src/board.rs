@@ -24,6 +24,7 @@ pub struct Board {
     pub is_location: [bool; N_HEXES],
     pub location_hexes: [u8; N_LOCATIONS],
     pub between: [[u8; N_HEXES]; N_HEXES],
+    pub mirror: [u8; N_HEXES],
 }
 
 fn valid_coord(x: i8, y: i8) -> bool {
@@ -107,6 +108,8 @@ impl Board {
             location_hexes[li] = h;
         }
 
+        let mirror = coord.map(|(x, y)| index_of(6 - x, 6 - y));
+
         Board {
             coord,
             neighbors,
@@ -114,6 +117,7 @@ impl Board {
             is_location,
             location_hexes,
             between,
+            mirror,
         }
     }
 }
@@ -123,16 +127,4 @@ static BOARD: OnceLock<Board> = OnceLock::new();
 
 pub fn board() -> &'static Board {
     BOARD.get_or_init(Board::new)
-}
-
-pub fn neighbour_gather() -> Vec<u8> {
-    let bd = board();
-    let mut out = Vec::with_capacity(N_HEXES * 6);
-    for h in 0..N_HEXES {
-        for d in 0..6 {
-            let n = bd.neighbors[h][d];
-            out.push(if n == NONE { N_HEXES as u8 } else { n });
-        }
-    }
-    out
 }

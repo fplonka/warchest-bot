@@ -1,13 +1,11 @@
 #include <cuda_fp16.h>
 
-
 __device__ __forceinline__ float neg_inf() { return __int_as_float(0xff800000); }
 
 __device__ __forceinline__ float warp_sum(float v) {
     for (int s = 16; s > 0; s >>= 1) v += __shfl_xor_sync(0xffffffff, v, s);
     return v;
 }
-
 
 __device__ __forceinline__ float tanh_approx(float x) {
     float r;
@@ -20,37 +18,9 @@ __device__ __forceinline__ float gelu1(float x) {
     return 0.5f * x * (1.0f + tanh_approx(inner));
 }
 
-__device__ __forceinline__ float2 word2(unsigned u) {
-    return make_float2(__half2float(__ushort_as_half((unsigned short)(u & 0xffffu))),
-                       __half2float(__ushort_as_half((unsigned short)(u >> 16))));
-}
-
 __device__ __forceinline__ unsigned pack2(float x, float y) {
     __half2 h = __floats2half2_rn(x, y);
     return *(unsigned*)&h;
-}
-
-union HalfWord {
-    unsigned u;
-    __half2 h;
-};
-
-__device__ __forceinline__ unsigned gelu_h2(unsigned u) {
-    HalfWord v;
-    v.u = u;
-    const __half2 k = __float2half2_rn(0.7978845608f), c = __float2half2_rn(0.044715f);
-    const __half2 half = __float2half2_rn(0.5f), one = __float2half2_rn(1.0f);
-    __half2 x2 = __hmul2(v.h, v.h);
-    __half2 inner = __hmul2(k, __hfma2(__hmul2(c, x2), v.h, v.h));
-    HalfWord t;
-    asm("tanh.approx.f16x2 %0, %1;" : "=r"(t.u) : "r"(*(unsigned*)&inner));
-    HalfWord out;
-    out.h = __hmul2(__hmul2(half, v.h), __hadd2(one, t.h));
-    return out.u;
-}
-
-__device__ __forceinline__ unsigned gelu_word(float x, float y) {
-    return gelu_h2(pack2(x, y));
 }
 
 extern "C" __global__ void k_expand_rows(const unsigned char* rows, const float* cards,

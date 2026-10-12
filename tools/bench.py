@@ -13,7 +13,7 @@ import warchest
 from value_net import Net
 
 WARM = float(os.getenv("WARCHEST_BENCH_WARM", "30"))
-FLOP = 1.43e9
+FLOP = 1.77e9
 PEAK = 142e12
 
 

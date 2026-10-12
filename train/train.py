@@ -147,7 +147,7 @@ def train_steps(net, acting, opt, buf, steps, batch, micro, rng, device, batch_f
     for _ in range(steps):
         opt.zero_grad(set_to_none=True)
         for _ in range(batch // micro):
-            parts = batch_fn(buf.gather(rng.integers(buf.lo, buf.rows, size=micro)), rng, device)
+            parts = batch_fn(buf.gather(rng.integers(buf.lo, buf.rows, size=micro)), device)
             loss, stats = losses(net, *parts, policy_w)
             (loss * (micro / batch)).backward()
             for key, value in stats.items():
@@ -162,7 +162,7 @@ def train_steps(net, acting, opt, buf, steps, batch, micro, rng, device, batch_f
 
 
 def probe(net, buf, n, micro, rng, device, batch_fn, policy_w):
-    parts = batch_fn(buf.gather(rng.integers(buf.rows - n, buf.rows, size=min(n, micro))), rng, device)
+    parts = batch_fn(buf.gather(rng.integers(buf.rows - n, buf.rows, size=min(n, micro))), device)
     with torch.no_grad():
         _, stats = losses(net, *parts, policy_w)
     return {f"fresh_{k}": stats[k] * n for k in FRESH}

@@ -9,7 +9,8 @@ use pyo3::types::{IntoPyDict, PyDict};
 use crate::board::board;
 use crate::net::Net;
 use crate::online::{Game, Site};
-use crate::pbs::{expand_row, mirror_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
+use crate::pbs::{expand_row, mirror_row, mover_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
+use crate::search::{mirror_desc, ACT_BYTES};
 use crate::selfplay::Data;
 use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
 
@@ -21,8 +22,8 @@ fn net() -> PyResult<Arc<Net>> {
 }
 
 #[pyfunction]
-fn set_weights(w: PyReadonlyArray1<f32>, b: PyReadonlyArray1<f32>, ln: PyReadonlyArray1<f32>) -> PyResult<()> {
-    let net = Net::from_flat(w.as_slice()?, b.as_slice()?, ln.as_slice()?).map_err(PyValueError::new_err)?;
+fn set_weights(w: PyReadonlyArray1<f32>) -> PyResult<()> {
+    let net = Net::new(w.as_slice()?.to_vec()).map_err(PyValueError::new_err)?;
     *NET.write() = Some(Arc::new(net));
     Ok(())
 }
@@ -123,16 +124,6 @@ fn hex_location_flags() -> Vec<u8> {
 }
 
 #[pyfunction]
-fn hex_neighbours() -> Vec<u8> {
-    crate::board::neighbour_gather()
-}
-
-#[pyfunction]
-fn hex_mirror() -> Vec<u8> {
-    (0..crate::board::N_HEXES).map(|h| crate::state::mirror_hex(h) as u8).collect()
-}
-
-#[pyfunction]
 fn sample_positions(games: usize, seed: u64) -> (Vec<u8>, Vec<u8>, Vec<u32>) {
     let mut rng = crate::rng::Rng::new(seed);
     let mut q = crate::search::Query::default();
@@ -163,6 +154,16 @@ fn mirror_rows<'py>(py: Python<'py>, rows: PyReadonlyArray1<u8>) -> PyResult<Bou
     for (src, dst) in rows.chunks_exact(ROW_BYTES).zip(out.chunks_exact_mut(ROW_BYTES)) {
         mirror_row(src, dst);
     }
+    Ok(out.into_pyarray_bound(py))
+}
+
+#[pyfunction]
+fn mirror_descs<'py>(py: Python<'py>, desc: PyReadonlyArray1<u8>) -> PyResult<Bound<'py, PyArray1<u8>>> {
+    let mut out = desc.as_slice()?.to_vec();
+    if out.len() % ACT_BYTES != 0 {
+        return Err(PyValueError::new_err("descs are not whole"));
+    }
+    out.chunks_exact_mut(ACT_BYTES).for_each(mirror_desc);
     Ok(out.into_pyarray_bound(py))
 }
 
@@ -203,9 +204,10 @@ fn opening(white: Vec<u16>, black: Vec<u16>, first: u8) -> PyResult<Vec<u8>> {
     while s.is_chance() {
         s.apply_inplace(s.legal_actions()[0]);
     }
-    let mut row = vec![0u8; ROW_BYTES];
+    let (mut row, mut mover) = (vec![0u8; ROW_BYTES], vec![0u8; ROW_BYTES]);
     pack_row(&s, &Ctx::new(&s), &mut row);
-    Ok(row)
+    mover_row(&row, &mut mover);
+    Ok(mover)
 }
 
 #[pyclass(name = "Game")]
@@ -263,10 +265,9 @@ fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     m.add_function(wrap_pyfunction!(card_features_table, m)?)?;
     m.add_function(wrap_pyfunction!(hex_location_flags, m)?)?;
-    m.add_function(wrap_pyfunction!(hex_neighbours, m)?)?;
-    m.add_function(wrap_pyfunction!(hex_mirror, m)?)?;
     m.add_function(wrap_pyfunction!(sample_positions, m)?)?;
     m.add_function(wrap_pyfunction!(mirror_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(mirror_descs, m)?)?;
     m.add_function(wrap_pyfunction!(rules_table_hash, m)?)?;
     m.add_function(wrap_pyfunction!(expand_rows, m)?)?;
     m.add_function(wrap_pyfunction!(expand_rows_cuda, m)?)?;
@@ -275,7 +276,7 @@ fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PUBFEAT", PUBFEAT)?;
     m.add("HORIZONS", crate::selfplay::HORIZONS.to_vec())?;
     m.add("ROW_BYTES", ROW_BYTES)?;
-    m.add("ACT_BYTES", crate::search::ACT_BYTES)?;
+    m.add("ACT_BYTES", ACT_BYTES)?;
     m.add("N_HEXES", crate::board::N_HEXES)?;
     m.add("N_LOCATIONS", crate::board::N_LOCATIONS)?;
     m.add("N_UNITS", N_UNITS)?;
@@ -291,8 +292,7 @@ fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("OFF_PILES", crate::pbs::OFF_PILES)?;
     m.add("OFF_CARDS", crate::pbs::OFF_CARDS)?;
     m.add("OFF_LOOSE", crate::pbs::OFF_LOOSE)?;
-    m.add("ROW_HEX_OWNER", crate::pbs::ROW_HEX_OWNER)?;
-    m.add("ROW_HEX_SLOT", crate::pbs::ROW_HEX_SLOT)?;
-    m.add("ROW_HEX_MARKER", crate::pbs::ROW_HEX_MARKER)?;
+    m.add("ROW_TO_ACT", crate::pbs::ROW_TO_ACT)?;
+    m.add("ATTENTION_INDEX", crate::net::attention_index())?;
     Ok(())
 }

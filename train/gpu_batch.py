@@ -25,8 +25,9 @@ def expand(rows, device):
     return x
 
 
-def make_batch(parts, rng, device):
-    rows, desc, parow, target, z = mirror.mirror_batch(parts, rng.random(len(parts[0])) < 0.5)
+def make_batch(parts, device):
+    rows, desc, parow, target, z = parts
+    rows, desc = mirror.to_mover(rows, desc, parow)
     t = lambda a, dtype: torch.as_tensor(a, dtype=dtype).pin_memory().to(device, non_blocking=True)
     return (expand(rows, device), t(desc, torch.uint8), t(parow, torch.long),
             t(target, torch.float32), t(z, torch.float32))

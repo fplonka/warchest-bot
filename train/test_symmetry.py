@@ -10,23 +10,26 @@ def main():
     off = np.asarray(off, np.int64)[:4]
     desc = np.frombuffer(bytes(desc), np.uint8).reshape(-1, warchest.ACT_BYTES)[:off[-1]].copy()
     parow = np.repeat(np.arange(3), np.diff(off))
-    target = np.random.default_rng(0).random(len(desc)).astype(np.float32)
-    z = np.random.default_rng(1).uniform(-1, 1, (3, len(warchest.HORIZONS))).astype(np.float32)
-    parts = (rows, desc, parow, target, z)
     flipped = np.asarray([True, False, True])
 
-    once = mirror.mirror_batch(parts, flipped)
-    assert np.array_equal(once[0][0], mirror.mirror_rows(rows[:1])[0])
-    assert np.array_equal(once[0][1], rows[1])
-    assert np.array_equal(once[4], z)
+    once = mirror.mirror(warchest.mirror_descs, desc, flipped[parow])
     kept = parow == 1
-    assert np.array_equal(once[1][kept], desc[kept])
-    turned = once[1][parow == 0]
+    assert np.array_equal(once[kept], desc[kept])
     coins = desc[parow == 0][:, 1:3]
-    assert np.array_equal(turned[:, 1:3][coins < warchest.NTYPE],
+    assert np.array_equal(once[parow == 0][:, 1:3][coins < warchest.NTYPE],
                           (coins[coins < warchest.NTYPE] + warchest.NSLOT) % warchest.NTYPE)
-    twice = mirror.mirror_batch(once, flipped)
-    for got, want in zip(twice, parts, strict=True):
+    assert np.array_equal(mirror.mirror(warchest.mirror_descs, once, flipped[parow]), desc)
+    turned = mirror.mirror(warchest.mirror_rows, rows, flipped)
+    assert np.array_equal(turned[1], rows[1])
+    assert np.array_equal(mirror.mirror(warchest.mirror_rows, turned, flipped), rows)
+
+    framed = mirror.to_mover(rows, desc, parow)
+    assert not framed[0][:, warchest.ROW_TO_ACT].any()
+    coins = framed[1][:, 1:3]
+    assert (coins[coins < warchest.NTYPE] < warchest.NSLOT).all()
+    every = np.ones(3, bool)
+    swapped = mirror.mirror(warchest.mirror_rows, rows, every), mirror.mirror(warchest.mirror_descs, desc, every[parow])
+    for got, want in zip(mirror.to_mover(*swapped, parow), framed, strict=True):
         assert np.array_equal(got, want)
     print("replay symmetry OK")
 

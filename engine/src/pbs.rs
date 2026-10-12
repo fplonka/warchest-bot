@@ -279,6 +279,14 @@ pub fn pack_row(s: &State, ctx: &Ctx, out: &mut [u8]) {
     }
 }
 
+pub fn mover_row(src: &[u8], dst: &mut [u8]) {
+    if src[ROW_TO_ACT] == 1 {
+        mirror_row(src, dst);
+    } else {
+        dst.copy_from_slice(src);
+    }
+}
+
 pub fn mirror_row(src: &[u8], dst: &mut [u8]) {
     debug_assert_eq!(src.len(), ROW_BYTES);
     debug_assert_eq!(dst.len(), ROW_BYTES);

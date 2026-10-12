@@ -440,11 +440,7 @@ impl State {
 
 
 pub fn mirror_hex(h: usize) -> usize {
-    let bd = board();
-    let (x, y) = bd.coord[h];
-    (0..N_HEXES)
-        .find(|&k| bd.coord[k] == (6 - x, 6 - y))
-        .expect("the rotation stays on the board")
+    board().mirror[h] as usize
 }
 
 #[cfg(test)]

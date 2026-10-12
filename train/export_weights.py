@@ -2,7 +2,6 @@
 import hashlib
 import json
 import shutil
-import struct
 import sys
 from pathlib import Path
 
@@ -21,21 +20,11 @@ def load(path):
 
 
 def read_bin(path):
-    raw, arrays, at = Path(path).read_bytes(), [], 0
-    for _ in range(3):
-        n = struct.unpack_from("<I", raw, at)[0]
-        arrays.append(np.frombuffer(raw, np.float32, n, at + 4))
-        at += 4 + 4 * n
-    assert at == len(raw)
-    return Net().load_flat(arrays)
+    return Net().load_flat(np.fromfile(path, np.float32))
 
 
 def write_bin(net, path):
-    with open(path, "wb") as f:
-        for a in net.flat():
-            a = np.ascontiguousarray(a, np.float32)
-            f.write(struct.pack("<I", a.size))
-            f.write(a.tobytes())
+    net.flat().tofile(path)
 
 
 BOT = Path(__file__).resolve().parents[1] / "engine/target/release/bot"

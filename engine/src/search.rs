@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::ops::Range;
 
 use crate::actions::Action;
-use crate::board::NONE;
-use crate::pbs::{action_coin, obs_key, pack_row, Belief, Ctx, NSLOT, ROW_BYTES};
+use crate::board::{NONE, N_HEXES};
+use crate::pbs::{action_coin, obs_key, pack_row, Belief, Ctx, NSLOT, NTYPE, ROW_BYTES};
 use crate::rng::Rng;
 use crate::selfplay::resolve_chance;
-use crate::state::{State, Z_FACEDOWN, Z_HAND, Z_INFLIGHT};
+use crate::state::{mirror_hex, State, Z_FACEDOWN, Z_HAND, Z_INFLIGHT};
 
 pub const ACT_BYTES: usize = 6;
+pub const COIN_PICKS: Range<usize> = 1..3;
+pub const HEX_PICKS: Range<usize> = 3..ACT_BYTES;
 const C_VISIT: f32 = 50.0;
 const C_SCALE: f32 = 1.0;
 
@@ -20,6 +23,19 @@ pub fn action_desc(a: &Action, s: &State, ctx: &Ctx) -> [u8; ACT_BYTES] {
     };
     let h = a.hexes();
     [a.kind() as u8, token(action_coin(a, s)), token(a.recruited()), h[0], h[1], h[2]]
+}
+
+pub fn mirror_desc(d: &mut [u8]) {
+    for c in &mut d[COIN_PICKS] {
+        if (*c as usize) < NTYPE {
+            *c = ((*c as usize + NSLOT) % NTYPE) as u8;
+        }
+    }
+    for h in &mut d[HEX_PICKS] {
+        if (*h as usize) < N_HEXES {
+            *h = mirror_hex(*h as usize) as u8;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -78,7 +94,7 @@ impl Query {
         self.len() == 0
     }
 
-    pub fn actions(&self, i: usize) -> std::ops::Range<usize> {
+    pub fn actions(&self, i: usize) -> Range<usize> {
         self.off[i] as usize..self.off[i + 1] as usize
     }
 }
