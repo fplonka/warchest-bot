@@ -1,40 +1,32 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
 use std::time::Instant;
 
-use warchest::pbs::{Belief, Ctx};
+use warchest::bot::Brain;
 use warchest::rng::Rng;
-use warchest::search::{think, Flat, Search};
-use warchest::State;
-
-fn roots(rng: &mut Rng) -> Vec<State> {
-    let mut roots = Vec::new();
-    while roots.len() < 200 {
-        let (mut s, mut k) = (warchest::selfplay::game(rng), 0);
-        while !warchest::finished(&s) {
-            let acts = s.legal_actions();
-            if !s.is_chance() && acts.len() > 1 {
-                k += 1;
-                if k % 7 == 0 {
-                    roots.push(s);
-                }
-            }
-            s.apply_inplace(acts[rng.below(acts.len())]);
-        }
-    }
-    roots
-}
+use warchest::search::{Flat, Search};
+use warchest::selfplay::{play, Playout};
 
 fn main() {
-    let roots = roots(&mut Rng::new(5));
-    for sims in [64, 512, 4096] {
-        let ns = (0..3)
-            .map(|_| {
-                let (mut rng, t) = (Rng::new(9), Instant::now());
-                for s in &roots {
-                    std::hint::black_box(think(&Flat, Search::Full(sims), s, &Ctx::new(s), &Belief::new(s, 1 - s.to_act()), &mut rng));
-                }
-                t.elapsed().as_nanos() as f64 / (roots.len() * sims as usize) as f64
-            })
-            .fold(f64::INFINITY, f64::min);
-        println!("sims={sims}: {ns:.0} ns/sim");
+    let arg = |i: usize, default: &str| std::env::args().nth(i).unwrap_or(default.into());
+    let (games, sims, p_full): (u64, u32, f64) = (
+        arg(1, "20").parse().expect("games is a count"),
+        arg(2, "32").parse().expect("sims is a count"),
+        arg(3, "1").parse().expect("p_full is a probability"),
+    );
+    let search = |search| Brain::Search { search, oracle: Arc::new(Flat) };
+    let playout = Playout { full: search(Search::Full(sims)), fast: search(Search::Fast(16)), p_full };
+    let (mut h, mut decisions, mut rows, t) = (DefaultHasher::new(), 0, 0, Instant::now());
+    for seed in 0..games {
+        let d = play(&playout, &mut Rng::new(seed), || true).expect("an unstopped game ends");
+        (&d.q.rows, &d.q.desc, &d.q.off).hash(&mut h);
+        d.target.iter().chain(d.z.as_flattened()).for_each(|x| x.to_bits().hash(&mut h));
+        (decisions, rows) = (decisions + d.decisions, rows + d.q.len());
     }
+    let s = t.elapsed().as_secs_f64();
+    println!(
+        "games={games} sims={sims} p_full={p_full}: {decisions} decisions, {rows} rows, {:.0} decisions/s, hash {:016x}",
+        decisions as f64 / s,
+        h.finish()
+    );
 }
