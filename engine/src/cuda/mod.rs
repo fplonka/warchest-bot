@@ -471,6 +471,7 @@ impl Module {
             return Ok(Arc::clone(m));
         }
         let ctx = CudaContext::new(ordinal).map_err(|e| format!("device {ordinal}: {e:?}"))?;
+        ctx.set_blocking_synchronize().map_err(err)?;
         unsafe { ctx.disable_event_tracking() };
         let (major, minor) = ctx.compute_capability().map_err(err)?;
         let ptx = compile_ptx_with_opts(KERNELS, compile_options(major, minor)).map_err(|e| format!("nvrtc: {e:?}"))?;
