@@ -3,26 +3,31 @@
 <link rel=icon href="data:,">
 <link rel=stylesheet href=/vendor/uPlot.min.css>
 <style>
-:root{--bg:#fff;--ink:#111;--mut:#666;--line:#ddd}
-@media (prefers-color-scheme:dark){:root{--bg:#111;--ink:#e8e8e8;--mut:#999;--line:#333}}
+:root{--bg:#fff;--ink:#111;--mut:#666;--line:#ddd;--live:#178a66}
+@media (prefers-color-scheme:dark){:root{--bg:#111;--ink:#e8e8e8;--mut:#999;--line:#333;--live:#3cc596}}
 *{box-sizing:border-box}
 body{margin:0;display:flex;height:100vh;background:var(--bg);color:var(--ink);
  font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
  font-variant-numeric:tabular-nums}
-aside{width:250px;flex:none;overflow-y:auto;border-right:1px solid var(--line);padding:8px}
+aside{width:270px;flex:none;overflow-y:auto;border-right:1px solid var(--line);padding:0 8px 8px}
+#filter{position:sticky;top:0;width:100%;margin-bottom:6px;padding:9px 6px;border:0;
+ border-bottom:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit;outline:0}
 main{flex:1;overflow-y:auto;padding:14px 16px 40px}
 button{display:block;width:100%;text-align:left;background:none;color:var(--ink);
  border:0;border-radius:3px;padding:4px 6px;margin-bottom:1px;font:inherit;cursor:pointer}
 button:hover{background:var(--line)}
 button.on{background:var(--line);font-weight:700}
-.sub{display:block;color:var(--mut);font-size:11px;font-weight:400}
-.live{color:#20a37a}
+.top{display:flex;justify-content:space-between;gap:8px}
+.sub,.age{color:var(--mut);font-size:11px;font-weight:400}
+.sub{display:block}
+.live{color:var(--live);font-size:11px}
 h1{font-size:14px;margin:0 0 2px}
+h1 span+span{margin-left:8px}
 h2{font-size:12px;margin:22px 0 6px;color:var(--mut)}
-.meta,.none{color:var(--mut);margin:0 0 6px}
-.note{margin:0 0 8px}
-.delta{display:flex;flex-wrap:wrap;gap:2px 16px;color:var(--mut);margin-bottom:12px}
-.delta .hit{color:var(--ink);font-weight:700}
+.meta{color:var(--mut);margin:0 0 6px}
+.note,#changed{margin:0 0 8px}
+details{color:var(--mut);margin:0 0 12px}
+summary{cursor:pointer}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:10px 18px}
 .panel{min-width:0}
 .uplot{font:10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -31,28 +36,26 @@ h2{font-size:12px;margin:22px 0 6px;color:var(--mut)}
 .u-legend .raw{display:none}
 .u-legend th,.u-legend td{padding:0 8px 0 0;border:0}
 .u-select{background:#8883}
-dl{display:flex;flex-wrap:wrap;gap:0 22px;margin:4px 0}
-dt{font-size:11px;color:var(--mut)}
-dd{margin:0 0 4px}
 pre{max-height:340px;overflow:auto;margin:4px 0;font:inherit;white-space:pre-wrap}
 #loglink{margin-left:8px;font-size:11px;color:#3d8bfd}
 @media (max-width:600px){
  body{display:block;height:100dvh;overflow:hidden}
- aside{display:flex;width:100%;height:58px;overflow-x:auto;overflow-y:hidden;border:0;border-bottom:1px solid var(--line)}
+ aside{width:100%;height:58px;overflow-x:auto;overflow-y:hidden;border:0;border-bottom:1px solid var(--line);padding:0}
+ #filter{display:none}
+ #list{display:flex}
  aside button{width:auto;min-width:170px;flex:none;white-space:nowrap}
  main{height:calc(100dvh - 58px);padding:10px;overflow-y:auto}
  .grid{grid-template-columns:minmax(0,1fr)}
 }
 </style>
-<aside id=list></aside>
+<aside><input id=filter type=search placeholder="filter runs" autocomplete=off><div id=list></div></aside>
 <main>
- <h1><span id=title></span><a id=loglink target=_blank>train.log</a></h1>
+ <h1><span id=title></span><span id=status></span><a id=loglink target=_blank>train.log</a></h1>
  <p class=meta id=meta></p><p class=note id=note></p>
- <div class=delta id=cfg></div>
- <div class=panel id=elo></div>
- <p class=meta id=charthelp>drag zoom · wheel zoom · middle-drag pan · double-click reset</p>
+ <p id=changed></p>
+ <details><summary>config</summary><p id=cfg></p></details>
+ <p class=meta>drag zoom · wheel zoom · middle-drag pan · double-click reset · legends show the latest value</p>
  <div class=grid id=panels></div>
- <dl id=health></dl>
  <h2 id=laddertitle>checkpoint ladder</h2><pre id=ladder></pre>
  <h2 id=comparisonstitle>comparisons</h2><pre id=comparisons></pre>
  <div id=text></div>
@@ -61,75 +64,79 @@ pre{max-height:340px;overflow:auto;margin:4px 0;font:inherit;white-space:pre-wra
 <script>
 const COLORS = ["#4e79a7", "#e15759", "#59a14f", "#f28e2b", "#76b7b2",
   "#edc949", "#af7aa1", "#ff9da7", "#9c755f", "#bab0ac", "#8cd17d"];
-const MOVE_COLORS = matchMedia("(prefers-color-scheme:dark)").matches
-  ? ["#77aadd", "#ee8866", "#44bb99", "#eedd66", "#99ddff", "#cc77aa", "#aaa"]
-  : ["#336699", "#cc3311", "#117755", "#997700", "#2288aa", "#882255", "#777"];
 const $ = id => document.getElementById(id);
 const E = (tag, cls, text) => { const n = document.createElement(tag);
   if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 let sel = decodeURIComponent(location.hash.slice(1)) || null;
-let shape = "", plots = [], eloKey = "", eloPlot = null;
+let runs = [], stages = [], shape = "", plots = [], view = null, full = [0, 1];
 
 const api = async u => { try { const r = await fetch(u); return r.ok ? r.json() : null; }
                          catch (e) { return null; } };
 const fmt = v => v == null ? "—" : Math.abs(v) >= 1e5 || (v && Math.abs(v) < 1e-3)
   ? v.toExponential(2) : String(+v.toPrecision(4));
+const dur = h => h < 1 ? Math.round(h * 60) + "m" : h < 48 ? +h.toFixed(1) + "h" : +(h / 24).toFixed(1) + "d";
+const age = r => r.running ? "● live" : dur((Date.now() / 1000 - r.mtime) / 3600) + " ago";
+const trained = r => r.budget ? `${dur(r.hours)} of ${dur(r.budget)}` : dur(r.hours);
+const latest = y => { let i = y.length - 1; while (i > 0 && y[i] == null) i--; return i; };
 
-function ema(y, span = 12) {
-  const a = 2 / (span + 1); let p = null;
-  return y.map(v => v == null ? null : (p = p == null ? v : a * v + (1 - a) * p));
+function zoom(range) {
+  view = range && [Math.max(range[0], full[0]), Math.min(range[1], full[1])];
+  const [min, max] = view || full;
+  plots.forEach(q => q.u.setScale("x", {min, max}));
 }
 
-// This is uPlot's official wheel-zoom and drag-pan plugin pattern. Normal drag
-// selects a zoom range; wheel zooms around the cursor; middle-drag pans.
 function navigation() {
-  return {hooks: {ready: u => {
-    const over = u.over;
-    over.addEventListener("wheel", e => {
-      e.preventDefault();
-      const x = u.posToVal(u.cursor.left, "x"), span = u.scales.x.max - u.scales.x.min;
-      const full = u.data[0], min = full[0], max = full[full.length - 1];
-      const next = Math.min(max - min, e.deltaY < 0 ? span * .75 : span / .75);
-      const pct = (x - u.scales.x.min) / span;
-      let lo = x - pct * next, hi = lo + next;
-      if (lo < min) { lo = min; hi = min + next; }
-      if (hi > max) { hi = max; lo = max - next; }
-      u.setScale("x", {min: lo, max: hi});
-    }, {passive: false});
-    over.addEventListener("mousedown", e => {
-      if (e.button !== 1) return;
-      e.preventDefault();
-      const start = e.clientX, lo0 = u.scales.x.min, hi0 = u.scales.x.max;
-      const units = (hi0 - lo0) / u.bbox.width * devicePixelRatio;
-      const move = ev => {
-        const full = u.data[0], span = hi0 - lo0;
-        let lo = lo0 - units * (ev.clientX - start), hi = lo + span;
-        if (lo < full[0]) { lo = full[0]; hi = lo + span; }
-        if (hi > full[full.length - 1]) { hi = full[full.length - 1]; lo = hi - span; }
-        u.setScale("x", {min: lo, max: hi});
-      };
-      const up = () => { removeEventListener("mousemove", move); removeEventListener("mouseup", up); };
-      addEventListener("mousemove", move); addEventListener("mouseup", up);
-    });
-    over.addEventListener("dblclick", () => u.setData(u.data));
-  }}};
+  return {hooks: {
+    setSelect: u => {
+      if (!u.select.width) return;
+      zoom([u.posToVal(u.select.left, "x"), u.posToVal(u.select.left + u.select.width, "x")]);
+      u.setSelect({width: 0, height: 0}, false);
+    },
+    ready: u => {
+      const over = u.over, shift = (lo, span) => {
+        lo = Math.min(Math.max(lo, full[0]), full[1] - span); zoom([lo, lo + span]); };
+      over.addEventListener("wheel", e => {
+        e.preventDefault();
+        const [min, max] = view || full, x = u.posToVal(u.cursor.left, "x");
+        const span = Math.min(full[1] - full[0], (max - min) * (e.deltaY < 0 ? .75 : 1 / .75));
+        shift(x - (x - min) / (max - min) * span, span);
+      }, {passive: false});
+      over.addEventListener("mousedown", e => {
+        if (e.button !== 1) return;
+        e.preventDefault();
+        const start = e.clientX, [min, max] = view || full, per = (max - min) / over.clientWidth;
+        const move = ev => shift(min - per * (ev.clientX - start), max - min);
+        const up = () => { removeEventListener("mousemove", move); removeEventListener("mouseup", up); };
+        addEventListener("mousemove", move); addEventListener("mouseup", up);
+      });
+    }}};
 }
 
 function overlays(state) {
   return {hooks: {draw: u => {
-    const {ctx, bbox} = u, dpr = devicePixelRatio || 1;
+    const {ctx, bbox} = u, dpr = devicePixelRatio || 1, p = state.p;
     ctx.save(); ctx.beginPath(); ctx.rect(bbox.left, bbox.top, bbox.width, bbox.height); ctx.clip();
-    ctx.lineWidth = dpr; ctx.strokeStyle = "#8886"; ctx.setLineDash([2 * dpr, 3 * dpr]);
-    for (const t of state.snaps) {
-      const x = u.valToPos(t, "x", true);
+    ctx.lineWidth = dpr;
+    p.s.forEach((s, i) => s.e && s.y.forEach((v, k) => {
+      if (v == null) return;
+      const x = u.valToPos(p.x[k], "x", true);
+      ctx.strokeStyle = COLORS[i % COLORS.length];
+      ctx.beginPath(); ctx.moveTo(x, u.valToPos(v - s.e[k], "y", true));
+      ctx.lineTo(x, u.valToPos(v + s.e[k], "y", true)); ctx.stroke();
+    }));
+    ctx.strokeStyle = ctx.fillStyle = "#888"; ctx.font = 10 * dpr + "px ui-monospace,monospace";
+    ctx.setLineDash([2 * dpr, 3 * dpr]);
+    for (const [name, h] of stages.slice(1)) {
+      const x = u.valToPos(h, "x", true);
       ctx.beginPath(); ctx.moveTo(x, bbox.top); ctx.lineTo(x, bbox.top + bbox.height); ctx.stroke();
+      ctx.fillText(name, x + 3 * dpr, bbox.top + 10 * dpr);
     }
     ctx.restore();
   }}};
 }
 
 function plotData(p) {
-  return [p.x, ...p.s.flatMap(s => s.sm ? [s.y, ema(s.y)] : [s.y]),
+  return [p.x, ...p.s.flatMap(s => s.m ? [s.y, s.m] : [s.y]),
     ...p.h.map(h => p.x.map(() => h[1]))];
 }
 
@@ -140,23 +147,27 @@ function axes() {
     {stroke, grid: {stroke: grid}, size: 65, values: (u, ticks) => ticks.map(fmt)}];
 }
 
-function makePlot(box, p, snaps) {
-  const state = {panel: p, snaps};
-  const series = [{label: "training time", value: (u, v) => fmt(v) + " min"}];
+function makePlot(box, p) {
+  const state = {p};
+  const series = [{label: "training time",
+    value: (u, v, si, idx) => fmt(state.p.x[idx ?? state.p.x.length - 1]) + " h"}];
   p.s.forEach((s, i) => {
-    const colors = p.t === "Move mix" ? MOVE_COLORS : COLORS;
-    const stroke = colors[i % colors.length];
-    if (s.sm) series.push({label: s.n, class: "raw", stroke, width: 1,
+    const stroke = COLORS[i % COLORS.length];
+    if (s.m) series.push({label: s.n, class: "raw", stroke, width: 1,
       alpha: .22, auto: false, points: {show: false}, spanGaps: false});
-    series.push({label: s.n, stroke, width: 1.5, points: {show: false},
-      spanGaps: false,
-      value: (u, v, si, idx) => fmt(idx == null ? null : state.panel.s[i].y[idx])});
+    series.push({label: s.n, stroke, width: 1.5, spanGaps: s.dots,
+      points: {show: s.dots, size: 5, fill: stroke},
+      value: (u, v, si, idx) => {
+        const t = state.p.s[i], k = idx ?? latest(t.y);
+        return fmt(t.y[k]) + (t.e && t.y[k] != null ? " ± " + fmt(t.e[k]) : "");
+      }});
   });
   p.h.forEach((h, i) => series.push({label: h[0], stroke: COLORS[(p.s.length + i) % COLORS.length],
-    width: 1, dash: [5, 5], points: {show: false}}));
+    width: 1, dash: [5, 5], points: {show: false}, value: () => fmt(state.p.h[i][1])}));
   const opts = {title: p.t + " · " + p.y, width: box.clientWidth, height: 230,
     plugins: [navigation(), overlays(state)], scales: {x: {time: false}, y: {}},
-    cursor: {drag: {x: true, y: false, setScale: true}}, series, axes: axes()};
+    cursor: {drag: {x: true, y: false, setScale: false}, bind: {dblclick: () => () => zoom(null)},
+      sync: {key: "x", filters: {pub: type => type === "mousemove"}}}, series, axes: axes()};
   if (p.zero) opts.scales.y.range = (u, min, max) => {
     const lo = Math.min(0, min), hi = Math.max(0, max);
     return lo === hi ? [0, 1] : [lo, hi];
@@ -165,48 +176,6 @@ function makePlot(box, p, snaps) {
   return {u, box, state};
 }
 
-function drawElo(e) {
-  const key = JSON.stringify(e);
-  if (key === eloKey) return;
-  eloKey = key;
-  if (eloPlot) eloPlot.destroy();
-  eloPlot = null;
-  if (!e) return;
-  const x = e.bots.map(b => b.hours), anchors = Object.entries(e.anchors);
-  const lo = e.bots.map(b => b.elo - b.se), hi = e.bots.map(b => b.elo + b.se);
-  const bars = {hooks: {draw: u => {
-    const {ctx, bbox} = u;
-    ctx.save(); ctx.beginPath(); ctx.rect(bbox.left, bbox.top, bbox.width, bbox.height); ctx.clip();
-    ctx.lineWidth = devicePixelRatio || 1; ctx.strokeStyle = COLORS[0];
-    x.forEach((h, i) => {
-      const px = u.valToPos(h, "x", true);
-      ctx.beginPath(); ctx.moveTo(px, u.valToPos(lo[i], "y", true));
-      ctx.lineTo(px, u.valToPos(hi[i], "y", true)); ctx.stroke();
-    });
-    ctx.restore();
-  }}};
-  const box = $("elo");
-  eloPlot = new uPlot({title: "Elo over time · Elo ± standard error", width: box.clientWidth,
-    height: 230, plugins: [bars, overlays({snaps: e.switches})], axes: axes(),
-    scales: {x: {time: false, distr: 3, log: 2}, y: {range: (u, min, max) =>
-      uPlot.rangeNum(Math.min(min, ...lo), Math.max(max, ...hi), .1, true)}},
-    series: [{label: "training time", value: (u, v) => fmt(v) + " h"},
-      {label: "Elo", stroke: COLORS[0], paths: () => null,
-       points: {show: true, size: 6, fill: COLORS[0]},
-       value: (u, v, si, i) => v == null ? "—" : fmt(v) + " ± " + fmt(e.bots[i].se)},
-      {label: "log fit", stroke: COLORS[1], width: 1.5, points: {show: false}},
-      ...anchors.map(([name], i) => ({label: name, stroke: COLORS[2 + i], width: 1,
-        dash: [5, 5], points: {show: false}}))]},
-    [x, e.bots.map(b => b.elo), x.map(h => e.fit.a + e.fit.b * Math.log2(h)),
-     ...anchors.map(([, elo]) => x.map(() => elo))], box);
-}
-
-function clearPlots() {
-  plots.forEach(p => p.u.destroy()); plots = [];
-}
-
-// Scroll position is the whole point of redrawing in place, so a <pre> that the
-// user has scrolled keeps its offset unless it was already following the tail.
 function setText(el, s) {
   if (el.textContent === s) return;
   const at = el.scrollTop, bottom = at + el.clientHeight >= el.scrollHeight - 4;
@@ -215,40 +184,38 @@ function setText(el, s) {
 }
 
 function render(d) {
-  $("loglink").style.display = "";
-  $("charthelp").style.display = "";
+  const r = runs.find(r => r.name === d.name);
+  document.title = d.name + " · warchest runs";
   $("title").textContent = d.name;
-  $("meta").textContent = [d.git, d.epochs + " ReBeL epochs"].filter(Boolean).join(" · ");
+  $("status").textContent = r ? age(r) : "";
+  $("status").className = r && r.running ? "live" : "age";
+  $("meta").textContent = [d.stages.map(([n, h]) => h ? `${n} at ${dur(h)}` : n).join(" → "),
+    r && trained(r) + " trained", d.git && "git " + d.git].filter(Boolean).join(" · ");
   $("note").textContent = d.note || "";
-  drawElo(d.elo);
   const log = $("loglink");
   log.href = "/run/" + encodeURIComponent(d.name) + "/train.log";
   log.style.display = d.log ? "" : "none";
-  const cfg = $("cfg"); cfg.textContent = "";
-  d.cfg.forEach(([k, v, changed]) =>
-    cfg.appendChild(E("span", changed ? "hit" : null, k + "=" + v)));
+  const changed = d.cfg.filter(c => c[2]).map(([k, v]) => k + "=" + v).join("  ");
+  $("changed").textContent = changed && `changed from ${d.stages.at(-2)[0]}: ${changed}`;
+  $("cfg").textContent = d.cfg.map(([k, v]) => k + "=" + v).join("  ");
 
   const grid = $("panels"), key = d.panels.map(p =>
     p.t + ":" + p.s.map(s => s.n).join(",") + ":" + p.h.map(h => h[0]).join(",")).join("|");
-  if (key !== shape || plots.length !== d.panels.length) {
-    clearPlots(); grid.textContent = "";
-    const boxes = d.panels.map(() => { const box = E("div", "panel");
-      grid.appendChild(box); return box; });
-    plots = d.panels.map((p, i) => makePlot(boxes[i], p, d.snaps));
+  stages = d.stages;
+  full = [Math.min(...d.panels.map(p => p.x[0])), Math.max(...d.panels.map(p => p.x.at(-1)))];
+  if (key !== shape) {
+    plots.forEach(q => q.u.destroy());
+    grid.textContent = "";
+    const boxes = d.panels.map(() => grid.appendChild(E("div", "panel")));
+    plots = d.panels.map((p, i) => makePlot(boxes[i], p));
     shape = key;
   } else {
     d.panels.forEach((p, i) => {
-      const q = plots[i], old = q.u.data[0], scale = q.u.scales.x;
-      const full = Math.abs(scale.min - old[0]) < 1e-9 &&
-        Math.abs(scale.max - old[old.length - 1]) < 1e-9;
-      q.state.panel = p; q.state.snaps = d.snaps;
-      q.u.setData(plotData(p), full);
+      plots[i].state.p = p;
+      plots[i].u.setData(plotData(p), false);
     });
   }
-
-  const hl = $("health"); hl.textContent = "";
-  d.health.forEach(([k, v]) => { hl.appendChild(E("dt", null, k));
-    hl.appendChild(E("dd", null, v)); });
+  zoom(view);
 
   const reportText = report => report ? report.pairs.map(p =>
     `${p.a} (${p.a_minutes}m) vs ${p.b} (${p.b_minutes}m)  ` +
@@ -270,44 +237,39 @@ function render(d) {
     setText(pre, s); });
 }
 
-function entry(a, name, sub, live) {
-  const b = E("button", name === sel ? "on" : null);
-  b.appendChild(E("span", null, name));
-  const line = E("span", "sub");
-  if (live) line.appendChild(E("span", "live", "● "));
-  line.appendChild(document.createTextNode(sub));
-  b.appendChild(line);
-  b.onclick = () => { sel = name; location.hash = encodeURIComponent(name);
-                      shape = ""; poll(); };
-  a.appendChild(b);
+function entry(r) {
+  const b = E("button", r.name === sel ? "on" : null), top = E("span", "top");
+  top.append(E("span", null, r.name), E("span", r.running ? "live" : "age", age(r)));
+  b.append(top, E("span", "sub",
+    [trained(r), r.parent && "from " + r.parent, r.note].filter(Boolean).join(" · ")));
+  b.onclick = () => { location.hash = encodeURIComponent(r.name); };
+  return b;
 }
 
-function list(runs) {
-  const a = $("list"), at = a.scrollTop;
-  a.textContent = "";
-  runs.forEach(r => entry(a, r.name,
-    [r.epochs + " ep", r.minutes + "m", r.phase, r.note].filter(Boolean).join(" · "),
-    r.running));
-  a.scrollTop = at;
+function list() {
+  const a = $("list"), q = $("filter").value.toLowerCase(), at = a.parentNode.scrollTop;
+  a.replaceChildren(...runs.filter(r =>
+    [r.name, r.note, r.parent].join(" ").toLowerCase().includes(q)).map(entry));
+  a.parentNode.scrollTop = at;
 }
 
 async function poll() {
-  const runs = await api("/api/runs");
-  if (runs) {
+  const got = await api("/api/runs");
+  if (got) {
+    runs = got;
     if (!sel && runs.length) sel = runs[0].name;
-    list(runs);
+    list();
   }
   if (!sel) return;
   const d = await api("/api/run/" + encodeURIComponent(sel));
-  if (d) render(d);
+  if (d && d.name === sel) render(d);
 }
 
-addEventListener("resize", () => {
-  plots.forEach(p => p.u.setSize({width: p.box.clientWidth, height: 230}));
-  if (eloPlot) eloPlot.setSize({width: $("elo").clientWidth, height: 230});
-});
-addEventListener("hashchange", () => {   // the hash is the deep link, so honour Back
-  sel = decodeURIComponent(location.hash.slice(1)) || sel; shape = ""; poll(); });
-setInterval(poll, 3000);
+$("filter").oninput = list;
+addEventListener("resize", () =>
+  plots.forEach(p => p.u.setSize({width: p.box.clientWidth, height: 230})));
+addEventListener("hashchange", () => {
+  sel = decodeURIComponent(location.hash.slice(1)) || sel; shape = ""; view = null; poll(); });
+setInterval(poll, 10000);
 poll();
 </script>

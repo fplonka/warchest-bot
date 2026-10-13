@@ -67,14 +67,6 @@ def parse(kvs):
     return {k: CAST.get(kinds[k], str)(v) for k, v in over.items()}
 
 
-def knobs(cfg):
-    d = cfg if isinstance(cfg, dict) else dataclasses.asdict(cfg)
-    base = dataclasses.asdict(BASELINE)
-    for f in dataclasses.fields(Cfg):
-        v = d.get(f.name, base[f.name])
-        yield f.name, v, f.name in base and v != base[f.name]
-
-
 def physical_cpus():
     cpus = set()
     root = "/sys/devices/system/cpu"
