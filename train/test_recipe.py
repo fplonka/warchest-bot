@@ -76,6 +76,7 @@ def test_value_only_rows_leave_the_policy_loss_alone():
 
 def test_a_saved_buffer_loads_the_newest_rows_that_fit():
     train = load_train_module()
+    train.CHUNK = 3
     rng = np.random.default_rng(0)
     buf = train.Buffer(16)
     for n in rng.integers(1, 6, 9):

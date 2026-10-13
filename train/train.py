@@ -14,7 +14,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
-from numpy.lib.format import read_array, write_array
+from numpy.lib import format as npy
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import torch
@@ -49,8 +49,29 @@ def adam(net, lr, wd):
         lr=lr, fused=True)
 
 
-def tail(a, n):
-    return a[len(a) - n:]
+CHUNK = 1 << 20
+
+
+def spans(start, stop, n):
+    while start < stop:
+        at = start % n
+        step = min(stop - start, n - at, CHUNK)
+        yield slice(at, at + step)
+        start += step
+
+
+def write_ring(f, a, start, stop, view=lambda v: v):
+    npy.write_array_header_1_0(f, {**npy.header_data_from_array_1_0(a[:0]), "shape": (int(stop - start), *a.shape[1:])})
+    for s in spans(start, stop, len(a)):
+        f.write(view(a[s]))
+
+
+def read_ring(f, a, start, stop, view=lambda v: v):
+    npy.read_magic(f)
+    f.seek((npy.read_array_header_1_0(f)[0][0] - (stop - start)) * a[0].nbytes, os.SEEK_CUR)
+    for s in spans(start, stop, len(a)):
+        f.readinto(a[s])
+        a[s] = view(a[s])
 
 
 class Buffer:
@@ -81,34 +102,28 @@ class Buffer:
         self.rows += n
         self.acts += na
 
-    def live_rows(self):
-        return np.arange(self.lo, self.rows) % self.cap
-
-    def live_acts(self):
-        return np.arange(self.astart[self.lo % self.cap], self.acts) % self.acap
-
     def save(self, path):
-        rows, acts = self.live_rows(), self.live_acts()
+        now = time.time()
         with gzip.open(path, "wb", compresslevel=1) as f:
-            write_array(f, np.array([self.lo, self.rows, self.acts]))
-            write_array(f, time.time() - self.written_at[rows])
+            npy.write_array(f, np.array([self.lo, self.rows, self.acts]))
+            write_ring(f, self.written_at, self.lo, self.rows, lambda v: now - v)
             for a in (self.x, self.z, self.astart, self.alen):
-                write_array(f, a[rows])
+                write_ring(f, a, self.lo, self.rows)
             for a in (self.pa, self.pp):
-                write_array(f, a[acts])
+                write_ring(f, a, self.astart[self.lo % self.cap], self.acts)
 
     def load(self, path):
+        now = time.time()
         with gzip.open(path) as f:
-            lo, self.rows, self.acts = read_array(f).tolist()
+            lo, self.rows, self.acts = npy.read_array(f).tolist()
             self.lo = max(lo, self.rows - self.cap)
-            rows = self.live_rows()
-            self.written_at[rows] = time.time() - tail(read_array(f), len(rows))
+            read_ring(f, self.written_at, self.lo, self.rows, lambda v: now - v)
             for a in (self.x, self.z, self.astart, self.alen):
-                a[rows] = tail(read_array(f), len(rows))
-            self.lo += int(np.searchsorted(self.astart[rows], self.acts - self.acap))
-            acts = self.live_acts()
+                read_ring(f, a, self.lo, self.rows)
+            self.lo += bisect.bisect_left(range(self.lo, self.rows), self.acts - self.acap,
+                                          key=lambda i: self.astart[i % self.cap])
             for a in (self.pa, self.pp):
-                a[acts] = tail(read_array(f), len(acts))
+                read_ring(f, a, self.astart[self.lo % self.cap], self.acts)
         return self
 
     def span_seconds(self):
