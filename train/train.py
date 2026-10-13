@@ -430,9 +430,6 @@ def main():
                   + " ".join(f"{k}={v}" for k, v in extra.items()))
 
     def absorb(window, data):
-        if next(chunks) % 100 == 0:
-            ingest(unseen, data)
-            return
         n = ingest(buf, data)
         progress["generated_rows"] += n
         window["rows"] += n
@@ -467,6 +464,9 @@ def main():
         at, seen = time.time(), (0, 0)
         stats = {}
         while time.time() - t0 < total and args.playout_at(time.time() - t0) == playout:
+            if next(chunks) % 100 == 0:
+                ingest(unseen, farm.collect())
+                continue
             absorb(window, farm.collect())
             done, fitted = fit()
             window["steps"] += done
