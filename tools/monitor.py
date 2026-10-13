@@ -2,6 +2,7 @@ import argparse
 import glob
 import json
 import math
+import mimetypes
 import os
 import re
 import subprocess
@@ -376,12 +377,11 @@ class Handler(BaseHTTPRequestHandler):
             got = detail(self.server.runs, unquote(route[len("/api/run/"):]))
             return (self.body(json.dumps(got).encode(), "application/json")
                     if got else self.send_error(404))
-        if route.startswith("/run/") and route.endswith("/train.log"):
-            name = unquote(route[len("/run/"):-len("/train.log")])
-            raw = read_text(os.path.join(run_dir(self.server.runs, name),
-                                         "train.log"), 1 << 24)
-            return (self.body(raw.encode(), "text/plain; charset=utf-8")
-                    if raw else self.send_error(404))
+        if route.startswith("/runs/"):
+            path = os.path.realpath(os.path.join(self.server.runs, unquote(route[len("/runs/"):])))
+            if path.startswith(self.server.runs + os.sep) and os.path.isfile(path):
+                with open(path, "rb") as f:
+                    return self.body(f.read(), mimetypes.guess_type(path)[0] or "text/plain; charset=utf-8")
         self.send_error(404)
 
     def body(self, raw, ctype):
@@ -425,7 +425,7 @@ def main():
                     help="pull runs from the box every 30s and redraw runs/<run>/plots/*.png "
                          "for each run that changed in the last two days")
     args = ap.parse_args()
-    runs = os.path.abspath(args.runs)
+    runs = os.path.realpath(args.runs)
     if args.pull:
         threading.Thread(target=refresh, args=(runs,), daemon=True).start()
     srv = ThreadingHTTPServer((args.host, args.port), Handler)

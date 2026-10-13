@@ -193,7 +193,7 @@ function render(d) {
     r && trained(r) + " trained", d.git && "git " + d.git].filter(Boolean).join(" · ");
   $("note").textContent = d.note || "";
   const log = $("loglink");
-  log.href = "/run/" + encodeURIComponent(d.name) + "/train.log";
+  log.href = "/runs/" + encodeURIComponent(d.name) + "/train.log";
   log.style.display = d.log ? "" : "none";
   const changed = d.cfg.filter(c => c[2]).map(([k, v]) => k + "=" + v).join("  ");
   $("changed").textContent = changed && `changed from ${d.stages.at(-2)[0]}: ${changed}`;
