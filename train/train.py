@@ -36,6 +36,7 @@ HORIZONS = warchest.HORIZONS
 SHORTS = tuple(f"short_{h:g}_loss" for h in HORIZONS[1:])
 SHORT_W = 1.0
 HOLDOUT_ROWS = 200_000
+WINDOW = 7_000_000
 PLAYS = ("attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative")
 FRESH = ("value_loss", "value_sq_err", "policy_loss", *SHORTS)
 GAME_KEYS = ("games", "decisions", "timeouts", "white_wins", "black_wins", "draws",
@@ -77,8 +78,8 @@ def read_ring(f, a, start, stop, view=lambda v: v):
 
 class Buffer:
 
-    def __init__(self, cap):
-        self.cap, self.acap = cap, cap * 32
+    def __init__(self, cap, every=1):
+        self.cap, self.acap, self.every = cap, cap * 32, every
         self.x = np.zeros((cap, ROW_BYTES), np.uint8)
         self.z = np.zeros((cap, len(HORIZONS)), np.float32)
         self.astart = np.zeros(cap, np.int64)
@@ -90,7 +91,7 @@ class Buffer:
 
     def add(self, rows, desc, off, target, z):
         n, na = len(rows), len(desc)
-        lo = min(self.rows, max(self.lo, self.rows + n - self.cap))
+        lo = min(self.rows, max(self.lo, self.rows + n - self.window(self.rows + n)))
         self.lo = lo + bisect.bisect_left(range(lo, self.rows), self.acts + na - self.acap,
                                           key=lambda i: self.astart[i % self.cap])
         ring = (np.arange(n) + self.rows) % self.cap
@@ -102,6 +103,10 @@ class Buffer:
         self.pa[at], self.pp[at] = desc, target
         self.rows += n
         self.acts += na
+
+    def window(self, rows):
+        seen = max(rows * self.every, WINDOW) / WINDOW
+        return min(self.cap, int(WINDOW * (1 + 0.4 * (seen ** 0.75 - 1) / 0.75)) // self.every)
 
     def save(self, path):
         now = time.time()
@@ -326,7 +331,7 @@ def main():
     if origin and buffer_file(origin).exists():
         buf.load(buffer_file(origin))
     held = Buffer(HOLDOUT_ROWS).load(args.holdout) if args.holdout else None
-    unseen, chunks = Buffer(args.cap // 100), itertools.count(1)
+    unseen, chunks = Buffer(args.cap // 100, every=100), itertools.count(1)
     if checkpoint:
         value.load_state_dict(checkpoint["value"])
         acting.load_state_dict(checkpoint["acting"])
