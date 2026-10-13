@@ -7,9 +7,9 @@ use crate::search::ACT_BYTES;
 use crate::selfplay::HORIZONS;
 use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
 
-pub const D: usize = 384;
-pub const LAYERS: usize = 10;
-pub const HEADS: usize = 6;
+pub const D: usize = 256;
+pub const LAYERS: usize = 4;
+pub const HEADS: usize = 4;
 pub const TOKENS: usize = N_HEXES + NTYPE + 1;
 pub const STATE: usize = TOKENS - 1;
 pub const FFN: usize = 2 * D;

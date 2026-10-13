@@ -19,9 +19,9 @@ N_KINDS = warchest.N_KINDS
 SHORT = len(warchest.HORIZONS) - 1
 
 TYPE = 64
-D = 384
+D = 256
 DH = 64
-LAYERS = 10
+LAYERS = 4
 TOKENS = N_HEXES + NTYPE + 1
 STATE = TOKENS - 1
 NONE = TOKENS
