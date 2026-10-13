@@ -49,9 +49,9 @@ instead of adding it? A module should be deep: a simple interface over a lot
 of implementation. A new flag, mode, branch or wrapper is the shallow answer,
 and it is almost never the only one available.
 
-Run this now and hold your diff to it:
+Read this now and hold your diff to it:
 
-  curl -s https://raw.githubusercontent.com/cursor/plugins/refs/heads/main/cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md
+  tools/vendor/review-standard.md
 
 If the growth is still necessary after you have actually simplified, write why in
 
