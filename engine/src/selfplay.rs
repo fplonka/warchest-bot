@@ -36,17 +36,17 @@ pub fn game(rng: &mut Rng) -> State {
 
 pub const HORIZONS: [f32; 4] = [f32::INFINITY, 6.0, 16.0, 50.0];
 
-fn targets(seen: &[(usize, f32)], white: f32) -> Vec<[f32; 4]> {
+fn targets(seen: &[(usize, f32, bool)], white: f32) -> Vec<[f32; 4]> {
     let mut t = [white; 4];
     let mut z: Vec<[f32; 4]> = seen
         .iter()
         .rev()
-        .map(|&(p, v)| {
+        .filter_map(|&(p, v, recorded)| {
             let sign = if p == WHITE as usize { 1.0 } else { -1.0 };
             for (t, h) in t.iter_mut().zip(HORIZONS) {
                 *t += (sign * v - *t) / h;
             }
-            t.map(|x| sign * x)
+            recorded.then(|| t.map(|x| sign * x))
         })
         .collect();
     z.reverse();
@@ -140,10 +140,11 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
         let brain = if full { &playout.full } else { &playout.fast };
         let (acts, c) = seats[p].think(brain).expect("the seat to act can think");
         if acts.len() > 1 {
-            let taught = if full { &acts[..] } else { &[] };
-            seats[p].query(taught, &mut d.q);
-            d.target.extend_from_slice(&c.probs[..taught.len()]);
-            seen.push((p, c.value));
+            if full {
+                seats[p].query(&acts, &mut d.q);
+                d.target.extend_from_slice(&c.probs);
+            }
+            seen.push((p, c.value, full));
         }
         let a = acts[c.pick];
         seats[p].play(a);
@@ -259,31 +260,28 @@ mod tests {
         Playout { full: search(Search::Full(32)), fast: search(Search::Fast(16)), p_full }
     }
 
-    fn taught(d: &Data) -> usize {
+    fn check(d: &Data) {
         assert!(d.games > 0 && d.q.len() > 20, "{} rows over {} games", d.q.len(), d.games);
         assert_eq!(d.q.rows.len(), d.q.len() * ROW_BYTES);
         assert_eq!(d.q.desc.len(), d.target.len() * ACT_BYTES);
         assert_eq!(d.z.len(), d.q.len());
-        let mut taught = 0;
         for i in 0..d.q.len() {
             let total: f32 = d.target[d.q.actions(i)].iter().sum();
-            assert!((total - 1.0).abs() < 1e-4 || d.q.actions(i).is_empty(), "row {i} target sums to {total}");
-            taught += !d.q.actions(i).is_empty() as usize;
+            assert!((total - 1.0).abs() < 1e-4, "row {i} target sums to {total}");
         }
-        taught
     }
 
     #[test]
     fn a_searching_game_yields_one_taught_row_per_real_choice() {
         let d = play(&searcher(1.0), &mut Rng::new(3), || true).expect("an unstopped game ends");
-        assert_eq!(taught(&d), d.q.len());
+        check(&d);
         assert_eq!(d.wins[0] + d.wins[1] + d.draws + d.timeouts, 1);
         assert!(d.z.as_flattened().iter().all(|z| z.abs() <= 1.0));
     }
 
     #[test]
     fn short_term_targets_average_the_coming_root_values_and_leave_the_rest_to_the_result() {
-        let z = targets(&[(0, 0.5), (1, 0.2), (0, -0.1)], 1.0);
+        let z = targets(&[(0, 0.5, true), (1, 0.2, true), (0, -0.1, true)], 1.0);
         let six = [0.622_685, -0.647_222, 0.816_667];
         for (i, row) in z.iter().enumerate() {
             let sign = if i == 1 { -1.0 } else { 1.0 };
@@ -292,22 +290,24 @@ mod tests {
         }
         let fifty = 0.02 * 0.5 - 0.02 * 0.98 * 0.2 - 0.02 * 0.98 * 0.98 * 0.1 + 0.98f32.powi(3);
         assert!((z[0][3] - fifty).abs() < 1e-5, "{} is not {fifty}", z[0][3]);
+        assert_eq!(targets(&[(0, 0.5, true), (1, 0.2, false), (0, -0.1, true)], 1.0), [z[0], z[2]]);
     }
 
     #[test]
-    fn fast_searches_record_rows_without_a_policy_target() {
+    fn fast_searches_record_no_rows() {
         let mut d = Data::default();
         for seed in 0..4 {
             d.merge(play(&searcher(0.5), &mut Rng::new(seed), || true).expect("an unstopped game ends"));
         }
-        let frac = taught(&d) as f64 / d.q.len() as f64;
-        assert!((0.4..0.6).contains(&frac), "{frac} of rows are taught");
+        check(&d);
+        let frac = d.q.len() as f64 / d.decisions as f64;
+        assert!((0.25..0.6).contains(&frac), "{frac} of decisions are recorded");
     }
 
     #[test]
     fn greedy_warm_games_teach_every_row() {
         let d = warm(4, 11);
-        assert_eq!(taught(&d), d.q.len());
+        check(&d);
         assert_eq!(d.kinds.0.iter().map(|[chosen, _]| chosen).sum::<usize>(), d.decisions);
         assert!(d.kinds.0.iter().all(|[chosen, offered]| chosen <= offered));
     }
@@ -317,6 +317,6 @@ mod tests {
         let farm = Farm::new(5, 4, Arc::new(searcher(0.5)), 200);
         let d = farm.collect().expect("no game thread dies");
         drop(farm);
-        taught(&d);
+        check(&d);
     }
 }

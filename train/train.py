@@ -5,6 +5,7 @@ import collections
 import copy
 import dataclasses
 import gzip
+import itertools
 import json
 import os
 import pathlib
@@ -33,7 +34,7 @@ ACT_BYTES = warchest.ACT_BYTES
 EMA_ROWS = 1_024_000
 HORIZONS = warchest.HORIZONS
 SHORTS = tuple(f"short_{h:g}_loss" for h in HORIZONS[1:])
-SHORT_W = 0.1
+SHORT_W = 1.0
 HOLDOUT_ROWS = 200_000
 PLAYS = ("attack", "pass", "deploy", "bolster", "maneuver", "recruit", "claim_initiative")
 FRESH = ("value_loss", "value_sq_err", "policy_loss", *SHORTS)
@@ -186,11 +187,10 @@ def train_steps(net, acting, opt, buf, steps, batch, micro, rng, device, batch_f
     return steps, dict(zip(acc, (torch.stack([v.float() for v in acc.values()]) / steps).tolist()))
 
 
-def probe(net, buf, n, micro, rng, device, batch_fn, policy_w):
-    parts = batch_fn(buf.gather(rng.integers(buf.rows - n, buf.rows, size=min(n, micro))), device)
+def probe(net, buf, ids, device, batch_fn, policy_w):
     with torch.no_grad():
-        _, stats = losses(net, *parts, policy_w)
-    return {f"fresh_{k}": stats[k] * n for k in FRESH}
+        stats = losses(net, *batch_fn(buf.gather(ids), device), policy_w)[1]
+    return {k: stats[k] for k in FRESH}
 
 
 def contrast(net, x, desc, parow):
@@ -326,6 +326,7 @@ def main():
     if origin and buffer_file(origin).exists():
         buf.load(buffer_file(origin))
     held = Buffer(HOLDOUT_ROWS).load(args.holdout) if args.holdout else None
+    unseen, chunks = Buffer(args.cap // 100), itertools.count(1)
     if checkpoint:
         value.load_state_dict(checkpoint["value"])
         acting.load_state_dict(checkpoint["acting"])
@@ -411,12 +412,15 @@ def main():
 
     def report(phase, window, stats, extra):
         games = max(window["games"], 1)
+        kept = probe(value, unseen, rng.integers(unseen.lo, unseen.rows, size=args.micro), dev, gpu_batch.make_batch,
+                     args.policy_w) if len(unseen) else {}
         rec = {"phase": phase, **{k: int(window[k]) for k in GAME_KEYS},
-               "rows": int(window["rows"]), "policy_rows": int(window["policy_rows"]), "steps": int(window["steps"]),
+               "rows": int(window["rows"]), "steps": int(window["steps"]),
                "optimizer_rows": progress["optimizer_rows"], "replay_rows": progress["generated_rows"],
                "timeout_frac": round(window["timeouts"] / games, 3), "buf_s": round(buf.span_seconds(), 1),
                "tgt_mean": round(window["z_sum"] / max(window["rows"], 1), 4),
                **{f"fresh_{k}": round(float(window[f"fresh_{k}"]) / max(window["rows"], 1), 5) for k in FRESH},
+               **{f"unseen_{k}": round(float(v), 5) for k, v in kept.items()},
                "kinds": {k: v for k, v in progress["kinds"].items() if v[1]},
                **{k: round(v, 5) for k, v in stats.items()}, **extra}
         tick(rec, f"[t={time.time() - t0:6.1f}s] {phase} games={rec['games']} rows={rec['rows']} "
@@ -426,16 +430,20 @@ def main():
                   + " ".join(f"{k}={v}" for k, v in extra.items()))
 
     def absorb(window, data):
+        if next(chunks) % 100 == 0:
+            ingest(unseen, data)
+            return
         n = ingest(buf, data)
         progress["generated_rows"] += n
         window["rows"] += n
-        window["policy_rows"] += int(np.count_nonzero(np.diff(data["off"])))
         window["z_sum"] += float(data["z"][:, 0].sum())
         for k in GAME_KEYS:
             window[k] += int(data[k])
         for kind, got in data["kinds"].items():
             progress["kinds"][kind] = [a + b for a, b in zip(progress["kinds"].get(kind, (0, 0)), got)]
-        window.update(probe(value, buf, n, args.micro, rng, dev, gpu_batch.make_batch, args.policy_w))
+        fresh = probe(value, buf, rng.integers(buf.rows - n, buf.rows, size=min(n, args.micro)), dev, gpu_batch.make_batch,
+                      args.policy_w)
+        window.update({f"fresh_{k}": v * n for k, v in fresh.items()})
 
     if not checkpoint:
         snapshot(0.0, "init")

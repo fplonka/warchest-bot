@@ -18,7 +18,7 @@ class Cfg:
     batch: int = 8192
     micro: int = 2048
     lr: float = 1e-3
-    wd: float = 0.01
+    wd: float = 0.1
     lr_final: float = 5e-5
     lr_warmup: float = 10.0
     lr_stable_frac: float = 0.9
