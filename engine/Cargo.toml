@@ -27,7 +27,7 @@ numpy = { version = "0.21", optional = true }
 rayon = "1.10"
 parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
-cudarc = { version = "0.17", optional = true, default-features = false, features = ["cuda-version-from-build-system", "dynamic-loading", "driver", "nvrtc", "cublas", "f16"] }
+cudarc = { version = "0.17", optional = true, default-features = false, features = ["cuda-version-from-build-system", "dynamic-loading", "driver", "nvrtc", "f16"] }
 serde_json = "1"
 sha2 = "0.10"
 half = { version = "2", optional = true }
@@ -44,11 +44,6 @@ path = "src/bin/bot.rs"
 required-features = ["gpu"]
 
 [[bin]]
-name = "review"
-path = "src/bin/review.rs"
-required-features = ["gpu"]
-
-[[bin]]
 name = "ladder"
 path = "src/bin/ladder.rs"
 
@@ -61,8 +56,8 @@ name = "scenarios"
 path = "tests/scenarios.rs"
 
 [[test]]
-name = "cuda_parity"
-path = "tests/cuda_parity.rs"
+name = "gpu"
+path = "tests/gpu.rs"
 required-features = ["gpu"]
 
 [profile.release]

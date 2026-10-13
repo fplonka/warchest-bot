@@ -1,0 +1,14 @@
+{
+ "format": 1,
+ "name": "ismcts4h.s1",
+ "sha": "c4194d5",
+ "binary": "aafa41db0fc853d8437cfd895affd7d3b12ee31ff95b27fc8a3ee1d92b271d2a",
+ "weights": "weights.bin",
+ "weights_sha": "5736dcf8610be44716f8cd4b391d595fb2afb07bbfa3c9f64e4057a5f3e1fcc7",
+ "search": {
+  "mind": "search",
+  "sims": 32
+ },
+ "minutes": 60.127,
+ "note": "ismcts4h s1, 60 min"
+}

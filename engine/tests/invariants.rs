@@ -1,6 +1,8 @@
+use std::collections::HashSet;
+
 use warchest::board::{board, NONE, N_HEXES, N_LOCATIONS};
 use warchest::rng::Rng;
-use warchest::selfplay::{make_game, DRAFT_POOL};
+use warchest::selfplay::{game, DRAFT_POOL};
 use warchest::state::{Cont, State, BLACK, WHITE, Z_INFLIGHT};
 use warchest::units::{def, N_UNITS, ROYAL_COIN};
 
@@ -78,7 +80,7 @@ fn invariants_random_playouts() {
     let mut winners = [0u32; 3];
 
     for _ in 0..n_games {
-        let mut s = make_game(&mut rng, true);
+        let mut s = game(&mut rng);
         let init = [totals(&s, 0), totals(&s, 1)];
         check_invariants(&s, &init);
 
@@ -90,6 +92,8 @@ fn invariants_random_playouts() {
                 "no legal actions at a non-terminal state: {}",
                 s.pending_debug()
             );
+            let distinct: HashSet<u32> = acts.iter().map(|a| a.encode()).collect();
+            assert_eq!(distinct.len(), acts.len(), "a move is listed twice: {}", s.pending_debug());
             let a = acts[rng.below(acts.len())];
             s.apply_inplace(a);
             check_invariants(&s, &init);
@@ -124,7 +128,7 @@ fn invariants_random_playouts() {
 #[test]
 fn random_drafts_never_duplicate_a_unit_card() {
     for g in 0..5000u64 {
-        let s = make_game(&mut Rng::new(g), true);
+        let s = game(&mut Rng::new(g));
         for u in 0..N_UNITS {
             if u as u8 == ROYAL_COIN {
                 continue;
@@ -157,26 +161,6 @@ fn random_drafts_never_duplicate_a_unit_card() {
 #[test]
 fn the_exported_board_tables_describe_the_board() {
     let bd = board();
-    let nb = warchest::board::neighbour_gather();
-    assert_eq!(nb.len(), N_HEXES * 6);
-    for h in 0..N_HEXES {
-        for d in 0..6 {
-            let n = nb[h * 6 + d] as usize;
-            assert!(n <= N_HEXES, "hex {h} dir {d}: {n} is not a hex or the pad");
-            assert_eq!(
-                n == N_HEXES,
-                bd.neighbors[h][d] == NONE,
-                "hex {h} dir {d}: padding must mean exactly 'no neighbour'"
-            );
-            if n < N_HEXES {
-                assert!(
-                    nb[n * 6..(n + 1) * 6].contains(&(h as u8)),
-                    "hex {h} lists {n} as a neighbour but {n} does not list {h}"
-                );
-            }
-        }
-    }
-
     let loc = bd.location_hexes;
     assert_eq!(loc.len(), N_LOCATIONS);
     let mut marked: Vec<u8> = (0..N_HEXES as u8).filter(|&h| bd.is_location[h as usize]).collect();

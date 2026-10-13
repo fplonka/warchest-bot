@@ -180,6 +180,7 @@ pub struct State {
     pub initiative: u8,
     pub initiative_moved: bool,
     pub round: u16,
+    pub plays: u16,
     pub first_player: u8,
     pub active: u8,
     pub turns_taken: [u8; N_PLAYERS],
@@ -362,6 +363,7 @@ impl State {
             initiative: active,
             initiative_moved: false,
             round: 1,
+            plays: 0,
             first_player: active,
             active,
             turns_taken: [0; N_PLAYERS],
@@ -402,17 +404,6 @@ impl State {
         &self.pending
     }
 
-    pub fn stack(&self) -> [Option<Cont>; CONT_CAP] {
-        let mut a = [None; CONT_CAP];
-        a[0] = Some(self.pending);
-        for (i, c) in self.conts.iter().enumerate() {
-            if 1 + i < CONT_CAP {
-                a[1 + i] = Some(*c);
-            }
-        }
-        a
-    }
-
     pub fn mirror(&self) -> State {
         let flip = |p: u8| if p == NONE { NONE } else { 1 - p };
         let mut m = *self;
@@ -438,11 +429,7 @@ impl State {
 
 
 pub fn mirror_hex(h: usize) -> usize {
-    let bd = board();
-    let (x, y) = bd.coord[h];
-    (0..N_HEXES)
-        .find(|&k| bd.coord[k] == (6 - x, 6 - y))
-        .expect("the rotation stays on the board")
+    board().mirror[h] as usize
 }
 
 #[cfg(test)]

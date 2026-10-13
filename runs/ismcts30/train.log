@@ -1,0 +1,204 @@
+[train] runs/ismcts30 at 91d412b seed=1001 {'out': 'ismcts30', 'minutes': 30.0, 'snapshot_every': 10.0, 'seed': 1001}
+packed runs/ismcts30/bots/init
+[t=   0.0s] --- snapshot snap_0000.pt (init) ---
+[t=  19.0s] warm games=96 rows=16031 W32/B33/D0/T31 steps=93 Lv=1.9476 Lp=2.0728 
+[t=  23.6s] warm games=96 rows=15991 W32/B35/D0/T29 steps=94 Lv=1.8709 Lp=2.0270 
+[t=  28.3s] warm games=96 rows=16429 W36/B28/D0/T32 steps=96 Lv=1.8496 Lp=2.0021 
+[t=  32.6s] warm games=96 rows=14608 W30/B46/D0/T20 steps=86 Lv=1.7803 Lp=2.0182 
+[t=  37.1s] warm games=96 rows=15902 W31/B34/D0/T31 steps=93 Lv=1.7561 Lp=1.9935 
+[t=  41.6s] warm games=96 rows=15580 W33/B35/D0/T28 steps=91 Lv=1.7427 Lp=2.0090 
+[t=  46.2s] warm games=96 rows=15740 W36/B36/D0/T24 steps=93 Lv=1.7433 Lp=2.0070 
+[t=  50.8s] warm games=96 rows=16059 W33/B31/D0/T32 steps=94 Lv=1.7180 Lp=1.9984 
+[t=  55.1s] warm games=96 rows=14789 W33/B41/D0/T22 steps=86 Lv=1.7002 Lp=2.0064 
+[t=  59.5s] warm games=96 rows=15230 W31/B41/D0/T24 steps=90 Lv=1.6722 Lp=2.0121 
+[t=  64.3s] warm games=96 rows=16248 W38/B26/D0/T32 steps=95 Lv=1.6801 Lp=2.0074 
+[t=  68.7s] warm games=96 rows=15196 W30/B48/D0/T18 steps=89 Lv=1.6612 Lp=2.0118 
+[t=  73.1s] warm games=96 rows=15260 W38/B34/D0/T24 steps=89 Lv=1.6808 Lp=2.0179 
+[t=  77.6s] warm games=96 rows=15415 W47/B28/D0/T21 steps=91 Lv=1.6361 Lp=2.0108 
+[t=  82.1s] warm games=96 rows=15426 W34/B38/D0/T24 steps=90 Lv=1.6232 Lp=2.0130 
+[t=  86.7s] warm games=96 rows=15753 W37/B30/D0/T29 steps=92 Lv=1.6172 Lp=2.0066 
+[t=  91.3s] warm games=96 rows=15766 W26/B40/D0/T30 steps=93 Lv=1.6089 Lp=2.0135 
+[t=  96.0s] warm games=96 rows=15977 W31/B36/D0/T29 steps=93 Lv=1.5908 Lp=2.0069 
+[t= 100.7s] warm games=96 rows=16232 W37/B31/D0/T28 steps=95 Lv=1.5648 Lp=2.0027 
+[t= 105.5s] warm games=96 rows=16359 W31/B34/D0/T31 steps=96 Lv=1.5586 Lp=1.9954 
+[t= 110.3s] warm games=96 rows=16491 W29/B25/D0/T42 steps=97 Lv=1.5485 Lp=1.9904 
+[t= 114.8s] warm games=96 rows=15460 W33/B37/D0/T26 steps=91 Lv=1.5352 Lp=1.9993 
+[t= 119.3s] warm games=96 rows=15481 W38/B36/D0/T22 steps=90 Lv=1.5101 Lp=1.9988 
+[t= 123.8s] warm games=96 rows=15342 W40/B30/D0/T26 steps=90 Lv=1.4873 Lp=2.0031 
+[t= 128.6s] warm games=96 rows=16287 W37/B30/D0/T29 steps=96 Lv=1.4742 Lp=2.0005 
+[t= 133.2s] warm games=96 rows=15554 W37/B35/D0/T24 steps=91 Lv=1.4609 Lp=2.0051 
+[t= 137.7s] warm games=96 rows=15614 W28/B36/D0/T32 steps=91 Lv=1.4366 Lp=2.0069 
+[t= 142.5s] warm games=96 rows=16185 W37/B29/D0/T30 steps=95 Lv=1.4324 Lp=2.0036 
+[t= 147.1s] warm games=96 rows=15784 W39/B34/D0/T23 steps=92 Lv=1.4111 Lp=1.9994 
+[t= 151.7s] warm games=96 rows=15536 W38/B30/D0/T28 steps=92 Lv=1.3760 Lp=1.9992 
+[t= 156.3s] warm games=96 rows=15789 W35/B36/D0/T25 steps=92 Lv=1.3401 Lp=2.0015 
+[t= 161.2s] warm games=96 rows=16760 W40/B20/D0/T36 steps=98 Lv=1.3247 Lp=1.9963 
+[t= 166.0s] warm games=96 rows=16189 W32/B28/D0/T36 steps=95 Lv=1.2993 Lp=1.9961 
+[t= 170.5s] warm games=96 rows=15377 W45/B31/D0/T20 steps=90 Lv=1.2722 Lp=2.0007 
+[t= 175.0s] warm games=96 rows=15354 W33/B33/D0/T30 steps=90 Lv=1.2605 Lp=2.0000 
+[t= 179.8s] warm games=96 rows=16273 W35/B32/D0/T29 steps=96 Lv=1.2378 Lp=2.0017 
+[t= 184.6s] warm games=96 rows=16280 W30/B36/D0/T30 steps=95 Lv=1.2099 Lp=1.9977 
+[t= 206.6s] search games=24 rows=2077 W12/B12/D0/T0 steps=12 Lv=1.1994 Lp=2.0020 evals_per_s=361833.0 sims_per_s=12944.4 rows_per_s=101.1 rows_per_call=997.2 gpu_busy=0.925
+[t= 216.6s] search games=152 rows=19219 W83/B69/D0/T0 steps=113 Lv=1.1544 Lp=2.0290 evals_per_s=364096.4 sims_per_s=245484.5 rows_per_s=1917.8 rows_per_call=899.3 gpu_busy=0.942
+[t= 226.7s] search games=190 rows=31722 W97/B93/D0/T0 steps=186 Lv=1.0912 Lp=2.0856 evals_per_s=372148.2 sims_per_s=402274.8 rows_per_s=3142.8 rows_per_call=934.2 gpu_busy=0.913
+[t= 237.8s] search games=170 rows=33433 W57/B41/D0/T72 steps=195 Lv=1.0942 Lp=2.0909 evals_per_s=338346.0 sims_per_s=386994.7 rows_per_s=3023.4 rows_per_call=952.3 gpu_busy=0.85
+[t= 248.3s] search games=141 rows=21599 W69/B55/D0/T17 steps=127 Lv=1.0723 Lp=2.1123 evals_per_s=404370.1 sims_per_s=263568.0 rows_per_s=2059.1 rows_per_call=938.6 gpu_busy=1.033
+[t= 258.4s] search games=170 rows=27647 W80/B78/D0/T12 steps=162 Lv=1.0005 Lp=2.1339 evals_per_s=360938.4 sims_per_s=347683.0 rows_per_s=2716.3 rows_per_call=942.5 gpu_busy=0.919
+[t= 269.0s] search games=150 rows=25724 W69/B47/D0/T34 steps=151 Lv=1.0091 Lp=2.1326 evals_per_s=375083.9 sims_per_s=310688.0 rows_per_s=2427.2 rows_per_call=931.6 gpu_busy=0.943
+[t= 279.2s] search games=164 rows=28381 W65/B69/D0/T30 steps=166 Lv=1.0073 Lp=2.1321 evals_per_s=366934.2 sims_per_s=357060.5 rows_per_s=2789.5 rows_per_call=912.8 gpu_busy=0.944
+[t= 289.8s] search games=159 rows=26354 W60/B81/D0/T18 steps=154 Lv=0.9700 Lp=2.1222 evals_per_s=366755.6 sims_per_s=319125.4 rows_per_s=2493.2 rows_per_call=917.1 gpu_busy=0.944
+[t= 300.0s] search games=140 rows=23610 W54/B60/D0/T26 steps=139 Lv=0.9500 Lp=2.1406 evals_per_s=363118.7 sims_per_s=295362.0 rows_per_s=2307.5 rows_per_call=958.8 gpu_busy=0.923
+[t= 310.7s] search games=185 rows=31055 W71/B82/D0/T32 steps=182 Lv=0.9282 Lp=2.1416 evals_per_s=362289.0 sims_per_s=373594.5 rows_per_s=2918.7 rows_per_call=940.0 gpu_busy=0.924
+[t= 321.4s] search games=152 rows=25260 W63/B61/D0/T28 steps=148 Lv=0.9236 Lp=2.1472 evals_per_s=370561.2 sims_per_s=302156.3 rows_per_s=2360.6 rows_per_call=933.0 gpu_busy=0.959
+[t= 331.9s] search games=166 rows=27459 W57/B84/D0/T25 steps=161 Lv=0.9176 Lp=2.1446 evals_per_s=365600.7 sims_per_s=333020.6 rows_per_s=2601.7 rows_per_call=918.7 gpu_busy=0.94
+[t= 342.8s] search games=161 rows=26361 W78/B64/D0/T19 steps=154 Lv=0.8928 Lp=2.1561 evals_per_s=362572.0 sims_per_s=308510.7 rows_per_s=2410.2 rows_per_call=936.4 gpu_busy=0.927
+[t= 354.0s] search games=161 rows=27850 W62/B61/D0/T38 steps=163 Lv=0.8871 Lp=2.1459 evals_per_s=365658.0 sims_per_s=320345.4 rows_per_s=2502.7 rows_per_call=924.6 gpu_busy=0.932
+[t= 364.1s] search games=146 rows=24542 W63/B63/D0/T20 steps=144 Lv=0.9058 Lp=2.1359 evals_per_s=364219.5 sims_per_s=310824.9 rows_per_s=2428.3 rows_per_call=941.0 gpu_busy=0.937
+[t= 374.6s] search games=177 rows=29354 W79/B70/D0/T28 steps=172 Lv=0.8582 Lp=2.1498 evals_per_s=363915.6 sims_per_s=355597.9 rows_per_s=2778.1 rows_per_call=936.9 gpu_busy=0.936
+[t= 385.3s] search games=141 rows=24218 W64/B49/D0/T28 steps=142 Lv=0.8706 Lp=2.1407 evals_per_s=364015.1 sims_per_s=291892.4 rows_per_s=2280.4 rows_per_call=960.7 gpu_busy=0.936
+[t= 395.3s] search games=154 rows=26180 W58/B76/D0/T20 steps=153 Lv=0.8900 Lp=2.1471 evals_per_s=364171.2 sims_per_s=334536.2 rows_per_s=2613.6 rows_per_call=939.9 gpu_busy=0.937
+[t= 405.8s] search games=167 rows=27770 W69/B72/D0/T26 steps=163 Lv=0.8538 Lp=2.1407 evals_per_s=361227.2 sims_per_s=336760.5 rows_per_s=2630.9 rows_per_call=910.8 gpu_busy=0.936
+[t= 416.2s] search games=153 rows=25526 W70/B61/D0/T22 steps=150 Lv=0.8442 Lp=2.1511 evals_per_s=366615.6 sims_per_s=316175.5 rows_per_s=2470.1 rows_per_call=907.4 gpu_busy=0.947
+[t= 426.3s] search games=160 rows=26171 W68/B64/D0/T28 steps=153 Lv=0.8105 Lp=2.1578 evals_per_s=363988.3 sims_per_s=332265.8 rows_per_s=2595.8 rows_per_call=926.2 gpu_busy=0.936
+[t= 436.6s] search games=172 rows=28286 W69/B71/D0/T32 steps=166 Lv=0.8253 Lp=2.1654 evals_per_s=366225.9 sims_per_s=351063.0 rows_per_s=2742.7 rows_per_call=937.5 gpu_busy=0.944
+[t= 447.0s] search games=147 rows=24322 W60/B69/D0/T18 steps=142 Lv=0.8079 Lp=2.1593 evals_per_s=361172.7 sims_per_s=298391.8 rows_per_s=2331.2 rows_per_call=935.5 gpu_busy=0.928
+[t= 457.7s] search games=145 rows=24245 W56/B64/D0/T25 steps=142 Lv=0.8068 Lp=2.1541 evals_per_s=366495.6 sims_per_s=289081.9 rows_per_s=2258.5 rows_per_call=931.9 gpu_busy=0.946
+[t= 469.0s] search games=179 rows=29800 W67/B88/D0/T24 steps=175 Lv=0.8034 Lp=2.1551 evals_per_s=362065.1 sims_per_s=339865.9 rows_per_s=2655.2 rows_per_call=926.9 gpu_busy=0.932
+[t= 479.4s] search games=170 rows=28878 W71/B67/D0/T32 steps=169 Lv=0.8002 Lp=2.1713 evals_per_s=364125.8 sims_per_s=354609.1 rows_per_s=2770.4 rows_per_call=931.4 gpu_busy=0.938
+[t= 486.7s] --- target network refresh ---
+[t= 490.5s] search games=165 rows=26987 W56/B88/D0/T21 steps=158 Lv=0.7824 Lp=2.1827 evals_per_s=367603.6 sims_per_s=310763.6 rows_per_s=2427.8 rows_per_call=934.6 gpu_busy=0.945
+[t= 500.7s] search games=166 rows=26709 W79/B70/D0/T17 steps=157 Lv=0.7813 Lp=2.1811 evals_per_s=358518.6 sims_per_s=333560.3 rows_per_s=2605.9 rows_per_call=901.1 gpu_busy=0.921
+[t= 511.0s] search games=166 rows=26679 W75/B76/D0/T15 steps=156 Lv=0.7694 Lp=2.1808 evals_per_s=367696.5 sims_per_s=332968.6 rows_per_s=2601.3 rows_per_call=910.2 gpu_busy=0.947
+[t= 521.4s] search games=158 rows=24683 W57/B84/D0/T17 steps=145 Lv=0.7630 Lp=2.1782 evals_per_s=363058.7 sims_per_s=302860.4 rows_per_s=2366.1 rows_per_call=911.7 gpu_busy=0.933
+[t= 531.9s] search games=178 rows=28791 W84/B76/D0/T18 steps=168 Lv=0.7490 Lp=2.1835 evals_per_s=364011.6 sims_per_s=350725.6 rows_per_s=2740.0 rows_per_call=902.9 gpu_busy=0.933
+[t= 542.2s] search games=151 rows=23620 W65/B74/D0/T12 steps=139 Lv=0.7454 Lp=2.1941 evals_per_s=362075.9 sims_per_s=296160.5 rows_per_s=2313.8 rows_per_call=894.3 gpu_busy=0.937
+[t= 552.8s] search games=151 rows=24347 W70/B64/D0/T17 steps=142 Lv=0.7387 Lp=2.2022 evals_per_s=363592.7 sims_per_s=294004.0 rows_per_s=2296.9 rows_per_call=930.7 gpu_busy=0.938
+[t= 563.1s] search games=172 rows=27759 W83/B79/D0/T10 steps=163 Lv=0.7260 Lp=2.1893 evals_per_s=361963.8 sims_per_s=344274.6 rows_per_s=2689.6 rows_per_call=933.5 gpu_busy=0.932
+[t= 574.0s] search games=159 rows=25884 W66/B73/D0/T20 steps=152 Lv=0.7149 Lp=2.1904 evals_per_s=363361.5 sims_per_s=303324.8 rows_per_s=2369.7 rows_per_call=934.5 gpu_busy=0.939
+[t= 584.2s] search games=168 rows=27224 W72/B76/D0/T20 steps=159 Lv=0.7154 Lp=2.1931 evals_per_s=362546.5 sims_per_s=341075.6 rows_per_s=2664.7 rows_per_call=907.4 gpu_busy=0.944
+[t= 594.8s] search games=166 rows=25710 W81/B76/D0/T9 steps=151 Lv=0.7261 Lp=2.1886 evals_per_s=361999.0 sims_per_s=311702.8 rows_per_s=2435.2 rows_per_call=908.9 gpu_busy=0.939
+[t= 605.3s] search games=172 rows=27586 W72/B86/D0/T14 steps=162 Lv=0.7095 Lp=2.1912 evals_per_s=362342.5 sims_per_s=334077.9 rows_per_s=2610.0 rows_per_call=931.8 gpu_busy=0.936
+packed runs/ismcts30/bots/s1
+[t= 605.3s] --- snapshot snap_0001.pt (s1) ---
+[t= 615.7s] search games=160 rows=25408 W72/B72/D0/T16 steps=148 Lv=0.6938 Lp=2.2003 evals_per_s=364847.4 sims_per_s=313783.2 rows_per_s=2451.4 rows_per_call=897.6 gpu_busy=0.947
+[t= 626.4s] search games=158 rows=25638 W71/B69/D0/T18 steps=151 Lv=0.6975 Lp=2.2004 evals_per_s=362966.8 sims_per_s=305969.0 rows_per_s=2390.4 rows_per_call=900.3 gpu_busy=0.939
+[t= 637.3s] search games=176 rows=28496 W81/B75/D0/T20 steps=167 Lv=0.6974 Lp=2.1916 evals_per_s=362378.9 sims_per_s=335146.9 rows_per_s=2618.3 rows_per_call=920.2 gpu_busy=0.934
+[t= 647.7s] search games=164 rows=26587 W75/B63/D0/T26 steps=155 Lv=0.7060 Lp=2.1866 evals_per_s=365729.6 sims_per_s=328635.1 rows_per_s=2567.5 rows_per_call=935.8 gpu_busy=0.943
+[t= 658.0s] search games=166 rows=25655 W96/B59/D0/T11 steps=151 Lv=0.6924 Lp=2.1962 evals_per_s=361698.9 sims_per_s=316463.0 rows_per_s=2472.4 rows_per_call=933.4 gpu_busy=0.926
+[t= 668.5s] search games=159 rows=26042 W80/B60/D0/T19 steps=152 Lv=0.6953 Lp=2.2063 evals_per_s=365861.7 sims_per_s=318804.6 rows_per_s=2490.7 rows_per_call=913.6 gpu_busy=0.945
+[t= 678.8s] search games=164 rows=25594 W88/B62/D0/T14 steps=150 Lv=0.6946 Lp=2.2009 evals_per_s=363457.0 sims_per_s=317808.4 rows_per_s=2482.9 rows_per_call=920.8 gpu_busy=0.937
+[t= 689.2s] search games=158 rows=25535 W72/B69/D0/T17 steps=150 Lv=0.6887 Lp=2.1969 evals_per_s=362544.4 sims_per_s=315359.4 rows_per_s=2463.7 rows_per_call=922.8 gpu_busy=0.937
+[t= 699.5s] search games=173 rows=27180 W81/B77/D0/T15 steps=159 Lv=0.6786 Lp=2.1943 evals_per_s=365254.5 sims_per_s=338122.5 rows_per_s=2641.6 rows_per_call=918.7 gpu_busy=0.942
+[t= 709.6s] search games=161 rows=25775 W63/B77/D0/T21 steps=151 Lv=0.6829 Lp=2.2026 evals_per_s=363722.6 sims_per_s=325731.8 rows_per_s=2544.8 rows_per_call=928.9 gpu_busy=0.938
+[t= 719.8s] search games=153 rows=24034 W70/B73/D0/T10 steps=141 Lv=0.6796 Lp=2.1819 evals_per_s=362144.7 sims_per_s=300957.1 rows_per_s=2351.2 rows_per_call=938.1 gpu_busy=0.939
+[t= 730.1s] search games=149 rows=24072 W76/B64/D0/T9 steps=141 Lv=0.6662 Lp=2.1995 evals_per_s=361332.8 sims_per_s=298917.3 rows_per_s=2335.3 rows_per_call=903.4 gpu_busy=0.936
+[t= 740.3s] search games=175 rows=28386 W88/B73/D0/T14 steps=166 Lv=0.6667 Lp=2.1913 evals_per_s=356802.5 sims_per_s=356048.3 rows_per_s=2781.6 rows_per_call=902.2 gpu_busy=0.923
+[t= 750.7s] search games=154 rows=24425 W62/B77/D0/T15 steps=144 Lv=0.6612 Lp=2.1884 evals_per_s=368348.2 sims_per_s=300974.3 rows_per_s=2351.4 rows_per_call=914.9 gpu_busy=0.954
+[t= 761.0s] search games=168 rows=26273 W84/B71/D0/T13 steps=153 Lv=0.6648 Lp=2.1978 evals_per_s=366041.0 sims_per_s=325751.7 rows_per_s=2544.9 rows_per_call=912.6 gpu_busy=0.948
+[t= 771.4s] search games=151 rows=24424 W75/B59/D0/T17 steps=144 Lv=0.6595 Lp=2.2021 evals_per_s=357478.8 sims_per_s=301108.2 rows_per_s=2352.4 rows_per_call=925.6 gpu_busy=0.922
+[t= 781.5s] search games=160 rows=25883 W76/B73/D0/T11 steps=151 Lv=0.6661 Lp=2.1961 evals_per_s=370273.7 sims_per_s=329835.8 rows_per_s=2576.8 rows_per_call=904.9 gpu_busy=0.955
+[t= 786.2s] --- target network refresh ---
+[t= 791.7s] search games=167 rows=26389 W71/B83/D0/T13 steps=155 Lv=0.6466 Lp=2.1937 evals_per_s=358492.2 sims_per_s=329705.5 rows_per_s=2575.8 rows_per_call=910.2 gpu_busy=0.923
+[t= 802.5s] search games=146 rows=23967 W70/B63/D0/T13 steps=140 Lv=0.6540 Lp=2.1867 evals_per_s=368331.7 sims_per_s=283634.5 rows_per_s=2215.9 rows_per_call=922.0 gpu_busy=0.952
+[t= 813.1s] search games=166 rows=27294 W70/B72/D0/T24 steps=160 Lv=0.6548 Lp=2.1945 evals_per_s=363835.1 sims_per_s=329706.8 rows_per_s=2575.8 rows_per_call=908.2 gpu_busy=0.94
+[t= 823.6s] search games=150 rows=24669 W75/B55/D0/T20 steps=145 Lv=0.6686 Lp=2.1875 evals_per_s=359134.5 sims_per_s=301441.2 rows_per_s=2355.0 rows_per_call=927.7 gpu_busy=0.927
+[t= 833.8s] search games=168 rows=27953 W85/B57/D0/T26 steps=164 Lv=0.6566 Lp=2.2073 evals_per_s=364918.8 sims_per_s=350605.0 rows_per_s=2739.1 rows_per_call=930.8 gpu_busy=0.943
+[t= 843.9s] search games=126 rows=22048 W57/B50/D0/T19 steps=129 Lv=0.6657 Lp=2.1986 evals_per_s=362420.6 sims_per_s=279888.3 rows_per_s=2186.6 rows_per_call=941.4 gpu_busy=0.934
+[t= 854.1s] search games=166 rows=26977 W82/B76/D0/T8 steps=158 Lv=0.6545 Lp=2.1906 evals_per_s=352225.7 sims_per_s=338546.8 rows_per_s=2644.9 rows_per_call=934.6 gpu_busy=0.905
+[t= 864.6s] search games=150 rows=25943 W55/B75/D0/T20 steps=152 Lv=0.6533 Lp=2.1876 evals_per_s=376911.4 sims_per_s=314436.4 rows_per_s=2456.5 rows_per_call=907.3 gpu_busy=0.969
+[t= 875.2s] search games=164 rows=27419 W72/B71/D0/T21 steps=160 Lv=0.6610 Lp=2.1925 evals_per_s=363798.8 sims_per_s=332123.5 rows_per_s=2594.7 rows_per_call=903.9 gpu_busy=0.933
+[t= 885.6s] search games=141 rows=23498 W57/B66/D0/T18 steps=138 Lv=0.6568 Lp=2.1989 evals_per_s=358994.4 sims_per_s=288371.5 rows_per_s=2252.9 rows_per_call=923.8 gpu_busy=0.923
+[t= 895.7s] search games=169 rows=28557 W76/B76/D0/T17 steps=167 Lv=0.6512 Lp=2.1855 evals_per_s=368253.1 sims_per_s=361940.9 rows_per_s=2827.7 rows_per_call=923.8 gpu_busy=0.943
+[t= 906.5s] search games=150 rows=24530 W68/B72/D0/T10 steps=144 Lv=0.6481 Lp=2.1842 evals_per_s=358761.5 sims_per_s=291270.7 rows_per_s=2275.6 rows_per_call=948.8 gpu_busy=0.92
+[t= 916.9s] search games=143 rows=24057 W74/B53/D0/T16 steps=141 Lv=0.6565 Lp=2.1912 evals_per_s=366598.9 sims_per_s=295784.7 rows_per_s=2310.8 rows_per_call=917.2 gpu_busy=0.942
+[t= 926.9s] search games=158 rows=27063 W63/B74/D0/T21 steps=159 Lv=0.6459 Lp=2.1909 evals_per_s=363437.6 sims_per_s=346277.2 rows_per_s=2705.3 rows_per_call=923.7 gpu_busy=0.935
+[t= 938.7s] search games=158 rows=26701 W60/B79/D0/T19 steps=156 Lv=0.6552 Lp=2.1986 evals_per_s=365468.7 sims_per_s=291649.8 rows_per_s=2278.5 rows_per_call=931.6 gpu_busy=0.94
+[t= 949.2s] search games=175 rows=29553 W68/B85/D0/T22 steps=173 Lv=0.6425 Lp=2.1885 evals_per_s=364159.8 sims_per_s=358634.3 rows_per_s=2801.8 rows_per_call=918.0 gpu_busy=0.939
+[t= 959.9s] search games=158 rows=26541 W75/B70/D0/T13 steps=156 Lv=0.6433 Lp=2.2002 evals_per_s=361669.6 sims_per_s=317852.3 rows_per_s=2483.2 rows_per_call=911.7 gpu_busy=0.935
+[t= 970.8s] search games=145 rows=23842 W68/B69/D0/T8 steps=140 Lv=0.6437 Lp=2.1927 evals_per_s=365258.9 sims_per_s=278624.7 rows_per_s=2176.8 rows_per_call=914.2 gpu_busy=0.941
+[t= 981.4s] search games=154 rows=26480 W62/B68/D0/T24 steps=155 Lv=0.6431 Lp=2.1998 evals_per_s=365399.0 sims_per_s=321843.7 rows_per_s=2514.4 rows_per_call=929.3 gpu_busy=0.941
+[t= 991.5s] search games=159 rows=27282 W73/B68/D0/T18 steps=160 Lv=0.6444 Lp=2.2066 evals_per_s=366555.1 sims_per_s=344448.7 rows_per_s=2691.0 rows_per_call=916.9 gpu_busy=0.944
+[t=1001.6s] search games=141 rows=24987 W62/B55/D0/T24 steps=146 Lv=0.6514 Lp=2.2032 evals_per_s=361325.7 sims_per_s=317314.2 rows_per_s=2479.0 rows_per_call=918.1 gpu_busy=0.935
+[t=1012.0s] search games=142 rows=24459 W65/B58/D0/T19 steps=143 Lv=0.6420 Lp=2.1949 evals_per_s=363867.7 sims_per_s=301678.4 rows_per_s=2356.9 rows_per_call=935.4 gpu_busy=0.94
+[t=1022.7s] search games=154 rows=26260 W76/B63/D0/T15 steps=154 Lv=0.6426 Lp=2.1691 evals_per_s=363405.7 sims_per_s=313865.2 rows_per_s=2452.1 rows_per_call=921.6 gpu_busy=0.937
+[t=1033.2s] search games=161 rows=28634 W60/B78/D0/T23 steps=168 Lv=0.6408 Lp=2.1885 evals_per_s=364713.3 sims_per_s=349359.1 rows_per_s=2729.4 rows_per_call=925.8 gpu_busy=0.938
+[t=1043.4s] search games=159 rows=26616 W68/B67/D0/T24 steps=156 Lv=0.6507 Lp=2.1935 evals_per_s=365801.0 sims_per_s=332205.6 rows_per_s=2595.4 rows_per_call=927.4 gpu_busy=0.944
+[t=1054.2s] search games=158 rows=25795 W77/B69/D0/T12 steps=151 Lv=0.6594 Lp=2.1892 evals_per_s=364990.6 sims_per_s=306863.6 rows_per_s=2397.4 rows_per_call=935.0 gpu_busy=0.94
+[t=1064.5s] search games=154 rows=26176 W60/B72/D0/T22 steps=153 Lv=0.6526 Lp=2.1930 evals_per_s=364449.6 sims_per_s=324893.4 rows_per_s=2538.2 rows_per_call=926.6 gpu_busy=0.942
+[t=1075.1s] search games=156 rows=26150 W66/B70/D0/T20 steps=154 Lv=0.6487 Lp=2.1909 evals_per_s=360849.1 sims_per_s=315030.5 rows_per_s=2461.2 rows_per_call=929.5 gpu_busy=0.935
+[t=1086.4s] --- target network refresh ---
+[t=1086.4s] search games=160 rows=26868 W65/B77/D0/T18 steps=157 Lv=0.6566 Lp=2.1759 evals_per_s=364901.6 sims_per_s=303835.5 rows_per_s=2373.7 rows_per_call=910.2 gpu_busy=0.946
+[t=1096.7s] search games=138 rows=23878 W54/B62/D0/T22 steps=140 Lv=0.6550 Lp=2.1871 evals_per_s=364552.9 sims_per_s=297523.3 rows_per_s=2324.4 rows_per_call=913.2 gpu_busy=0.942
+[t=1107.1s] search games=141 rows=24681 W79/B45/D0/T17 steps=145 Lv=0.6415 Lp=2.1816 evals_per_s=359382.8 sims_per_s=304913.5 rows_per_s=2382.1 rows_per_call=950.8 gpu_busy=0.929
+[t=1117.9s] search games=165 rows=28852 W79/B67/D0/T19 steps=169 Lv=0.6501 Lp=2.1825 evals_per_s=365785.7 sims_per_s=341424.0 rows_per_s=2667.4 rows_per_call=916.3 gpu_busy=0.947
+[t=1128.1s] search games=151 rows=26171 W68/B65/D0/T18 steps=153 Lv=0.6392 Lp=2.1868 evals_per_s=364273.3 sims_per_s=326978.8 rows_per_s=2554.5 rows_per_call=934.2 gpu_busy=0.942
+[t=1138.6s] search games=135 rows=24036 W47/B64/D0/T24 steps=141 Lv=0.6563 Lp=2.1966 evals_per_s=362968.2 sims_per_s=293951.1 rows_per_s=2296.5 rows_per_call=933.4 gpu_busy=0.938
+[t=1148.9s] search games=148 rows=25912 W60/B64/D0/T24 steps=152 Lv=0.6517 Lp=2.1892 evals_per_s=364710.6 sims_per_s=321479.1 rows_per_s=2511.6 rows_per_call=936.2 gpu_busy=0.929
+[t=1159.1s] search games=142 rows=24475 W59/B65/D0/T18 steps=143 Lv=0.6624 Lp=2.1858 evals_per_s=362397.5 sims_per_s=308892.7 rows_per_s=2413.2 rows_per_call=938.6 gpu_busy=0.926
+[t=1170.1s] search games=151 rows=26949 W61/B60/D0/T30 steps=158 Lv=0.6784 Lp=2.1877 evals_per_s=365126.4 sims_per_s=313178.4 rows_per_s=2446.7 rows_per_call=934.8 gpu_busy=0.944
+[t=1181.0s] search games=151 rows=26350 W53/B73/D0/T25 steps=154 Lv=0.6611 Lp=2.1902 evals_per_s=365077.5 sims_per_s=309649.8 rows_per_s=2419.1 rows_per_call=933.0 gpu_busy=0.944
+[t=1191.5s] search games=148 rows=26039 W66/B58/D0/T24 steps=153 Lv=0.6652 Lp=2.1927 evals_per_s=363388.5 sims_per_s=314998.7 rows_per_s=2460.9 rows_per_call=927.2 gpu_busy=0.938
+[t=1202.3s] search games=157 rows=28276 W69/B59/D0/T29 steps=166 Lv=0.6765 Lp=2.1855 evals_per_s=362266.9 sims_per_s=335446.5 rows_per_s=2620.7 rows_per_call=922.3 gpu_busy=0.936
+[t=1212.8s] search games=139 rows=24728 W46/B69/D0/T24 steps=144 Lv=0.6748 Lp=2.1747 evals_per_s=365973.4 sims_per_s=303466.4 rows_per_s=2370.8 rows_per_call=956.0 gpu_busy=0.943
+packed runs/ismcts30/bots/s2
+[t=1212.8s] --- snapshot snap_0002.pt (s2) ---
+[t=1223.1s] search games=155 rows=27795 W59/B74/D0/T22 steps=163 Lv=0.6711 Lp=2.1793 evals_per_s=363605.5 sims_per_s=345809.4 rows_per_s=2701.6 rows_per_call=913.1 gpu_busy=0.94
+[t=1233.1s] search games=144 rows=25104 W68/B58/D0/T18 steps=147 Lv=0.6685 Lp=2.1807 evals_per_s=353982.6 sims_per_s=320575.5 rows_per_s=2504.5 rows_per_call=941.9 gpu_busy=0.915
+[t=1243.1s] search games=127 rows=21568 W63/B50/D0/T14 steps=127 Lv=0.6665 Lp=2.1826 evals_per_s=371015.8 sims_per_s=275579.3 rows_per_s=2153.0 rows_per_call=940.7 gpu_busy=0.96
+[t=1253.6s] search games=146 rows=25828 W51/B67/D0/T28 steps=151 Lv=0.6710 Lp=2.1776 evals_per_s=365347.4 sims_per_s=315464.9 rows_per_s=2464.6 rows_per_call=932.9 gpu_busy=0.945
+[t=1264.0s] search games=153 rows=27095 W63/B68/D0/T22 steps=159 Lv=0.6593 Lp=2.1772 evals_per_s=361265.4 sims_per_s=332549.0 rows_per_s=2598.0 rows_per_call=919.2 gpu_busy=0.934
+[t=1275.1s] search games=159 rows=28207 W65/B65/D0/T29 steps=165 Lv=0.6690 Lp=2.1846 evals_per_s=365083.1 sims_per_s=326300.6 rows_per_s=2549.2 rows_per_call=930.8 gpu_busy=0.945
+[t=1286.1s] search games=155 rows=27338 W73/B61/D0/T21 steps=160 Lv=0.6722 Lp=2.1915 evals_per_s=362737.8 sims_per_s=317160.5 rows_per_s=2477.8 rows_per_call=936.2 gpu_busy=0.939
+[t=1297.2s] search games=150 rows=26284 W69/B63/D0/T18 steps=154 Lv=0.6680 Lp=2.1905 evals_per_s=362836.1 sims_per_s=303434.0 rows_per_s=2370.6 rows_per_call=939.7 gpu_busy=0.939
+[t=1307.7s] search games=133 rows=23769 W63/B48/D0/T22 steps=140 Lv=0.6643 Lp=2.1932 evals_per_s=362408.8 sims_per_s=290439.8 rows_per_s=2269.1 rows_per_call=923.5 gpu_busy=0.937
+[t=1318.2s] search games=173 rows=30785 W72/B79/D0/T22 steps=180 Lv=0.6542 Lp=2.1785 evals_per_s=366769.8 sims_per_s=375241.6 rows_per_s=2931.6 rows_per_call=915.3 gpu_busy=0.941
+[t=1329.2s] search games=147 rows=26176 W65/B56/D0/T26 steps=153 Lv=0.6692 Lp=2.1758 evals_per_s=360696.0 sims_per_s=303434.2 rows_per_s=2370.6 rows_per_call=942.0 gpu_busy=0.933
+[t=1340.1s] search games=144 rows=25207 W64/B67/D0/T13 steps=148 Lv=0.6595 Lp=2.1822 evals_per_s=363031.7 sims_per_s=295233.8 rows_per_s=2306.5 rows_per_call=911.8 gpu_busy=0.94
+[t=1350.2s] search games=145 rows=23903 W60/B70/D0/T15 steps=140 Lv=0.6607 Lp=2.1804 evals_per_s=363008.3 sims_per_s=303730.0 rows_per_s=2372.9 rows_per_call=940.8 gpu_busy=0.94
+[t=1360.3s] search games=149 rows=26747 W63/B64/D0/T22 steps=157 Lv=0.6648 Lp=2.1778 evals_per_s=362656.8 sims_per_s=339361.9 rows_per_s=2651.3 rows_per_call=919.5 gpu_busy=0.938
+[t=1370.6s] search games=127 rows=23559 W53/B54/D0/T20 steps=138 Lv=0.6572 Lp=2.1912 evals_per_s=366193.8 sims_per_s=293310.3 rows_per_s=2291.5 rows_per_call=937.9 gpu_busy=0.946
+[t=1381.3s] search games=167 rows=28557 W78/B71/D0/T18 steps=167 Lv=0.6533 Lp=2.1881 evals_per_s=362593.4 sims_per_s=339550.5 rows_per_s=2652.7 rows_per_call=921.3 gpu_busy=0.938
+[t=1386.4s] --- target network refresh ---
+[t=1391.6s] search games=143 rows=25771 W64/B56/D0/T23 steps=151 Lv=0.6570 Lp=2.1857 evals_per_s=362186.0 sims_per_s=323039.0 rows_per_s=2523.7 rows_per_call=923.0 gpu_busy=0.936
+[t=1401.9s] search games=116 rows=21134 W50/B41/D0/T25 steps=124 Lv=0.6608 Lp=2.1873 evals_per_s=361758.5 sims_per_s=261996.3 rows_per_s=2046.8 rows_per_call=951.9 gpu_busy=0.934
+[t=1412.2s] search games=138 rows=24711 W61/B53/D0/T24 steps=145 Lv=0.6661 Lp=2.1901 evals_per_s=364282.3 sims_per_s=307966.8 rows_per_s=2406.0 rows_per_call=933.5 gpu_busy=0.939
+[t=1422.9s] search games=138 rows=25914 W54/B59/D0/T25 steps=152 Lv=0.6647 Lp=2.1889 evals_per_s=361541.2 sims_per_s=309561.1 rows_per_s=2418.4 rows_per_call=946.9 gpu_busy=0.935
+[t=1433.2s] search games=153 rows=28921 W56/B57/D0/T40 steps=169 Lv=0.6709 Lp=2.1832 evals_per_s=366478.1 sims_per_s=357993.8 rows_per_s=2796.8 rows_per_call=958.7 gpu_busy=0.949
+[t=1443.7s] search games=137 rows=25885 W57/B46/D0/T34 steps=152 Lv=0.6859 Lp=2.1758 evals_per_s=364061.3 sims_per_s=315018.5 rows_per_s=2461.1 rows_per_call=941.3 gpu_busy=0.94
+[t=1454.0s] search games=134 rows=25154 W53/B54/D0/T27 steps=147 Lv=0.6929 Lp=2.1817 evals_per_s=358341.3 sims_per_s=314830.9 rows_per_s=2459.6 rows_per_call=942.6 gpu_busy=0.923
+[t=1464.2s] search games=139 rows=24717 W57/B57/D0/T25 steps=145 Lv=0.6948 Lp=2.1889 evals_per_s=369438.6 sims_per_s=308876.4 rows_per_s=2413.1 rows_per_call=948.6 gpu_busy=0.951
+[t=1474.5s] search games=145 rows=25928 W57/B61/D0/T27 steps=152 Lv=0.6982 Lp=2.1792 evals_per_s=362424.8 sims_per_s=321586.6 rows_per_s=2512.4 rows_per_call=945.2 gpu_busy=0.933
+[t=1485.0s] search games=138 rows=25876 W51/B51/D0/T36 steps=152 Lv=0.6989 Lp=2.1713 evals_per_s=363964.3 sims_per_s=315300.4 rows_per_s=2463.3 rows_per_call=971.4 gpu_busy=0.939
+[t=1495.3s] search games=128 rows=23272 W55/B55/D0/T18 steps=136 Lv=0.6932 Lp=2.1924 evals_per_s=366264.1 sims_per_s=289875.8 rows_per_s=2264.7 rows_per_call=979.1 gpu_busy=0.94
+[t=1505.6s] search games=140 rows=25388 W58/B60/D0/T22 steps=149 Lv=0.6928 Lp=2.1790 evals_per_s=361448.0 sims_per_s=315815.7 rows_per_s=2467.3 rows_per_call=925.2 gpu_busy=0.932
+[t=1516.3s] search games=141 rows=26773 W44/B67/D0/T30 steps=157 Lv=0.6961 Lp=2.1792 evals_per_s=364861.5 sims_per_s=319901.8 rows_per_s=2499.2 rows_per_call=922.5 gpu_busy=0.942
+[t=1527.4s] search games=142 rows=25586 W55/B62/D0/T25 steps=150 Lv=0.6855 Lp=2.1827 evals_per_s=363917.0 sims_per_s=294726.0 rows_per_s=2302.5 rows_per_call=913.0 gpu_busy=0.94
+[t=1537.5s] search games=146 rows=27083 W56/B58/D0/T32 steps=158 Lv=0.6835 Lp=2.1784 evals_per_s=362181.3 sims_per_s=342068.4 rows_per_s=2672.4 rows_per_call=952.9 gpu_busy=0.933
+[t=1548.2s] search games=147 rows=26843 W55/B65/D0/T27 steps=157 Lv=0.6885 Lp=2.1830 evals_per_s=367629.3 sims_per_s=323678.0 rows_per_s=2528.7 rows_per_call=938.1 gpu_busy=0.951
+[t=1558.3s] search games=131 rows=23727 W50/B53/D0/T28 steps=140 Lv=0.6920 Lp=2.1882 evals_per_s=363217.1 sims_per_s=298108.5 rows_per_s=2329.0 rows_per_call=966.7 gpu_busy=0.938
+[t=1569.0s] search games=145 rows=25791 W57/B67/D0/T21 steps=151 Lv=0.6795 Lp=2.1958 evals_per_s=362926.9 sims_per_s=311425.9 rows_per_s=2433.0 rows_per_call=946.4 gpu_busy=0.937
+[t=1579.4s] search games=143 rows=27094 W57/B52/D0/T34 steps=158 Lv=0.6942 Lp=2.1762 evals_per_s=366220.3 sims_per_s=331083.1 rows_per_s=2586.6 rows_per_call=928.4 gpu_busy=0.944
+[t=1590.2s] search games=145 rows=26230 W49/B64/D0/T32 steps=154 Lv=0.6984 Lp=2.1881 evals_per_s=363601.4 sims_per_s=310836.0 rows_per_s=2428.4 rows_per_call=951.9 gpu_busy=0.934
+[t=1600.4s] search games=129 rows=23836 W52/B44/D0/T33 steps=140 Lv=0.6928 Lp=2.1869 evals_per_s=362011.3 sims_per_s=300307.7 rows_per_s=2346.2 rows_per_call=933.5 gpu_busy=0.935
+[t=1610.5s] search games=130 rows=24384 W48/B51/D0/T31 steps=143 Lv=0.7034 Lp=2.1831 evals_per_s=365718.6 sims_per_s=309294.8 rows_per_s=2416.4 rows_per_call=924.5 gpu_busy=0.946
+[t=1621.5s] search games=152 rows=28215 W71/B55/D0/T26 steps=165 Lv=0.6965 Lp=2.1926 evals_per_s=365219.4 sims_per_s=327835.0 rows_per_s=2561.2 rows_per_call=925.8 gpu_busy=0.943
+[t=1631.7s] search games=149 rows=27476 W59/B59/D0/T31 steps=161 Lv=0.7020 Lp=2.1881 evals_per_s=362862.0 sims_per_s=343433.5 rows_per_s=2683.1 rows_per_call=930.8 gpu_busy=0.936
+[t=1642.2s] search games=136 rows=24626 W60/B52/D0/T24 steps=144 Lv=0.7055 Lp=2.1914 evals_per_s=362604.4 sims_per_s=301799.8 rows_per_s=2357.8 rows_per_call=923.5 gpu_busy=0.937
+[t=1652.2s] search games=131 rows=23973 W52/B52/D0/T27 steps=141 Lv=0.7025 Lp=2.1812 evals_per_s=363914.2 sims_per_s=304828.6 rows_per_s=2381.5 rows_per_call=931.4 gpu_busy=0.94
+[t=1662.8s] search games=139 rows=25767 W63/B52/D0/T24 steps=151 Lv=0.6941 Lp=2.1815 evals_per_s=364990.5 sims_per_s=313190.5 rows_per_s=2446.8 rows_per_call=917.1 gpu_busy=0.942
+[t=1673.1s] search games=143 rows=26327 W51/B63/D0/T29 steps=154 Lv=0.7014 Lp=2.1896 evals_per_s=363918.8 sims_per_s=325799.7 rows_per_s=2545.3 rows_per_call=927.1 gpu_busy=0.94
+[t=1683.6s] search games=134 rows=25100 W58/B49/D0/T27 steps=147 Lv=0.6904 Lp=2.1754 evals_per_s=363955.7 sims_per_s=306192.2 rows_per_s=2392.1 rows_per_call=941.1 gpu_busy=0.94
+[t=1686.2s] --- target network refresh ---
+[t=1694.5s] search games=133 rows=24423 W51/B64/D0/T18 steps=143 Lv=0.6891 Lp=2.1900 evals_per_s=363790.2 sims_per_s=286295.6 rows_per_s=2236.7 rows_per_call=965.6 gpu_busy=0.936
+[t=1705.6s] search games=147 rows=27195 W56/B63/D0/T28 steps=159 Lv=0.6933 Lp=2.1886 evals_per_s=359895.6 sims_per_s=315092.3 rows_per_s=2461.7 rows_per_call=914.2 gpu_busy=0.926
+[t=1716.0s] search games=135 rows=26704 W48/B51/D0/T36 steps=157 Lv=0.7024 Lp=2.1769 evals_per_s=369061.5 sims_per_s=328104.9 rows_per_s=2563.3 rows_per_call=950.0 gpu_busy=0.952
+[t=1726.3s] search games=130 rows=24353 W45/B57/D0/T28 steps=143 Lv=0.7057 Lp=2.1880 evals_per_s=363280.1 sims_per_s=303414.5 rows_per_s=2370.4 rows_per_call=954.3 gpu_busy=0.937
+[t=1736.8s] search games=151 rows=28820 W53/B62/D0/T36 steps=168 Lv=0.7171 Lp=2.1704 evals_per_s=367064.2 sims_per_s=351718.5 rows_per_s=2747.8 rows_per_call=957.9 gpu_busy=0.945
+[t=1747.3s] search games=127 rows=24013 W46/B56/D0/T25 steps=141 Lv=0.7113 Lp=2.1798 evals_per_s=362117.9 sims_per_s=291873.3 rows_per_s=2280.3 rows_per_call=961.3 gpu_busy=0.932
+[t=1758.0s] search games=131 rows=24334 W61/B48/D0/T22 steps=143 Lv=0.7064 Lp=2.1934 evals_per_s=365154.1 sims_per_s=290834.9 rows_per_s=2272.1 rows_per_call=945.1 gpu_busy=0.94
+[t=1768.2s] search games=135 rows=26051 W58/B42/D0/T35 steps=152 Lv=0.7147 Lp=2.1890 evals_per_s=366853.2 sims_per_s=326255.3 rows_per_s=2548.9 rows_per_call=959.7 gpu_busy=0.943
+[t=1779.2s] search games=130 rows=25468 W43/B50/D0/T37 steps=150 Lv=0.7302 Lp=2.1876 evals_per_s=362756.9 sims_per_s=296708.3 rows_per_s=2318.0 rows_per_call=966.7 gpu_busy=0.926
+[t=1790.0s] search games=155 rows=30094 W57/B57/D0/T41 steps=176 Lv=0.7273 Lp=2.1975 evals_per_s=366857.8 sims_per_s=356369.6 rows_per_s=2784.1 rows_per_call=963.9 gpu_busy=0.937
+[t=1800.1s] search games=125 rows=23700 W51/B48/D0/T26 steps=133 Lv=0.7438 Lp=2.1820 evals_per_s=373687.9 sims_per_s=301906.1 rows_per_s=2358.6 rows_per_call=980.9 gpu_busy=0.957
+packed runs/ismcts30/bots/final
+[t=1800.3s] --- snapshot snap_0003.pt (final) ---

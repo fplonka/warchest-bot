@@ -1,0 +1,19 @@
+{
+ "format": 1,
+ "name": "ismcts60.final",
+ "sha": "60e269a",
+ "binary": "abb1fa5adebc6d8288515f30b9e3739e99b79abedd1cc07a1d6e324f552f3ee8",
+ "weights": "weights.bin",
+ "weights_sha": "15403ad63ee45fe97e69354c6c022ebecdec0d749bb480650ed5b4abc854c148",
+ "search": {
+  "mind": "search",
+  "sims": 256,
+  "batch": 16,
+  "puct": 1.5,
+  "explore": 0.0,
+  "temp": 0.5,
+  "cut": 0.1
+ },
+ "minutes": 60.006,
+ "note": "ismcts60 final, 60 min"
+}

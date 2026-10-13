@@ -1,0 +1,19 @@
+{
+ "format": 1,
+ "name": "ismcts60.s3",
+ "sha": "60e269a",
+ "binary": "abb1fa5adebc6d8288515f30b9e3739e99b79abedd1cc07a1d6e324f552f3ee8",
+ "weights": "weights.bin",
+ "weights_sha": "e624db86429625e96c5a29b3010914261ba4fbd49729e3c25c75f0cf68b833c3",
+ "search": {
+  "mind": "search",
+  "sims": 256,
+  "batch": 16,
+  "puct": 1.5,
+  "explore": 0.0,
+  "temp": 0.5,
+  "cut": 0.1
+ },
+ "minutes": 45.347,
+ "note": "ismcts60 s3, 45 min"
+}

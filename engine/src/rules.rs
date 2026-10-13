@@ -1,5 +1,5 @@
 use crate::actions::Action;
-use crate::board::{board, NONE, N_HEXES};
+use crate::board::{bits, board, mask, NONE, N_HEXES};
 use crate::state::*;
 use crate::units::*;
 
@@ -258,25 +258,15 @@ impl State {
             self.queue_wp_post(from);
         }
     }
-    fn adj_empty(&self, from: usize, out: &mut Vec<u8>) {
-        let b = board();
-        for d in 0..6 {
-            let n = b.neighbors[from][d];
-            if n != NONE && !occupied(self, n as usize) {
-                out.push(n);
-            }
-        }
+    fn adj_empty(&self, from: usize) -> impl Iterator<Item = u8> + '_ {
+        board().neighbors[from].into_iter().filter(|&n| n != NONE && !occupied(self, n as usize))
     }
 
-    fn normal_attack_targets(&self, from: usize, eff_h: u8, out: &mut Vec<u8>) {
-        let b = board();
+    fn normal_attack_targets(&self, from: usize, eff_h: u8) -> impl Iterator<Item = u8> + '_ {
         let me = self.hex_owner[from];
-        for d in 0..6 {
-            let n = b.neighbors[from][d];
-            if n != NONE && is_enemy_unit(self, n as usize, me) && attack_allowed_h(self, n as usize, eff_h) {
-                out.push(n);
-            }
-        }
+        board().neighbors[from]
+            .into_iter()
+            .filter(move |&n| n != NONE && is_enemy_unit(self, n as usize, me) && attack_allowed_h(self, n as usize, eff_h))
     }
     fn refill_bag(&mut self, p: u8) {
         for u in 0..N_UNITS {
@@ -294,10 +284,6 @@ impl State {
             return z[Z_BAG];
         }
         std::array::from_fn(|u| z[Z_BAG][u] + z[Z_FACEUP][u] + z[Z_FACEDOWN][u])
-    }
-
-    pub(crate) fn first_drawable(&self, p: u8) -> Option<u8> {
-        self.draw_pool(p).iter().position(|&c| c > 0).map(|u| u as u8)
     }
 
     #[inline]
@@ -324,9 +310,7 @@ impl State {
         let d = def(unit);
 
         if let Some(mk) = variant.step {
-            let mut tos = Vec::new();
-            self.adj_empty(hex, &mut tos);
-            out.extend(tos.into_iter().map(|to| mk(hex as u8, to)));
+            out.extend(self.adj_empty(hex).map(|to| mk(hex as u8, to)));
         }
         if let Some(mk) = variant.control {
             if self.markers_hand[me as usize] > 0 && controls_target(self, hex, me) {
@@ -336,57 +320,27 @@ impl State {
         if let Some(mk) = variant.attack {
             if !d.no_normal_attack {
                 let eff_h = self.hex_height[hex] - variant.chain_cost;
-                let mut tgts = Vec::new();
-                self.normal_attack_targets(hex, eff_h, &mut tgts);
-                out.extend(tgts.into_iter().map(|t| mk(hex as u8, t)));
+                out.extend(self.normal_attack_targets(hex, eff_h).map(|t| mk(hex as u8, t)));
             }
         }
     }
-    fn hexes_of(&self, p: u8, unit: u8) -> Vec<usize> {
-        let mut v = Vec::new();
-        for h in 0..N_HEXES {
-            if self.hex_owner[h] == p && self.hex_type[h] == unit {
-                v.push(h);
-            }
-        }
-        v
+    fn hexes_of(&self, p: u8, unit: u8) -> impl Iterator<Item = usize> {
+        bits(mask(N_HEXES, |h| self.hex_owner[h] == p && self.hex_type[h] == unit))
     }
 
-    fn has_deployed(&self, p: u8, unit: u8) -> bool {
-        for h in 0..N_HEXES {
-            if self.hex_owner[h] == p && self.hex_type[h] == unit {
-                return true;
-            }
-        }
-        false
+    fn deploy_locations(&self, p: u8) -> u64 {
+        let free = board().location_hexes.iter().map(|&h| h as usize).filter(|&h| self.loc_marker[h] == p && !occupied(self, h));
+        free.fold(0, |m, h| m | 1 << h)
     }
 
-    fn deploy_locations(&self, p: u8, out: &mut Vec<u8>) {
-        for h in 0..N_HEXES {
-            if controls(self, h, p) && !occupied(self, h) {
-                out.push(h as u8);
-            }
-        }
-    }
-
-    fn scout_deploy_hexes(&self, p: u8, out: &mut Vec<u8>) {
+    fn scout_deploy_hexes(&self, p: u8) -> impl Iterator<Item = u8> + '_ {
         let b = board();
-        for h in 0..N_HEXES {
-            if occupied(self, h) {
-                continue;
-            }
-            let mut ok = false;
-            for d in 0..6 {
-                let n = b.neighbors[h][d];
-                if n != NONE && is_friendly_unit(self, n as usize, p) {
-                    ok = true;
-                    break;
-                }
-            }
-            if ok {
-                out.push(h as u8);
-            }
-        }
+        (0..N_HEXES as u8).filter(move |&h| {
+            let h = h as usize;
+            !occupied(self, h)
+                && !controls(self, h, p)
+                && b.neighbors[h].iter().any(|&n| n != NONE && is_friendly_unit(self, n as usize, p))
+        })
     }
     fn list_tactics(&self, hex: usize, out: &mut Vec<Action>) {
         let unit = self.hex_type[hex];
@@ -406,9 +360,7 @@ impl State {
             }
             Tactic::Cavalry => {
                 let h = self.hex_height[hex];
-                let mut tos = Vec::new();
-                self.adj_empty(hex, &mut tos);
-                for to in tos {
+                for to in self.adj_empty(hex) {
                     let has_target = (0..6).any(|d| {
                         let n = b.neighbors[to as usize][d];
                         n != NONE && is_enemy_unit(self, n as usize, me) && attack_allowed_h(self, n as usize, h)
@@ -487,20 +439,13 @@ impl State {
                 }
             }
             Tactic::LightCavalry => {
-                for d1 in 0..6 {
-                    let m = b.neighbors[hex][d1];
-                    if m == NONE || occupied(self, m as usize) {
-                        continue;
-                    }
-                    for d2 in 0..6 {
-                        let to = b.neighbors[m as usize][d2];
-                        if to == NONE || to as usize == hex || occupied(self, to as usize) {
-                            continue;
+                let mut seen = 0u64;
+                for m in self.adj_empty(hex) {
+                    for to in self.adj_empty(m as usize) {
+                        if b.dist[hex][to as usize] == 2 && seen & 1 << to == 0 {
+                            seen |= 1 << to;
+                            out.push(Action::TacLightCav { from: hex as u8, to });
                         }
-                        if b.dist[hex][to as usize] != 2 {
-                            continue;
-                        }
-                        out.push(Action::TacLightCav { from: hex as u8, to });
                     }
                 }
             }
@@ -512,9 +457,7 @@ impl State {
                     if def(self.hex_type[u]).no_normal_attack {
                         continue;
                     }
-                    let mut tgts = Vec::new();
-                    self.normal_attack_targets(u, self.hex_height[u], &mut tgts);
-                    for t in tgts {
+                    for t in self.normal_attack_targets(u, self.hex_height[u]) {
                         out.push(Action::TacMarshal {
                             from: u as u8,
                             target: t,
@@ -526,20 +469,11 @@ impl State {
                 if self.zones[me as usize][self.pay_zone()][ROYAL_COIN as usize] == 0 {
                     return;
                 }
-                for d1 in 0..6 {
-                    let m = b.neighbors[hex][d1];
-                    if m == NONE || occupied(self, m as usize) {
-                        continue;
-                    }
-                    if controls(self, m as usize, me) {
-                        out.push(Action::TacRoyalGuard { from: hex as u8, to: m });
-                    }
-                    for d2 in 0..6 {
-                        let to = b.neighbors[m as usize][d2];
-                        if to == NONE || to as usize == hex || occupied(self, to as usize) {
-                            continue;
-                        }
-                        if controls(self, to as usize, me) {
+                let mut seen = 0u64;
+                for m in self.adj_empty(hex) {
+                    for to in std::iter::once(m).chain(self.adj_empty(m as usize)) {
+                        if controls(self, to as usize, me) && seen & 1 << to == 0 {
+                            seen |= 1 << to;
                             out.push(Action::TacRoyalGuard { from: hex as u8, to });
                         }
                     }
@@ -550,10 +484,12 @@ impl State {
     fn list_main_play(&self, p: u8, out: &mut Vec<Action>) {
         let claim_ok = self.initiative != p && !self.initiative_moved;
         let pay = self.pay_zone();
-        for u in 0..N_UNITS {
-            if self.zones[p as usize][pay][u] == 0 {
-                continue;
-            }
+        let z = &self.zones[p as usize];
+        let mine = mask(N_HEXES, |h| self.hex_owner[h] == p);
+        let homes = |unit: u8| bits(mine).filter(move |&h| self.hex_type[h] == unit);
+        let free = self.deploy_locations(p);
+        let recruits = mask(N_UNITS, |u| z[Z_SUPPLY][u] > 0);
+        for u in bits(mask(N_UNITS, |u| z[pay][u] > 0)) {
             let unit = u as u8;
             let d = def(unit);
 
@@ -561,46 +497,30 @@ impl State {
                 out.push(Action::ClaimInitiative { coin: unit });
             }
             out.push(Action::Pass { coin: unit });
-            for r in 0..N_UNITS {
-                if self.zones[p as usize][Z_SUPPLY][r] > 0 {
-                    out.push(Action::Recruit {
-                        coin: unit,
-                        unit: r as u8,
-                    });
-                }
-            }
+            out.extend(bits(recruits).map(|r| Action::Recruit { coin: unit, unit: r as u8 }));
 
             if d.is_royal_coin {
-                for h in self.hexes_of(p, ROYAL_GUARD) {
-                    self.list_tactics(h, out);
+                if z[pay][ROYAL_GUARD as usize] == 0 {
+                    for h in homes(ROYAL_GUARD) {
+                        self.list_tactics(h, out);
+                    }
                 }
                 continue;
             }
 
-            if !self.has_deployed(p, unit) || d.two_footmen {
-                let cap = if d.two_footmen { 2 } else { 1 };
-                if (self.hexes_of(p, unit).len() as u8) < cap {
-                    let mut locs = Vec::new();
-                    self.deploy_locations(p, &mut locs);
-                    for h in locs {
-                        out.push(Action::Deploy { unit, hex: h });
-                    }
-                    if d.scout {
-                        let mut sc = Vec::new();
-                        self.scout_deploy_hexes(p, &mut sc);
-                        for h in sc {
-                            out.push(Action::Deploy { unit, hex: h });
-                        }
-                    }
+            let cap = if d.two_footmen { 2 } else { 1 };
+            if homes(unit).count() < cap {
+                out.extend(bits(free).map(|hex| Action::Deploy { unit, hex: hex as u8 }));
+                if d.scout {
+                    out.extend(self.scout_deploy_hexes(p).map(|hex| Action::Deploy { unit, hex }));
                 }
             }
-            for h in self.hexes_of(p, unit) {
+            for h in homes(unit) {
                 out.push(Action::Bolster { unit, hex: h as u8 });
                 self.list_basic_maneuvers(h, ManVariant::MAIN, out);
                 self.list_tactics(h, out);
             }
         }
-        dedup(&mut *out);
     }
     pub fn legal_actions(&self) -> Vec<Action> {
         let mut out = Vec::new();
@@ -635,11 +555,7 @@ impl State {
                 out.push(Action::RGSoakStack);
             }
             Cont::SwordsmanMove { hex } => {
-                let mut tos = Vec::new();
-                self.adj_empty(hex as usize, &mut tos);
-                for to in tos {
-                    out.push(Action::SwordsmanMove { from: hex, to });
-                }
+                out.extend(self.adj_empty(hex as usize).map(|to| Action::SwordsmanMove { from: hex, to }));
                 out.push(Action::SwordsmanDecline);
             }
             Cont::BerserkerChain { hex, v2 } => {
@@ -664,18 +580,13 @@ impl State {
             }
             Cont::FootmanInstantDeploy { coin } => {
                 let p = self.active;
-                if (self.hexes_of(p, coin).len() as u8) < 2 {
-                    let mut locs = Vec::new();
-                    self.deploy_locations(p, &mut locs);
-                    for h in locs {
-                        out.push(Action::FootmanInstantDeploy { hex: h });
-                    }
+                if self.hexes_of(p, coin).count() < 2 {
+                    out.extend(bits(self.deploy_locations(p)).map(|hex| Action::FootmanInstantDeploy { hex: hex as u8 }));
                 }
                 out.push(Action::FootmanInstantDecline);
             }
             Cont::_AttackPost { .. } => {}
         }
-        dedup(out);
     }
 
     pub fn apply(&self, action: Action) -> State {
@@ -686,6 +597,7 @@ impl State {
 
     pub fn apply_inplace(&mut self, action: Action) {
         use Action::*;
+        self.plays += matches!(self.pending, Cont::MainPlay) as u16;
         match self.pending {
             Cont::Draw { player } => {
                 if let DrawCoin { unit } = action {
@@ -823,11 +735,11 @@ impl State {
                 self.zones[p as usize][Z_SUPPLY][unit as usize] -= 1;
                 self.zones[p as usize][Z_FACEUP][unit as usize] += 1;
                 let d = def(unit);
-                if d.mercenary && self.has_deployed(p, unit) {
-                    let h = self.hexes_of(p, unit)[0];
+                let deployed = self.hexes_of(p, unit).next();
+                if let Some(h) = deployed.filter(|_| d.mercenary) {
                     self.push_cont(Cont::MercenaryManeuver { hex: h as u8 });
                 }
-                if d.footman_v2 && self.has_deployed(p, unit) {
+                if d.footman_v2 && deployed.is_some() {
                     self.push_cont(Cont::FootmanInstantDeploy { coin: unit });
                 }
             }
@@ -875,7 +787,7 @@ impl State {
         debug_assert!(unit != NONE);
         self.zmove(p, pay, Z_FACEUP, unit);
         if def(unit).two_footmen {
-            if let Some(other) = self.hexes_of(p, unit).into_iter().find(|&h| h != hex) {
+            if let Some(other) = self.hexes_of(p, unit).find(|&h| h != hex) {
                 self.push_cont(Cont::FootmanManeuver { hex: other as u8 });
             }
         }
@@ -967,9 +879,4 @@ impl ManVariant {
         attack: Some(|from, target| Action::TacCavalryAttack { from, target }),
         chain_cost: 0,
     };
-}
-
-fn dedup(out: &mut Vec<Action>) {
-    let mut seen = std::collections::HashSet::new();
-    out.retain(|a| seen.insert(a.encode()));
 }

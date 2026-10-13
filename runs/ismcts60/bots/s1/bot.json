@@ -1,0 +1,19 @@
+{
+ "format": 1,
+ "name": "ismcts60.s1",
+ "sha": "60e269a",
+ "binary": "abb1fa5adebc6d8288515f30b9e3739e99b79abedd1cc07a1d6e324f552f3ee8",
+ "weights": "weights.bin",
+ "weights_sha": "9c6a295e86760406b483568402492281b8a249959379eab794175ce5119bdfa6",
+ "search": {
+  "mind": "search",
+  "sims": 256,
+  "batch": 16,
+  "puct": 1.5,
+  "explore": 0.0,
+  "temp": 0.5,
+  "cut": 0.1
+ },
+ "minutes": 15.101,
+ "note": "ismcts60 s1, 15 min"
+}

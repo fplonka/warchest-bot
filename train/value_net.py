@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,216 +15,130 @@ OFF_PILES = warchest.OFF_PILES
 OFF_CARDS = warchest.OFF_CARDS
 OFF_LOOSE = warchest.OFF_LOOSE
 LOOSE = warchest.LOOSE
+N_KINDS = warchest.N_KINDS
+SHORT = len(warchest.HORIZONS) - 1
 
 TYPE = 64
-C = 192
-BLOCKS = 12
 D = 384
-ATTN = 192
-HEADS = 6
-HEAD = ATTN // HEADS
-BINS = 16
-N_KINDS = warchest.N_KINDS
+DH = 64
+LAYERS = 10
+TOKENS = N_HEXES + NTYPE + 1
+STATE = TOKENS - 1
+NONE = TOKENS
+INDEX = torch.tensor(warchest.ATTENTION_INDEX).view(TOKENS, TOKENS)
 
 
 def gelu(x):
     return F.gelu(x, approximate="tanh")
 
 
+def widen(v, shape, d, f, fan_in):
+    for axis, (n, m) in enumerate(zip(v.shape, shape)):
+        if m == f * n != n:
+            v = torch.stack([v.unflatten(axis, (-1, min(n, d)))] * f, axis + 1)
+            if fan_in and axis == 1:
+                e = 0.1 * torch.randn_like(v)
+                v = v * (1 + e - e.mean(axis + 1, keepdim=True)) / f
+            v = v.flatten(axis, axis + 2)
+    return v
+
+
+class Block(nn.Module):
+
+    def __init__(self, d):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(d)
+        self.qkv = nn.Linear(d, 3 * d)
+        self.proj = nn.Linear(d, d)
+        self.bias = nn.Parameter(torch.zeros(d // DH, int(INDEX.max()) + 1))
+        self.ln2 = nn.LayerNorm(d)
+        self.up = nn.Linear(d, 2 * d)
+        self.down = nn.Linear(2 * d, d)
+
+    def forward(self, x, index):
+        b, t, d = x.shape
+        q, k, v = self.qkv(self.ln1(x)).view(b, t, 3, -1, DH).permute(2, 0, 3, 1, 4)
+        a = F.scaled_dot_product_attention(q, k, v, attn_mask=self.bias[:, index].to(q.dtype))
+        x = x + self.proj(a.transpose(1, 2).reshape(b, t, d))
+        return x + self.down(gelu(self.up(self.ln2(x))))
+
+
 class Net(nn.Module):
 
-    def __init__(self):
+    def __init__(self, d=D):
         super().__init__()
         self.card1 = nn.Linear(CARD_FEATS, TYPE)
-        self.card2 = nn.Linear(TYPE, TYPE)
-        self.pile = nn.Linear(PILE_COUNTS, TYPE, bias=False)
-        self.seat = nn.Embedding(2, TYPE)
+        self.card2 = nn.Linear(TYPE, d)
+        self.pile = nn.Linear(PILE_COUNTS, d, bias=False)
+        self.seat = nn.Embedding(2, d)
+        self.hex_stem = nn.Linear(HEX_FACTS, d)
+        self.pos = nn.Embedding(N_HEXES, d)
+        self.state_stem = nn.Linear(LOOSE, d)
+        self.blocks = nn.ModuleList(Block(d) for _ in range(LAYERS))
+        self.ln = nn.LayerNorm(d)
 
-        self.hex_stem = nn.Linear(HEX_FACTS, C)
-        self.tok_stem = nn.Linear(TYPE, C, bias=False)
-        self.pos = nn.Embedding(N_HEXES, C)
-        self.glob_stem = nn.Linear(LOOSE, C, bias=False)
+        self.value_hidden = nn.Linear(d, d)
+        self.value_out = nn.Linear(d, 1)
+        self.short_out = nn.Linear(d, SHORT)
+        for head in (self.value_out, self.short_out):
+            nn.init.zeros_(head.weight)
+            nn.init.zeros_(head.bias)
 
-        self.blk1 = nn.ModuleList([nn.Linear(2 * C, C) for _ in range(BLOCKS)])
-        self.blkg = nn.ModuleList([nn.Linear(2 * C, C) for _ in range(BLOCKS)])
-        self.blk2 = nn.ModuleList([nn.Linear(C, C) for _ in range(BLOCKS)])
-        self.ln1 = nn.ModuleList([nn.LayerNorm(C) for _ in range(BLOCKS)])
-        self.ln2 = nn.ModuleList([nn.LayerNorm(C) for _ in range(BLOCKS)])
-        self.ln_trunk = nn.LayerNorm(C)
-        self.board_out = nn.Linear(2 * C + LOOSE, D)
+        self.kind = nn.Embedding(N_KINDS, d)
+        self.none = nn.Parameter(torch.randn(d))
+        self.move1 = nn.Linear(7 * d, d)
+        self.move2 = nn.Linear(d, 1)
 
-        self.cfg_in = nn.Linear(3 + TYPE, ATTN)
-        self.cfg_seat = nn.Embedding(2, ATTN)
-        self.ln_cfg = nn.LayerNorm(ATTN)
-        self.token_in = nn.Linear(C, ATTN)
-        self.attn_q = nn.Linear(ATTN, ATTN, bias=False)
-        self.attn_k = nn.Linear(ATTN, ATTN, bias=False)
-        self.attn_v = nn.Linear(ATTN, ATTN, bias=False)
-        self.attn_out = nn.Linear(ATTN, ATTN, bias=False)
-        self.ln_attn = nn.LayerNorm(ATTN)
+        self.register_buffer("index", INDEX.clone(), persistent=False)
+        self.register_buffer("seat_of", torch.arange(NTYPE) // NSLOT, persistent=False)
 
-        context = 3 * ATTN + D
-        self.value_hidden = nn.Linear(context, ATTN)
-        self.value_out = nn.Linear(ATTN, BINS)
-        nn.init.zeros_(self.value_out.weight)
-        nn.init.zeros_(self.value_out.bias)
-        self.cfg_policy = nn.Linear(3 * ATTN, D)
-        self.cfg_q = nn.Linear(3 * ATTN, D)
-        self.head_policy = nn.Linear(2 * ATTN + D, D)
-        self.act_kind = nn.Embedding(N_KINDS, C)
-        self.act_role = nn.Embedding(5, C)
-        self.act_board = nn.Linear(D, C, bias=False)
-        self.act_h = nn.Linear(D, C, bias=False)
-        self.ln_act = nn.LayerNorm(C)
-        self.act_out = nn.Linear(C, D)
-        nn.init.normal_(self.act_kind.weight, std=C ** -0.5)
-        nn.init.ones_(self.act_role.weight)
+    def evaluate(self, xpub):
+        b = xpub.shape[0]
+        hexes = xpub[:, :N_HEXES * HEX_CH].reshape(b, N_HEXES, HEX_CH)
+        piles = xpub[:, OFF_PILES:OFF_CARDS].reshape(b, NTYPE, PILE_COUNTS)
+        cards = xpub[:, OFF_CARDS:OFF_LOOSE].reshape(b, NTYPE, CARD_FEATS)
+        coins = self.card2(gelu(self.card1(cards))) + self.pile(piles) + self.seat(self.seat_of)
+        board = self.hex_stem(hexes[..., :HEX_FACTS]) + hexes[..., HEX_FACTS:] @ coins + self.pos.weight
+        state = self.state_stem(xpub[:, OFF_LOOSE:]).unsqueeze(1)
+        x = torch.cat([board, coins, state], 1)
+        for block in self.blocks:
+            x = block(x, self.index)
+        x = self.ln(x)
+        hidden = gelu(self.value_hidden(x[:, STATE]))
+        return self.value_out(hidden).squeeze(-1), torch.tanh(self.short_out(hidden)), x
 
-        nb = torch.as_tensor(warchest.hex_neighbours(), dtype=torch.long)
-        self.register_buffer("nb", nb.view(N_HEXES, 6), persistent=False)
-        self.register_buffer("seat_of", torch.arange(NTYPE) // NSLOT,
-                             persistent=False)
-        self.register_buffer("centres", (torch.arange(BINS) + 0.5) / (BINS / 2) - 1,
-                             persistent=False)
+    def moves(self, desc, x, row):
+        tokens = torch.cat([x, self.none.expand(x.shape[0], 1, -1)], 1)
+        desc = desc.long()
+        coins = torch.where(desc[:, 1:3] < NTYPE, desc[:, 1:3] + N_HEXES, NONE)
+        hexes = torch.where(desc[:, 3:6] < N_HEXES, desc[:, 3:6], NONE)
+        state = torch.full_like(coins[:, :1], STATE)
+        picked = tokens[row.unsqueeze(1), torch.cat([coins, hexes, state], 1)]
+        return self.move1(torch.cat([self.kind(desc[:, 0]), picked.flatten(1)], 1))
 
-    def cards(self, xpub):
-        facts = xpub[:, OFF_CARDS:OFF_CARDS + NTYPE * CARD_FEATS]
-        facts = facts.reshape(-1, NTYPE, CARD_FEATS)
-        return self.card2(gelu(self.card1(facts)))
+    def actions(self, desc, x, row):
+        return self.move2(gelu(self.moves(desc, x, row))).squeeze(-1)
 
-    def tokens(self, xpub, cards):
-        piles = xpub[:, OFF_PILES:OFF_CARDS].reshape(-1, NTYPE, PILE_COUNTS)
-        return cards + self.pile(piles) + self.seat(self.seat_of)
-
-    def trunk(self, xpub, projected):
-        batch = xpub.shape[0]
-        hexes = xpub[:, :N_HEXES * HEX_CH].reshape(batch, N_HEXES, HEX_CH)
-        occupant = hexes[:, :, HEX_FACTS:] @ projected
-        type_pool = gelu(projected).mean(1)
-        loose = xpub[:, OFF_LOOSE:OFF_LOOSE + LOOSE]
-        x = (self.hex_stem(hexes[:, :, :HEX_FACTS])
-             + occupant
-             + self.pos.weight
-             + self.glob_stem(loose).unsqueeze(1)
-             + type_pool.unsqueeze(1))
-        for i in range(BLOCKS):
-            a = gelu(self.ln1[i](x))
-            pad = F.pad(a, (0, 0, 0, 1))
-            y = self.blk1[i](torch.cat([a, pad[:, self.nb].sum(2)], -1))
-            y = y + self.blkg[i](torch.cat([a.mean(1), a.amax(1)], -1)).unsqueeze(1)
-            x = x + self.blk2[i](gelu(self.ln2[i](y)))
-        return gelu(self.ln_trunk(x))
-
-    def position(self, xpub, cards):
-        projected = self.tok_stem(self.tokens(xpub, cards))
-        spatial = self.trunk(xpub, projected)
-        loose = xpub[:, OFF_LOOSE:OFF_LOOSE + LOOSE]
-        board = self.board_out(torch.cat([
-            spatial.mean(1), spatial.amax(1), loose], -1))
-        return board, projected, spatial
-
-    def configs(self, phi, own, seg):
-        counts = phi.reshape(-1, 3, NSLOT).transpose(1, 2)
-        query = gelu(self.cfg_in(torch.cat([counts, own[seg]], -1))).sum(1)
-        return gelu(self.ln_cfg(query + self.cfg_seat(seg % 2)))
-
-    def attend(self, query, tokens, board_of, attention):
-        boards, ntokens = tokens.shape[:2]
-        slot, width = attention
-        q = query.new_zeros(boards, width, ATTN)
-        q[board_of, slot] = self.attn_q(query)
-        q = q.reshape(boards, width, HEADS, HEAD).transpose(1, 2)
-        k = self.attn_k(tokens).reshape(boards, ntokens, HEADS, HEAD).transpose(1, 2)
-        v = self.attn_v(tokens).reshape(boards, ntokens, HEADS, HEAD).transpose(1, 2)
-        mixed = F.scaled_dot_product_attention(q, k, v)
-        mixed = mixed.transpose(1, 2).reshape(boards, width, ATTN)
-        mixed = self.attn_out(mixed[board_of, slot])
-        return self.ln_attn(query + mixed)
-
-    def belief_context(self, conditioned, weight, seg, nseg):
-        pooled = conditioned.new_zeros(nseg, ATTN)
-        pooled.index_add_(0, seg, conditioned * weight.unsqueeze(1))
-        other = pooled.reshape(nseg // 2, 2, ATTN).flip(1).reshape_as(pooled)
-        return torch.cat([pooled, other], -1)
-
-    def actions(self, desc, boards, heads, cards, spatial, board_of, head_of):
-        row = board_of
-        zero_card = cards.new_zeros(cards.shape[0], 1, C)
-        card = torch.cat([cards, zero_card], 1)
-        coin = desc[:, 1:3].long().clamp_max(NTYPE)
-        zero_hex = spatial.new_zeros(spatial.shape[0], 1, C)
-        hexes = torch.cat([spatial, zero_hex], 1)
-        where = desc[:, 3:6].long().clamp_max(N_HEXES)
-        entity = torch.stack([
-            card[row, coin[:, 0]], card[row, coin[:, 1]],
-            hexes[row, where[:, 0]], hexes[row, where[:, 1]],
-            hexes[row, where[:, 2]],
-        ], 1)
-        present = desc[:, 1:6].lt(255).unsqueeze(-1)
-        local = (entity * self.act_role.weight * present).sum(1)
-        z = (self.act_kind(desc[:, 0].long()) + local
-             + self.act_board(boards)[row] + self.act_h(heads)[head_of])
-        return self.act_out(gelu(self.ln_act(z)))
-
-    def evaluate(self, xpub, phi, weight, seg, nseg, attention):
-        cards = self.cards(xpub)
-        board, projected, spatial = self.position(xpub, cards)
-        own = cards.reshape(-1, 2, NSLOT, TYPE).flatten(0, 1)
-        query = self.configs(phi, own, seg)
-        public = self.token_in(torch.cat([spatial, projected], 1))
-        conditioned = self.attend(query, public, seg // 2, attention)
-        belief = self.belief_context(conditioned, weight, seg, nseg)
-        config = torch.cat([conditioned, belief[seg]], -1)
-        context = torch.cat([conditioned, board[seg // 2], belief[seg]], -1)
-        logits = self.value_out(gelu(self.value_hidden(context)))
-        fp = self.cfg_policy(config)
-        fq = self.cfg_q(config)
-        head = self.head_policy(torch.cat([
-            board.repeat_interleave(2, 0), belief], -1))
-        return logits, (cards, board, projected, spatial, fp, fq, head)
-
-    def value(self, logits):
-        return logits.softmax(-1) @ self.centres
-
-    def forward(self, xpub, phi, weight, seg, nseg, attention):
-        return self.value(self.evaluate(xpub, phi, weight, seg, nseg, attention)[0])
-
-    def tensors(self):
-        blocks = [m for i in range(BLOCKS)
-                  for m in (self.blk1[i], self.blkg[i], self.blk2[i])]
-        mats = [
-            self.card1, self.card2, self.pile, self.seat,
-            self.hex_stem, self.tok_stem, self.pos, self.glob_stem,
-            *blocks,
-            self.board_out,
-            self.cfg_in, self.cfg_seat, self.token_in,
-            self.attn_q, self.attn_k, self.attn_v, self.attn_out,
-            self.value_hidden, self.value_out,
-            self.cfg_policy, self.head_policy,
-            self.act_kind, self.act_role, self.act_board, self.act_out,
-            self.act_h,
-        ]
-        norms = [n for i in range(BLOCKS) for n in (self.ln1[i], self.ln2[i])]
-        norms += [self.ln_trunk, self.ln_cfg, self.ln_attn, self.ln_act]
-        w = [m.weight if isinstance(m, nn.Embedding) else m.weight.t() for m in mats]
-        b = [m.bias for m in mats if not isinstance(m, nn.Embedding) and m.bias is not None]
-        ln = [x for n in norms for x in (n.weight, n.bias)]
-        return w, b, ln
+    def value(self, logit):
+        return 2 * torch.sigmoid(logit) - 1
 
     def flat(self):
-        def raw(t):
-            return t.detach().cpu().contiguous().numpy().ravel()
-        return tuple(np.ascontiguousarray(np.concatenate([raw(t) for t in ts]), np.float32)
-                     for ts in self.tensors())
+        return nn.utils.parameters_to_vector(self.parameters()).detach().float().cpu().numpy()
 
-    def load_flat(self, arrays):
-        with torch.no_grad():
-            for flat, ts in zip(arrays, self.tensors(), strict=True):
-                sizes = [t.numel() for t in ts]
-                assert sum(sizes) == len(flat), "weights layout mismatch"
-                for t, chunk in zip(ts, torch.from_numpy(flat.copy()).split(sizes)):
-                    t.copy_(chunk.reshape(t.shape))
+    def load_flat(self, flat):
+        nn.utils.vector_to_parameters(torch.as_tensor(flat), self.parameters())
+        return self
+
+    def grow(self, state):
+        d = len(state["ln.weight"])
+        f = len(self.ln.weight) // d
+        linear = {f"{name}.weight" for name, m in self.named_modules() if isinstance(m, nn.Linear)}
+        wide = {k: widen(v, self.get_parameter(k).shape, d, f, k in linear) for k, v in state.items()}
+        depth = len({k.split(".")[1] for k in state if k.startswith("blocks.")})
+        fresh = {f"blocks.{i}.{k}": torch.zeros_like(v) if k.startswith(("proj.", "down.")) else v
+                 for i in range(depth, LAYERS) for k, v in self.blocks[i].state_dict().items()}
+        self.load_state_dict(wide | fresh)
         return self
 
     def push(self):
-        warchest.set_weights(*self.flat())
+        warchest.set_weights(self.flat())

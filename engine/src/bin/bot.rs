@@ -8,12 +8,7 @@ use warchest::bot::{Brain, Session};
 use warchest::packed::Packed;
 use warchest::pbs::rules_table_hash;
 
-fn work(
-    ask: Ask,
-    act: bool,
-    sessions: &Mutex<HashMap<u32, Session>>,
-    brain: &Brain,
-) -> Result<Done, String> {
+fn work(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain) -> Result<Done, String> {
     let mut session = match ask.start {
         Some(start) => Session::new(&start.draft, start.seat, start.seed)?,
         None => sessions
@@ -23,17 +18,14 @@ fn work(
             .ok_or_else(|| format!("game {} was never started", ask.id))?,
     };
     for obs in &ask.obs {
-        session.observe(obs, brain)?;
+        session.observe(obs, brain.net())?;
     }
-    let action = if act {
-        Some(session.decide(brain)?)
-    } else {
-        session.watch(brain);
-        None
-    };
+    let action = session.decide(brain)?;
     sessions.lock().unwrap().insert(ask.id, session);
     Ok(Done { id: ask.id, action })
 }
+
+const THINKERS: usize = 256;
 
 fn main() {
     if let Err(error) = run() {
@@ -44,19 +36,17 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let path = args.first().ok_or("usage: bot BOT_DIR --devices 0,1 [--slots N]")?;
+    let path = args.first().ok_or("usage: bot BOT_DIR --devices 0,1")?;
     let packed = Packed::load(path.as_ref())?;
     let flag = |name: &str| args.iter().position(|x| x == name).and_then(|i| args.get(i + 1));
     let device_text = flag("--devices").ok_or("packed bot needs --devices")?;
-    let slots = flag("--slots").map_or(Ok(usize::MAX), |x| x.parse().map_err(|_| format!("invalid slots {x}")))?;
     let devices = device_text
         .split(',')
         .map(|x| x.parse().map_err(|_| format!("invalid device {x}")))
         .collect::<Result<Vec<_>, _>>()?;
-    let brain = Brain::load(&packed, &devices, slots)?;
-    let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
+    let brain = Brain::load(&packed, &devices)?;
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
+        .num_threads(THINKERS)
         .build()
         .map_err(|e| e.to_string())?;
     let mut out = std::io::stdout().lock();
@@ -79,19 +69,11 @@ fn run() -> Result<(), String> {
         for id in request.drop {
             sessions.lock().unwrap().remove(&id);
         }
-        let asks = request
-            .go
-            .into_iter()
-            .map(|ask| (ask, true))
-            .chain(request.watch.into_iter().map(|ask| (ask, false)))
-            .collect::<Vec<_>>();
-        if asks.is_empty() {
+        if request.go.is_empty() {
             continue;
         }
         let done: Result<Vec<_>, _> = pool.install(|| {
-            asks.into_par_iter()
-                .map(|(ask, act)| work(ask, act, &sessions, &brain))
-                .collect()
+            request.go.into_par_iter().map(|ask| work(ask, &sessions, &brain)).collect()
         });
         let reply = match done {
             Ok(done) => Reply { done, error: None },

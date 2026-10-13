@@ -148,64 +148,30 @@ HELD = (
 )
 
 PANELS = (
-    ("Value loss", "mean per row",
-     (("training batch", "loss"), ("old rows", "loss_old"), ("fresh rows", "loss_new")), False, ()),
+    ("Value loss", "cross-entropy",
+     (("training batch", "value_loss"), ("fresh rows", "fresh_value_loss"),
+      ("unseen games", "unseen_value_loss")), False, ()),
+    ("Value error against game results", "squared error",
+     (("training batch", "value_sq_err"), ("fresh rows", "fresh_value_sq_err"),
+      ("unseen games", "unseen_value_sq_err")), True, ()),
     ("Policy loss", "cross-entropy",
-     (("training batch", "policy_loss"), ("fresh rows", "fresh_policy_loss")), True, ()),
+     (("training batch", "policy_loss"), ("fresh rows", "fresh_policy_loss"),
+      ("unseen games", "unseen_policy_loss")), True, ()),
     ("Short-horizon value heads", "squared error",
      (("6 decisions", "short_6_loss"), ("16 decisions", "short_16_loss"),
       ("50 decisions", "short_50_loss")), True, ()),
-    ("Per-head objective", "weighted loss",
-     (("policy", "policy_weighted_loss"), ("total", "total_loss")), True, ()),
     ("Policy entropy", "nats / information state",
-     (("network prior", "policy_prior_entropy"),
-      ("search target", "policy_target_entropy")), True, ()),
+     (("network prior", "prior_entropy"), ("search target", "policy_target_entropy")), True, ()),
     ("Stored search target vs current prior", "KL divergence (nats)",
-     (("target KL", "policy_search_kl"),), True, ()),
+     (("target KL", "policy_kl"),), True, ()),
     ("Learning rate", "lr", (("learning rate", "lr"),), True, ()),
-    ("Spread of predictions", "std",
-     (("prediction", "probe_std"), ("target configs", "tgt_std"),
-      ("belief-weighted target", "tgt_belief_std")), True, ()),
-    ("Value targets", "target",
-     (("p05", "tgt_p05"), ("median", "tgt_p50"), ("p95", "tgt_p95"),
-      ("belief mean", "tgt_belief_mean")), False, (("zero", 0),)),
-    ("Value head against game outcomes", "error",
-     (("RMSE", "value_outcome_rmse"), ("MAE", "value_outcome_mae")), True, ()),
-    ("Value calibration", "statistic",
-     (("correlation", "value_outcome_corr"), ("slope", "value_calibration_slope"),
-      ("bias", "value_outcome_bias")), False, (("ideal slope", 1), ("zero", 0))),
+    ("Gradient norm before clipping", "L2 norm", (("mean", "grad_norm"),), True, (("clip", 5),)),
+    ("Network evaluations", "rows/s", (("evals", "evals_per_s"),), True, ()),
+    ("Rows per GPU call", "rows", (("rows per call", "rows_per_call"),), True, ()),
+    ("Replay generation throughput", "rows/s", (("rows", "rows_per_s"),), True, ()),
     ("Replay buffer fill", "rows", (("buffer", "buf"),), True, ()),
-    ("Replay composition", "fraction of live rows",
-     (("warm", "replay_warm_frac"), ("main line", "replay_play_frac"),
-      ("query", "replay_query_frac"), ("TD(1) rows", "replay_td1_row_frac"),
-      ("TD(1) target cells", "replay_td1_target_frac")), True, ()),
-    ("Sampled replay composition", "fraction of sampled rows",
-     (("warm", "sample_warm_frac"), ("main line", "sample_play_frac"),
-      ("query", "sample_query_frac"), ("TD(1) target cells", "sample_td1_target_frac")),
-     True, ()),
-    ("Target age when sampled", "seconds",
-     (("mean", "sample_age_mean"), ("median", "sample_age_p50"),
-      ("p90", "sample_age_p90"), ("oldest target", "target_age_max")), True, ()),
-    ("Target delivery delay", "seconds",
-     (("p90", "sample_delay_p90"), ("warm mean", "sample_warm_delay"),
-      ("main-line mean", "sample_play_delay"), ("query mean", "sample_query_delay")),
-     True, ()),
-    ("Gradient norm before clipping", "L2 norm",
-     (("mean", "grad_norm"), ("max", "grad_norm_max")), True, (("clip", 5),)),
-    ("Weight norm", "L2 norm", (("weights", "weight_norm"),), True, ()),
-    ("Zero-sum residual", "|E[v0] + E[v1]|",
-     (("RMS", "zero_sum_rms"), ("batch max", "zero_sum_max")), True, ()),
-    ("Replay generation throughput", "rows/s", (("replay generation throughput", "rows_per_s"),),
-     True, ()),
-    ("Effective training ratio", "optimizer rows / solve",
-     (("effective training ratio", "effective_train_ratio"),), True, ()),
-    ("Passes per generated row", "optimizer rows / replay row",
-     (("passes per generated row", "train_row_ratio"),), True, ()),
-    ("Gradient clipping", "fraction of steps", (("gradient clipping", "grad_clip_frac"),),
-     True, ()),
     ("Replay age", "seconds retained", (("replay age", "buf_s"),), True, ()),
-    ("Games stopped at the play limit", "fraction", (("games stopped", "timeout_frac"),),
-     True, ()),
+    ("Games stopped at the play limit", "fraction", (("games stopped", "timeout_frac"),), True, ()),
 )
 
 
@@ -221,30 +187,24 @@ def panels(reports, snapshots):
     out = ([build(snapshots, spec, dots=True) for spec in HELD]
            + [build(reports, spec, smooth=True) for spec in PANELS])
 
-    relative_loss = [e["loss"] / e["tgt_std"] ** 2
-                     if e.get("tgt_std") and "loss" in e else None for e in reports]
-    out.append(panel("Relative value loss", "huber / target variance", m,
-                     [series("value", relative_loss, True)], zero=True))
-
-    now = [e["solves"] * (e["epoch"] - a["epoch"]) / (e["t"] - a["t"])
+    now = [e["decisions"] * (e["epoch"] - a["epoch"]) / (e["t"] - a["t"])
            if (a := e.get("prev")) and e["t"] > a["t"] else None for e in reports]
-    out.append(panel("Generation throughput", "searches/s", m,
+    out.append(panel("Generation throughput", "decisions/s", m,
                      [series("now", now, True),
-                      series("run average", [e.get("solves_per_s") for e in reports])],
+                      series("run average", [e.get("decisions_per_s") for e in reports])],
                      zero=True))
 
-    out.append(panel("Game length", "decisions / game", m,
-                     [series("game length", [e["decisions"] / e["games"] if e.get("games") and e.get("decisions")
-                                             else None for e in reports], True)]))
+    out.append(panel("Passes per generated row", "optimizer rows / replay row", m,
+                     [series("passes", [e["optimizer_rows"] / e["replay_rows"] for e in reports], True)]))
 
-    kinds = ("attack", "maneuver", "deploy", "bolster", "recruit", "pass",
-             "claim_initiative")
-    kinds = [kind for kind in kinds
-             if any(kind in (e.get("plays") or {}) for e in reports)]
+    out.append(panel("Game length", "decisions / game", m,
+                     [series("game length", [e["decisions"] / e["games"] if e["games"] else None
+                                             for e in reports], True)]))
+
+    kinds = ("attack", "maneuver", "deploy", "bolster", "recruit", "pass", "claim_initiative")
     out.append(panel("Move mix", "% of decisions", m,
                      [series(kind.replace("_", " "),
-                             [100 * e.get("plays", {}).get(kind, 0)
-                              / max(e.get("decisions", 1), 1) for e in reports], True)
+                             [100 * e[f"plays_{kind}"] / e["decisions"] for e in reports], True)
                       for kind in kinds], zero=True))
 
     def taken(e, kind):
@@ -264,21 +224,6 @@ def panels(reports, snapshots):
     out.append(chances("Optional maneuvers declined",
                        [k for k in seen if k.endswith(("Decline", "Stop"))]))
 
-    censuses = [e.get("stop_census") or {} for e in reports]
-    reasons = sorted({reason for census in censuses for stops in census.values()
-                      for reason in stops})
-
-    def stop_share(census, reason):
-        groups = [stops for stops in census.values() if isinstance(stops, dict)]
-        total = sum(item.get("count", 0) for stops in groups
-                    for item in stops.values())
-        count = sum(stops.get(reason, {}).get("count", 0) for stops in groups)
-        return 100 * count / total if total else None
-
-    out.append(panel("Solver stop mix", "% of solves", m,
-                     [series(reason.removeprefix("budget_"),
-                             [stop_share(c, reason) for c in censuses], True)
-                      for reason in reasons], zero=True))
     return out
 
 
@@ -313,11 +258,10 @@ def lineage(runs_dir, name, until=math.inf, seen=()):
     parent, at = branch(runs_dir, cfg)
     stages = lineage(runs_dir, parent, at, seen + (name,)) if parent and parent not in seen else []
     start = stages[-1]["start"] + at / 3600 if stages else 0.0
-    rows = [e for e in map(schema, read_epochs(f"{path}/epochs.jsonl")) if e["t"] < until]
+    rows = [e for e in read_epochs(f"{path}/epochs.jsonl") if e["t"] < until]
     for e in rows:
         e["h"] = round(start + e["t"] / 3600, 4)
-    reports = [e for e in rows if e.get("phase") == "sog" and e.get("solves", 0) > 0
-               and e.get("steps", 1) > 0]
+    reports = [e for e in rows if e["phase"] == "search" and e["decisions"] and e["steps"]]
     for a, b in zip(reports, reports[1:]):
         b["prev"] = a
     return stages + [{"name": name, "cfg": cfg, "start": start, "reports": reports,
@@ -348,22 +292,6 @@ def index(runs_dir):
 def run_dir(runs_dir, name):
     path = os.path.abspath(os.path.join(runs_dir, name))
     return path if os.path.dirname(path) == runs_dir and os.path.isdir(path) else ""
-
-
-ISMCTS = {"decisions": "solves", "decisions_per_s": "solves_per_s", "value_loss": "loss",
-          "fresh_value_loss": "loss_new", "policy_kl": "policy_search_kl",
-          "prior_entropy": "policy_prior_entropy"}
-
-
-def schema(e):
-    if e.get("phase") != "search":
-        return e
-    got = {ISMCTS.get(k, k): v for k, v in e.items()}
-    got["phase"], got["decisions"] = "sog", e.get("decisions")
-    got["plays"] = {k[6:]: v for k, v in e.items() if k.startswith("plays_")}
-    if e.get("replay_rows"):
-        got["train_row_ratio"] = e.get("optimizer_rows", 0) / e["replay_rows"]
-    return got
 
 
 def detail(runs_dir, name):

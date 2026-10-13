@@ -30,17 +30,43 @@ impl Rng {
         ((self.next_u64() >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
     }
 
-    pub fn weighted_index(&mut self, weights: &[f64]) -> usize {
-        let total: f64 = weights.iter().copied().sum();
-        assert!(total > 0.0 && total.is_finite());
-        let mut needle = self.unit_f64() * total;
-        for (i, &weight) in weights.iter().enumerate() {
-            assert!(weight >= 0.0 && weight.is_finite());
-            if needle < weight {
-                return i;
-            }
-            needle -= weight;
+    pub fn gumbel(&mut self) -> f32 {
+        -(-self.unit_f64().ln()).ln() as f32
+    }
+
+    pub fn shuffle<T>(&mut self, v: &mut [T]) {
+        for i in (1..v.len()).rev() {
+            v.swap(i, self.below(i + 1));
         }
-        weights.len() - 1
+    }
+
+    pub fn pick(&mut self, cdf: &[f64]) -> usize {
+        let total = cdf[cdf.len() - 1];
+        assert!(total > 0.0 && total.is_finite());
+        let needle = self.unit_f64() * total;
+        cdf.partition_point(|&c| c <= needle).min(cdf.len() - 1)
+    }
+}
+
+pub fn cumulative(weights: impl IntoIterator<Item = f64>) -> Vec<f64> {
+    weights
+        .into_iter()
+        .scan(0.0, |total, w| {
+            assert!(w >= 0.0 && w.is_finite());
+            *total += w;
+            Some(*total)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gumbel_draws_have_the_euler_constant_as_mean() {
+        let mut rng = Rng::new(7);
+        let mean = (0..200_000).map(|_| rng.gumbel() as f64).sum::<f64>() / 200_000.0;
+        assert!((mean - 0.5772).abs() < 0.01, "mean {mean}");
     }
 }

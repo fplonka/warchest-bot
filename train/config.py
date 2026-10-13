@@ -1,5 +1,6 @@
 
 import dataclasses
+import math
 import os
 import subprocess
 from dataclasses import dataclass
@@ -7,49 +8,52 @@ from dataclasses import dataclass
 
 @dataclass
 class Cfg:
-    minutes: float = 30.0
+    minutes: float = 20160.0
     warm_minutes: float = 3.0
     snapshot_every: float = 240.0
     init_weights: str = ""
+    holdout: str = ""
     resume: str = ""
 
-    batch: int = 256
+    batch: int = 8192
+    micro: int = 2048
     lr: float = 1e-3
-    wd: float = 0.01
-    lr_final: float = 1e-4
-    lr_stable_frac: float = 0.75
-    replay_ratio: float = 6.0
-    target_every: float = 5.0
-    recent_mix: float = 0.5
-    recent_frac: float = 0.2
-    cap: int = 1_000_000
-    cfgs_per_row: int = 48
-    s: int = 256
-    c: float = 1.0
-    round_batch: int = 8
-    rounds: int = 1
-    p_td1: float = 0.2
-    query_rate: float = 0.9
-    recursive_rate: float = 0.1
-    cfr: str = "sog"
-    policy_w: float = 0.18
-    q_w: float = 0.05
-    explore: float = 0.03
-    temp: float = 2.0
+    wd: float = 0.1
+    lr_final: float = 5e-5
+    lr_warmup: float = 10.0
+    lr_stable_frac: float = 0.9
+    replay_ratio: float = 1.0
+    target_every: float = 1.0
+    cap: int = 70_000_000
+    policy_w: float = 1.0
     warm_games: int = 96
-    random_draft: bool = True
+
+    sims: int = 32
+    pcr_from: float = 0.5
+    pcr_sims: int = 128
+    fast_sims: int = 16
+    pcr_full: float = 0.5
+    games: int = 2048
+    collect_rows: int = 65536
 
     device: str = "cuda:1"
-    gen_devices: str = "0,1"
-    gen_solves: int = 8
-    gen_slots: int = 0
-    gen_workers: int = 0
-    train_stream_priority: int = -1
 
     out: str = ""
     seed: int = 1
     git: str = ""
     note: str = ""
+
+    def lr_at(self, elapsed):
+        duration = self.minutes * 60.0
+        stable = self.lr_stable_frac * duration
+        cooled = min(1.0, max(0.0, (elapsed - stable) / (duration - stable)))
+        lr = self.lr_final + (self.lr - self.lr_final) * (1.0 + math.cos(math.pi * cooled)) / 2.0
+        return min(1.0, elapsed / (self.lr_warmup * 60.0)) * lr
+
+    def playout_at(self, elapsed):
+        if elapsed < self.pcr_from * self.minutes * 60.0:
+            return self.sims, self.fast_sims, 1.0
+        return self.pcr_sims, self.fast_sims, self.pcr_full
 
 
 BASELINE = Cfg()
@@ -65,33 +69,6 @@ def parse(kvs):
     if bad:
         raise SystemExit(f"no such knob: {sorted(bad)}")
     return {k: CAST.get(kinds[k], str)(v) for k, v in over.items()}
-
-
-def physical_cpus():
-    cpus = set()
-    root = "/sys/devices/system/cpu"
-    if not os.path.isdir(root):
-        return []
-    for name in os.listdir(root):
-        if not name.startswith("cpu") or not name[3:].isdigit():
-            continue
-        path = os.path.join(root, name, "topology", "thread_siblings_list")
-        try:
-            first = open(path).read().strip().split(",", 1)[0].split("-", 1)[0]
-            cpus.add(int(first))
-        except (OSError, ValueError):
-            pass
-    return sorted(cpus)
-
-
-def workers(n):
-    if n:
-        return n
-    return len(physical_cpus()) or (
-        len(os.sched_getaffinity(0))
-        if hasattr(os, "sched_getaffinity")
-        else (os.cpu_count() or 1)
-    )
 
 
 def git_sha():

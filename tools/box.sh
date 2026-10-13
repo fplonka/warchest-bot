@@ -29,7 +29,7 @@ case "${1:-}" in
 setup)
     run_remote "apt-get update -qq && apt-get install -y -qq libjemalloc2 rsync >/dev/null
 [ -x /root/.cargo/bin/cargo ] || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
-pip install -q maturin numpy
+pip install -q maturin numpy nvidia-ml-py
 cargo --version && nvcc --version | tail -1 && python -c 'import torch; print(torch.__version__, torch.cuda.device_count(), \"gpus\")'"
     ;;
 sync)
@@ -47,7 +47,7 @@ sync)
     ;;
 pull)
     name=${2:-}
-    filters=(--exclude '*.tmp' --exclude 'snap_*.pt'
+    filters=(--exclude '*.tmp' --exclude 'snap_*'
              --exclude 'bots/*/bot' --exclude 'bots/*/weights.bin')
     if [ -z "$name" ]; then
         filters+=(--include '*/' --include '*.html' --include 'plotly.min.js'
@@ -133,6 +133,13 @@ go)
     "$0" sync
     "$0" start "$out" bash -c "($build_script) && python train/test_parity.py && exec bash tools/resume_train.sh $(printf '%q ' "$@")"
     "$0" follow "$out" "$out"
+    ;;
+bench)
+    shift
+    "$0" sync
+    "$0" start bench bash -c "($build_script) && python train/test_parity.py && python tools/bench.py $(printf '%q ' "$@")"
+    "$0" follow bench
+    run_remote "grep -h '^\\[bench\\]' /workspace/logs/bench.log"
     ;;
 "")  sed -n '2,9p' "$0" ;;
 *)   run_remote "$*" ;;

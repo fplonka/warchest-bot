@@ -4,46 +4,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::search::{Budget, Cfg, Cfr};
-
 #[derive(Clone, Deserialize, Serialize)]
-pub struct Search {
-    pub s: u32,
-    pub c: f32,
-    pub batch: usize,
-    pub rounds: u8,
-    pub puct: f32,
-    pub prior_temp: f32,
-    pub cfr: String,
-    #[serde(default)]
+pub struct Mind {
     pub mind: String,
-    #[serde(default = "untempered")]
-    pub temp: f32,
-    #[serde(default)]
-    pub cut: f32,
-    #[serde(default = "untempered")]
-    pub opponent_temp: f32,
-    #[serde(default)]
-    pub opponent_eps: f32,
-}
-
-fn untempered() -> f32 {
-    1.0
-}
-
-impl Search {
-    pub fn config(&self) -> Result<Cfg, String> {
-        Ok(Cfg {
-            s: self.s,
-            c: self.c,
-            batch: self.batch,
-            rounds: self.rounds,
-            budget: Budget::for_s(self.s),
-            puct: self.puct,
-            prior_temp: self.prior_temp,
-            cfr: Cfr::named(&self.cfr).ok_or_else(|| format!("unknown cfr rule {}", self.cfr))?,
-        })
-    }
+    pub sims: u32,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -54,7 +18,7 @@ pub struct Manifest {
     pub binary: String,
     pub weights: String,
     pub weights_sha: String,
-    pub search: Search,
+    pub search: serde_json::Value,
     pub minutes: f64,
     pub note: String,
 }
