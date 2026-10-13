@@ -8,7 +8,7 @@ use crate::selfplay::HORIZONS;
 use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
 
 pub const D: usize = 256;
-pub const LAYERS: usize = 4;
+pub const LAYERS: usize = 8;
 pub const HEADS: usize = 4;
 pub const TOKENS: usize = N_HEXES + NTYPE + 1;
 pub const STATE: usize = TOKENS - 1;
