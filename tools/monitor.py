@@ -25,7 +25,7 @@ ASSETS = {
 LIVE = 300
 RECENT = 2 * 86400
 EPOCH_LIMIT = 2048
-SNAPSHOT = re.compile(r"/runs/([^/]+)/snap_(\d+)\.pt$")
+SNAPSHOT = re.compile(r"(?:^|/)runs/([^/]+)/snap_(\d+)\.pt$")
 IDENTITY = {"out", "note", "init_weights", "git"}
 
 
@@ -104,6 +104,15 @@ def read_epochs(path, limit=EPOCH_LIMIT):
                 elif not out or out[-1] != last:
                     out.append(last)
             return out
+    except OSError:
+        return []
+
+
+def snapshot_rows(path):
+    try:
+        with open(path, "rb") as f:
+            return [got for raw in f if b'"phase":"snapshot"' in raw
+                    if (got := jsonl_record(raw)) is not None]
     except OSError:
         return []
 
@@ -241,32 +250,26 @@ def elo(report, names):
                  hlines=report["anchors"].items())
 
 
-def origin(cfg):
+def origin(runs_dir, cfg):
     hit = SNAPSHOT.search(cfg.get("init_weights", ""))
-    return hit and (hit[1], f"s{int(hit[2])}" if int(hit[2]) else "init")
-
-
-def branch(runs_dir, cfg):
-    got = origin(cfg)
-    path = got and run_dir(runs_dir, got[0])
-    bot = path and read_json(os.path.join(path, "bots", got[1], "bot.json"))
-    return (got[0], bot["minutes"] * 60) if bot and "minutes" in bot else ("", math.inf)
+    snaps = snapshot_rows(f"{run_dir(runs_dir, hit[1])}/epochs.jsonl") if hit else []
+    return hit and int(hit[2]) < len(snaps) and (hit[1], snaps[int(hit[2])])
 
 
 def lineage(runs_dir, name, until=math.inf, seen=()):
     path = os.path.join(runs_dir, name)
     cfg = (read_json(f"{path}/log.json") or {}).get("cfg") or {}
-    parent, at = branch(runs_dir, cfg)
-    stages = lineage(runs_dir, parent, at, seen + (name,)) if parent and parent not in seen else []
-    start = stages[-1]["start"] + at / 3600 if stages else 0.0
-    rows = [e for e in read_epochs(f"{path}/epochs.jsonl") if e["t"] < until]
-    for e in rows:
+    got = origin(runs_dir, cfg)
+    stages = lineage(runs_dir, got[0], got[1]["t"], seen + (name,)) if got and got[0] not in seen else []
+    start = stages[-1]["start"] + got[1]["t"] / 3600 if stages else 0.0
+    rows = [e for e in read_epochs(f"{path}/epochs.jsonl") if e["t"] < until and e["phase"] != "snapshot"]
+    snapshots = [e for e in snapshot_rows(f"{path}/epochs.jsonl") if e["t"] < until]
+    for e in rows + snapshots:
         e["h"] = round(start + e["t"] / 3600, 4)
     reports = [e for e in rows if e["phase"] == "search" and e["decisions"] and e["steps"]]
     for a, b in zip(reports, reports[1:]):
         b["prev"] = a
-    return stages + [{"name": name, "cfg": cfg, "start": start, "reports": reports,
-                      "snapshots": [e for e in rows if e.get("phase") == "snapshot"]}]
+    return stages + [{"name": name, "cfg": cfg, "start": start, "reports": reports, "snapshots": snapshots}]
 
 
 SUMMARY = {}
@@ -284,7 +287,7 @@ def index(runs_dir):
             hit = (mt, {"name": name, "mtime": mt, "note": cfg.get("note", ""),
                         "hours": last_jsonl(epochs).get("t", 0) / 3600,
                         "budget": cfg.get("minutes", 0) / 60,
-                        "parent": ".".join(origin(cfg) or ())})
+                        "parent": (got := origin(runs_dir, cfg)) and f"{got[0]}.{got[1]['label']}"})
             SUMMARY[name] = hit
         out.append(dict(hit[1], running=time.time() - mt < LIVE))
     return sorted(out, key=lambda r: -r["mtime"])
