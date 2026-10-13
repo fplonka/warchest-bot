@@ -1,29 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-host=${WARCHEST_BOX_HOST:-ssh2.vast.ai}
-port=${WARCHEST_BOX_PORT:-17198}
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+read -r host port < "$(git -C "$here" rev-parse --path-format=absolute --git-common-dir)/box"
+host=${WARCHEST_BOX_HOST:-$host}
+port=${WARCHEST_BOX_PORT:-$port}
 key=${WARCHEST_BOX_KEY:-$HOME/.ssh/id_ed25519_warchest_vast}
 remote=${WARCHEST_BOX_DIR:-/workspace/warchest-engine}
-here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+runs=/workspace/warchest-engine/runs
 local_dir=${WARCHEST_BOX_LOCAL_DIR:-$here}
 
-ssh_opts=(-i "$key" -p "$port" -o StrictHostKeyChecking=no -o ServerAliveInterval=30)
+ssh_opts=(-i "$key" -p "$port" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o LogLevel=ERROR)
 prelude="export PATH=/root/.cargo/bin:/usr/local/cuda/bin:\$PATH
-export CONDA_PREFIX=\${CONDA_PREFIX:-/opt/conda}
+unset CONDA_PREFIX
 [ -f /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ] && export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
-source /venv/main/bin/activate 2>/dev/null || true
-mkdir -p $remote && cd $remote"
+mkdir -p $remote && cd $remote
+[ -f venv/bin/activate ] && source venv/bin/activate"
 
 run_remote() { ssh "${ssh_opts[@]}" "root@$host" "$prelude
 $*"; }
 
-build_script="find engine/src engine/tests -type f -exec touch {} +
+build_script="[ -d venv ] || python -m venv --system-site-packages venv
+source venv/bin/activate
+find engine/src engine/tests -type f -exec touch {} +
 cd engine
-maturin develop --release --features python,gpu >/tmp/maturin.log 2>&1 || { tail -40 /tmp/maturin.log; exit 1; }
-tail -2 /tmp/maturin.log
-cargo build --release --features gpu --bin bot --bin ladder >/tmp/ladder.log 2>&1 || { tail -40 /tmp/ladder.log; exit 1; }
-tail -1 /tmp/ladder.log"
+maturin develop --release --features python,gpu >maturin.log 2>&1 || { tail -40 maturin.log; exit 1; }
+tail -2 maturin.log
+cargo build --release --features gpu --bin bot --bin ladder >cargo.log 2>&1 || { tail -40 cargo.log; exit 1; }
+tail -1 cargo.log"
 
 case "${1:-}" in
 setup)
@@ -39,7 +43,7 @@ sync)
         --exclude __pycache__ --exclude .git --exclude data \
         "$here/" "root@$host:$remote/"
     [ "$remote" = /workspace/warchest-engine ] ||
-        run_remote "[ -e runs ] || ln -s /workspace/warchest-engine/runs runs"
+        run_remote "[ -e runs ] || ln -s $runs runs"
     sha=$(git -C "$here" rev-parse --short=7 HEAD)
     git -C "$here" diff-index --quiet HEAD -- . ':!runs' || sha="${sha}+dirty"
     echo "$sha" | ssh "${ssh_opts[@]}" "root@$host" "cat > $remote/.gitsha"
@@ -100,23 +104,22 @@ grep -qx 0 /workspace/logs/$tag.exit || { tail -20 /workspace/logs/$tag.log; exi
 start)
     tag=${2:?usage: start <tag> <command...>}
     shift 2
-    run_remote "mkdir -p /workspace/logs /workspace/queue
+    "$0" status
+    run_remote "mkdir -p /workspace/logs
+[ -s /workspace/logs/$tag.pid ] && kill -0 \$(cat /workspace/logs/$tag.pid) 2>/dev/null && { echo \"$tag is still running\"; exit 1; }
 rm -f /workspace/logs/$tag.pid /workspace/logs/$tag.exit
 echo $remote > /workspace/logs/$tag.owner
 cat > /workspace/logs/$tag.sh <<'EOS'
 echo \$\$ > /workspace/logs/$tag.pid
-ticket=/workspace/queue/${WARCHEST_BOX_PRIORITY:+0-}\$(date +%s%N)-$tag
-touch \$ticket
-trap 'rm -f \$ticket' EXIT
-while [ \"\$(ls /workspace/queue | head -1)\" != \"\$(basename \$ticket)\" ]; do sleep 2; done
 $prelude
-flock /workspace/gpu.lock $(printf '%q ' "$@")
-status=\$?
-echo \$status > /workspace/logs/$tag.exit
-exit \$status
+$(printf '%q ' "$@")
+echo \$? > /workspace/logs/$tag.exit
 EOS
-nohup setsid bash /workspace/logs/$tag.sh >/workspace/logs/$tag.log 2>&1 &
+nohup setsid bash /workspace/logs/$tag.sh >/workspace/logs/$tag.log 2>&1 < /dev/null &
 echo started $tag"
+    ;;
+status)
+    ssh "${ssh_opts[@]}" "root@$host" python3 - < "$here/tools/status.py"
     ;;
 kill)
     tag=${2:?usage: kill <tag>}
@@ -124,23 +127,20 @@ kill)
 kill -- -\$(cat /workspace/logs/$tag.pid) && echo killed $tag"
     ;;
 go)
-    shift
+    sha=$(git -C "$here" rev-parse --short=7 "${2:?usage: go <commit> out=<name> [knob=value ...]}^{commit}")
+    shift 2
     out=
     for a in "$@"; do
         case "$a" in out=*) out=${a#out=} ;; esac
     done
     [ -n "$out" ] || { echo "go needs out=<name>" >&2; exit 1; }
-    "$0" sync
-    "$0" start "$out" bash -c "($build_script) && python train/test_parity.py && exec bash tools/resume_train.sh $(printf '%q ' "$@")"
+    code=/workspace/code/$sha
+    run_remote "[ -d $code ]" || git -C "$here" archive "$sha" ':!runs' | ssh "${ssh_opts[@]}" "root@$host" \
+        "mkdir -p $code.tmp && tar x -C $code.tmp && echo $sha > $code.tmp/.gitsha && ln -s $runs $code.tmp/runs && mv $code.tmp $code"
+    export WARCHEST_BOX_DIR=$code
+    "$0" start "$out" bash -c "($build_script) && source venv/bin/activate && python train/check_parity.py && exec bash tools/resume_train.sh $(printf '%q ' "$@")"
     "$0" follow "$out" "$out"
     ;;
-bench)
-    shift
-    "$0" sync
-    "$0" start bench bash -c "($build_script) && python train/test_parity.py && python tools/bench.py $(printf '%q ' "$@")"
-    "$0" follow bench
-    run_remote "grep -h '^\\[bench\\]' /workspace/logs/bench.log"
-    ;;
-"")  sed -n '2,9p' "$0" ;;
+"")  sed -n '4,11p' "$0" ;;
 *)   run_remote "$*" ;;
 esac

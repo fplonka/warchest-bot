@@ -3,7 +3,7 @@ import torch
 
 import mirror
 import warchest
-from test_parity import positions, random_net
+from check_parity import positions, random_net
 from value_net import D, DH, LAYERS, Net
 
 

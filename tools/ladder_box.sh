@@ -8,11 +8,12 @@ key=$HOME/.ssh/id_ed25519_warchest_vast
 vast() { VAST_API_KEY=$(cat ~/.config/vastai/vast_api_key) uvx --from vastai vastai "$@" --raw; }
 field() { python3 -c "import json,sys; i=json.load(sys.stdin); print(i$1)"; }
 
-trainer="ssh -i $key -p 17198 -o StrictHostKeyChecking=no"
-held=$($trainer root@ssh2.vast.ai "cd /workspace/warchest-engine && ls -d $(tr '\n' ' ' < "$campaign/bots")" 2>/dev/null || true)
+read -r trainer_host trainer_port < "$(git -C "$here" rev-parse --path-format=absolute --git-common-dir)/box"
+trainer="ssh -i $key -p $trainer_port -o StrictHostKeyChecking=no -o LogLevel=ERROR"
+held=$($trainer "root@$trainer_host" "cd /workspace/warchest-engine && ls -d $(tr '\n' ' ' < "$campaign/bots")" 2>/dev/null || true)
 for bot in $held; do
     mkdir -p "$here/$bot"
-    rsync -az -e "$trainer" "root@ssh2.vast.ai:/workspace/warchest-engine/$bot/" "$here/$bot/"
+    rsync -az -e "$trainer" "root@$trainer_host:/workspace/warchest-engine/$bot/" "$here/$bot/"
 done
 
 offer=$(vast search offers 'verified=true rentable=true num_gpus=2 gpu_name=RTX_3090 cpu_cores_effective>=12 disk_space>=40 inet_down>=200 reliability>0.98 cuda_vers>=12.8 geolocation in [US,CA,GB,DE,FR,NL,SE,FI,NO,PL,EE,CZ,AT,CH]' -o dph |
