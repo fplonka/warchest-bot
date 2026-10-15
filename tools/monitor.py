@@ -240,13 +240,15 @@ def panels(reports, snapshots):
 def elo(report, names):
     if not report:
         return None
-    bots = [b for b in report["bots"] if b["name"].split(".")[0] in names]
+    bots = sorted(report["bots"], key=lambda b: b["hours"])
+    run = [b["name"].split(".")[0] for b in bots]
     fit = report["fit"]
     return panel("Elo", "rating ± standard error", [b["hours"] for b in bots],
-                 [series(name, [b["elo"] if b["name"].split(".")[0] == name else None for b in bots],
-                         dots=True, err=[b["se"] for b in bots]) for name in names]
+                 [series(name, [b["elo"] if r == name else None for b, r in zip(bots, run)],
+                         dots=True, err=[b["se"] for b in bots]) for name in dict.fromkeys(names + run)]
                  + [series(f"log fit, {fit['b']:+.0f} per doubling",
-                           [fit["a"] + fit["b"] * math.log2(b["hours"]) for b in bots])],
+                           [fit["a"] + fit["b"] * math.log2(b["hours"]) if r in names else None
+                            for b, r in zip(bots, run)])],
                  hlines=report["anchors"].items())
 
 
