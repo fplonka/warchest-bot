@@ -270,6 +270,13 @@ def lineage(runs_dir, name, until=math.inf, seen=()):
     return stages + [{"name": name, "cfg": cfg, "start": start, "reports": reports, "snapshots": snapshots}]
 
 
+def lr_steps(stage):
+    c = stage["cfg"]
+    warm, cool = 60 * c.get("lr_warmup", 0), 60 * c.get("minutes", 0) * c.get("lr_stable_frac", 1)
+    return [[f"lr {y['lr']:.2g}", y["h"]] for x, y in zip(stage["reports"], stage["reports"][1:])
+            if warm < x["t"] < y["t"] < cool and not 2 / 3 < y["lr"] / x["lr"] < 3 / 2]
+
+
 SUMMARY = {}
 
 
@@ -309,6 +316,7 @@ def detail(runs_dir, name):
     end = max((e["h"] for e in reports), default=math.inf)
     return {"name": name, "note": cfg.get("note", ""), "git": cfg.get("git", ""),
             "stages": [[s["name"], s["start"]] for s in stages],
+            "marks": [m for s in stages for m in lr_steps(s)],
             "panels": [p for p in [elo(read_json(f"{path}/elo.json"), names, end)]
                        + panels(reports, snapshots) if p],
             "cfg": [[k, str(v), k not in IDENTITY and v != base.get(k, v)] for k, v in cfg.items()],

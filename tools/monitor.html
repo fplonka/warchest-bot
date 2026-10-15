@@ -71,7 +71,7 @@ let sel = decodeURIComponent(location.hash.slice(1)) || null;
 let logx = true;
 try { logx = localStorage.logx !== "0"; } catch (e) {}
 const fwd = v => logx ? Math.log2(v) : v, back = v => logx ? 2 ** v : v;
-let runs = [], stages = [], shape = "", plots = [], view = null, full = [0, 1];
+let runs = [], stages = [], marks = [], shape = "", plots = [], view = null, full = [0, 1];
 
 const api = async u => { try { const r = await fetch(u); return r.ok ? r.json() : null; }
                          catch (e) { return null; } };
@@ -129,7 +129,7 @@ function overlays(state) {
     }));
     ctx.strokeStyle = ctx.fillStyle = "#888"; ctx.font = 10 * dpr + "px ui-monospace,monospace";
     ctx.setLineDash([2 * dpr, 3 * dpr]);
-    stages.slice(1).forEach(([name, h], i) => {
+    [...stages.slice(1), ...marks].forEach(([name, h], i) => {
       const x = u.valToPos(h, "x", true);
       ctx.beginPath(); ctx.moveTo(x, bbox.top); ctx.lineTo(x, bbox.top + bbox.height); ctx.stroke();
       ctx.fillText(name, x + 3 * dpr, bbox.top + 11 * (i + 1) * dpr);
@@ -211,7 +211,7 @@ function render(d) {
 
   const grid = $("panels"), key = d.panels.map(p =>
     p.t + ":" + p.s.map(s => s.n).join(",") + ":" + p.h.map(h => h[0]).join(",")).join("|");
-  stages = d.stages;
+  stages = d.stages; marks = d.marks;
   const end = Math.max(...d.panels.map(p => p.x.at(-1)));
   full = [Math.max(Math.min(...d.panels.map(p => p.x[0])), logx ? end / 64 : 0), end];
   if (key !== shape) {
