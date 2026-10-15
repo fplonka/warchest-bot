@@ -54,7 +54,7 @@ pre{max-height:340px;overflow:auto;margin:4px 0;font:inherit;white-space:pre-wra
  <p class=meta id=meta></p><p class=note id=note></p>
  <p id=changed></p>
  <details><summary>config</summary><p id=cfg></p></details>
- <p class=meta>log time · drag zoom · wheel zoom · middle-drag pan · double-click reset · legends show the latest value</p>
+ <p class=meta><label><input type=checkbox id=logx> log time</label> · drag zoom · wheel zoom · middle-drag pan · double-click reset · legends show the latest value</p>
  <div class=grid id=panels></div>
  <h2 id=laddertitle>checkpoint ladder</h2><pre id=ladder></pre>
  <h2 id=comparisonstitle>comparisons</h2><pre id=comparisons></pre>
@@ -68,6 +68,9 @@ const $ = id => document.getElementById(id);
 const E = (tag, cls, text) => { const n = document.createElement(tag);
   if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 let sel = decodeURIComponent(location.hash.slice(1)) || null;
+let logx = true;
+try { logx = localStorage.logx !== "0"; } catch (e) {}
+const fwd = v => logx ? Math.log2(v) : v, back = v => logx ? 2 ** v : v;
 let runs = [], stages = [], shape = "", plots = [], view = null, full = [0, 1];
 
 const api = async u => { try { const r = await fetch(u); return r.ok ? r.json() : null; }
@@ -93,11 +96,11 @@ function navigation() {
       u.setSelect({width: 0, height: 0}, false);
     },
     ready: u => {
-      const over = u.over, logs = r => r.map(Math.log2), shift = (lo, span) => {
-        const [a, b] = logs(full); lo = Math.min(Math.max(lo, a), b - span); zoom([2 ** lo, 2 ** (lo + span)]); };
+      const over = u.over, logs = r => r.map(fwd), shift = (lo, span) => {
+        const [a, b] = logs(full); lo = Math.min(Math.max(lo, a), b - span); zoom([back(lo), back(lo + span)]); };
       over.addEventListener("wheel", e => {
         e.preventDefault();
-        const [min, max] = logs(view || full), [a, b] = logs(full), x = Math.log2(u.posToVal(u.cursor.left, "x"));
+        const [min, max] = logs(view || full), [a, b] = logs(full), x = fwd(u.posToVal(u.cursor.left, "x"));
         const span = Math.min(b - a, (max - min) * (e.deltaY < 0 ? .75 : 1 / .75));
         shift(x - (x - min) / (max - min) * span, span);
       }, {passive: false});
@@ -143,7 +146,14 @@ function plotData(p) {
 function axes() {
   const dark = matchMedia("(prefers-color-scheme:dark)").matches;
   const stroke = dark ? "#999" : "#666", grid = dark ? "#333" : "#ddd";
-  return [{stroke, grid: {stroke: grid}, values: (u, ticks) => ticks.map(v => v == null ? "" : dur(v))},
+  const doublings = (u, i, min, max) => {
+    const lo = Math.ceil(Math.log2(min)), hi = Math.floor(Math.log2(max)), step = Math.ceil((hi - lo + 1) / 7);
+    const ticks = [];
+    for (let e = lo; e <= hi; e++) if (e % step === 0) ticks.push(2 ** e);
+    return ticks;
+  };
+  return [{stroke, grid: {stroke: grid}, values: (u, ticks) => ticks.map(v => v == null ? "" : dur(v)),
+     ...(logx && {splits: doublings})},
     {stroke, grid: {stroke: grid}, size: 65, values: (u, ticks) => ticks.map(fmt)}];
 }
 
@@ -165,7 +175,7 @@ function makePlot(box, p) {
   p.h.forEach((h, i) => series.push({label: h[0], stroke: COLORS[(p.s.length + i) % COLORS.length],
     width: 1, dash: [5, 5], points: {show: false}, value: () => fmt(state.p.h[i][1])}));
   const opts = {title: p.t + " · " + p.y, width: box.clientWidth, height: 230,
-    plugins: [navigation(), overlays(state)], scales: {x: {time: false, distr: 3, log: 2}, y: {}},
+    plugins: [navigation(), overlays(state)], scales: {x: {time: false, distr: logx ? 3 : 1, log: 2, range: (u, min, max) => [min, max]}, y: {}},
     cursor: {drag: {x: true, y: false, setScale: false}, bind: {dblclick: () => () => zoom(null)},
       sync: {key: "x", filters: {pub: type => type === "mousemove"}}}, series, axes: axes()};
   if (p.zero) opts.scales.y.range = (u, min, max) => {
@@ -266,6 +276,12 @@ async function poll() {
 }
 
 $("filter").oninput = list;
+$("logx").checked = logx;
+$("logx").onchange = e => {
+  logx = e.target.checked;
+  try { localStorage.logx = logx ? "1" : "0"; } catch (err) {}
+  shape = ""; view = null; poll();
+};
 addEventListener("resize", () =>
   plots.forEach(p => p.u.setSize({width: p.box.clientWidth, height: 230})));
 addEventListener("hashchange", () => {
