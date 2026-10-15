@@ -54,7 +54,7 @@ pre{max-height:340px;overflow:auto;margin:4px 0;font:inherit;white-space:pre-wra
  <p class=meta id=meta></p><p class=note id=note></p>
  <p id=changed></p>
  <details><summary>config</summary><p id=cfg></p></details>
- <p class=meta>drag zoom · wheel zoom · middle-drag pan · double-click reset · legends show the latest value</p>
+ <p class=meta>log time · drag zoom · wheel zoom · middle-drag pan · double-click reset · legends show the latest value</p>
  <div class=grid id=panels></div>
  <h2 id=laddertitle>checkpoint ladder</h2><pre id=ladder></pre>
  <h2 id=comparisonstitle>comparisons</h2><pre id=comparisons></pre>
@@ -93,18 +93,18 @@ function navigation() {
       u.setSelect({width: 0, height: 0}, false);
     },
     ready: u => {
-      const over = u.over, shift = (lo, span) => {
-        lo = Math.min(Math.max(lo, full[0]), full[1] - span); zoom([lo, lo + span]); };
+      const over = u.over, logs = r => r.map(Math.log2), shift = (lo, span) => {
+        const [a, b] = logs(full); lo = Math.min(Math.max(lo, a), b - span); zoom([2 ** lo, 2 ** (lo + span)]); };
       over.addEventListener("wheel", e => {
         e.preventDefault();
-        const [min, max] = view || full, x = u.posToVal(u.cursor.left, "x");
-        const span = Math.min(full[1] - full[0], (max - min) * (e.deltaY < 0 ? .75 : 1 / .75));
+        const [min, max] = logs(view || full), [a, b] = logs(full), x = Math.log2(u.posToVal(u.cursor.left, "x"));
+        const span = Math.min(b - a, (max - min) * (e.deltaY < 0 ? .75 : 1 / .75));
         shift(x - (x - min) / (max - min) * span, span);
       }, {passive: false});
       over.addEventListener("mousedown", e => {
         if (e.button !== 1) return;
         e.preventDefault();
-        const start = e.clientX, [min, max] = view || full, per = (max - min) / over.clientWidth;
+        const start = e.clientX, [min, max] = logs(view || full), per = (max - min) / over.clientWidth;
         const move = ev => shift(min - per * (ev.clientX - start), max - min);
         const up = () => { removeEventListener("mousemove", move); removeEventListener("mouseup", up); };
         addEventListener("mousemove", move); addEventListener("mouseup", up);
@@ -126,11 +126,11 @@ function overlays(state) {
     }));
     ctx.strokeStyle = ctx.fillStyle = "#888"; ctx.font = 10 * dpr + "px ui-monospace,monospace";
     ctx.setLineDash([2 * dpr, 3 * dpr]);
-    for (const [name, h] of stages.slice(1)) {
+    stages.slice(1).forEach(([name, h], i) => {
       const x = u.valToPos(h, "x", true);
       ctx.beginPath(); ctx.moveTo(x, bbox.top); ctx.lineTo(x, bbox.top + bbox.height); ctx.stroke();
-      ctx.fillText(name, x + 3 * dpr, bbox.top + 10 * dpr);
-    }
+      ctx.fillText(name, x + 3 * dpr, bbox.top + 11 * (i + 1) * dpr);
+    });
     ctx.restore();
   }}};
 }
@@ -143,7 +143,7 @@ function plotData(p) {
 function axes() {
   const dark = matchMedia("(prefers-color-scheme:dark)").matches;
   const stroke = dark ? "#999" : "#666", grid = dark ? "#333" : "#ddd";
-  return [{stroke, grid: {stroke: grid}, values: (u, ticks) => ticks.map(fmt)},
+  return [{stroke, grid: {stroke: grid}, values: (u, ticks) => ticks.map(v => v == null ? "" : dur(v))},
     {stroke, grid: {stroke: grid}, size: 65, values: (u, ticks) => ticks.map(fmt)}];
 }
 
@@ -165,7 +165,7 @@ function makePlot(box, p) {
   p.h.forEach((h, i) => series.push({label: h[0], stroke: COLORS[(p.s.length + i) % COLORS.length],
     width: 1, dash: [5, 5], points: {show: false}, value: () => fmt(state.p.h[i][1])}));
   const opts = {title: p.t + " · " + p.y, width: box.clientWidth, height: 230,
-    plugins: [navigation(), overlays(state)], scales: {x: {time: false}, y: {}},
+    plugins: [navigation(), overlays(state)], scales: {x: {time: false, distr: 3, log: 2}, y: {}},
     cursor: {drag: {x: true, y: false, setScale: false}, bind: {dblclick: () => () => zoom(null)},
       sync: {key: "x", filters: {pub: type => type === "mousemove"}}}, series, axes: axes()};
   if (p.zero) opts.scales.y.range = (u, min, max) => {

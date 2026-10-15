@@ -263,7 +263,7 @@ def lineage(runs_dir, name, until=math.inf, seen=()):
     stages = lineage(runs_dir, got[0], got[1]["t"], seen + (name,)) if got and got[0] not in seen else []
     start = stages[-1]["start"] + got[1]["t"] / 3600 if stages else 0.0
     rows = [e for e in read_epochs(f"{path}/epochs.jsonl") if e["t"] < until and e["phase"] != "snapshot"]
-    snapshots = [e for e in snapshot_rows(f"{path}/epochs.jsonl") if e["t"] < until]
+    snapshots = [e for e in snapshot_rows(f"{path}/epochs.jsonl") if 0 < e["t"] < until]
     for e in rows + snapshots:
         e["h"] = round(start + e["t"] / 3600, 4)
     reports = [e for e in rows if e["phase"] == "search" and e["decisions"] and e["steps"]]
