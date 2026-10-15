@@ -237,18 +237,17 @@ def panels(reports, snapshots):
     return out
 
 
-def elo(report, names):
+def elo(report, names, end):
     if not report:
         return None
-    bots = sorted(report["bots"], key=lambda b: b["hours"])
+    bots = sorted((b for b in report["bots"] if b["hours"] <= end), key=lambda b: b["hours"])
     run = [b["name"].split(".")[0] for b in bots]
     fit = report["fit"]
     return panel("Elo", "rating ± standard error", [b["hours"] for b in bots],
                  [series(name, [b["elo"] if r == name else None for b, r in zip(bots, run)],
                          dots=True, err=[b["se"] for b in bots]) for name in dict.fromkeys(names + run)]
                  + [series(f"log fit, {fit['b']:+.0f} per doubling",
-                           [fit["a"] + fit["b"] * math.log2(b["hours"]) if r in names else None
-                            for b, r in zip(bots, run)])],
+                           [fit["a"] + fit["b"] * math.log2(b["hours"]) for b in bots])],
                  hlines=report["anchors"].items())
 
 
@@ -310,9 +309,10 @@ def detail(runs_dir, name):
     names = [s["name"] for s in stages]
     reports = [e for s in stages for e in s["reports"]]
     snapshots = [e for s in stages for e in s["snapshots"]]
+    end = max((e["h"] for e in reports), default=math.inf)
     return {"name": name, "note": cfg.get("note", ""), "git": cfg.get("git", ""),
             "stages": [[s["name"], s["start"]] for s in stages],
-            "panels": [p for p in [elo(read_json(f"{path}/elo.json"), names)]
+            "panels": [p for p in [elo(read_json(f"{path}/elo.json"), names, end)]
                        + panels(reports, snapshots) if p],
             "cfg": [[k, str(v), k not in IDENTITY and v != base.get(k, v)] for k, v in cfg.items()],
             "log": read_text(f"{path}/train.log"),

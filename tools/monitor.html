@@ -212,7 +212,8 @@ function render(d) {
   const grid = $("panels"), key = d.panels.map(p =>
     p.t + ":" + p.s.map(s => s.n).join(",") + ":" + p.h.map(h => h[0]).join(",")).join("|");
   stages = d.stages;
-  full = [Math.min(...d.panels.map(p => p.x[0])), Math.max(...d.panels.map(p => p.x.at(-1)))];
+  const end = Math.max(...d.panels.map(p => p.x.at(-1)));
+  full = [Math.max(Math.min(...d.panels.map(p => p.x[0])), logx ? end / 64 : 0), end];
   if (key !== shape) {
     plots.forEach(q => q.u.destroy());
     grid.textContent = "";
