@@ -1,5 +1,6 @@
 import argparse
 import glob
+import gzip
 import json
 import math
 import mimetypes
@@ -24,7 +25,7 @@ ASSETS = {
 
 LIVE = 300
 RECENT = 2 * 86400
-EPOCH_LIMIT = 2048
+EPOCH_LIMIT = 600
 SNAPSHOT = re.compile(r"(?:^|/)runs/([^/]+)/snap_(\d+)\.pt$")
 IDENTITY = {"out", "note", "init_weights", "git"}
 
@@ -82,10 +83,6 @@ def read_epochs(path, limit=EPOCH_LIMIT):
             size = f.tell()
             if not size:
                 return []
-            if size <= (8 << 20):
-                f.seek(0)
-                return [got for raw in f
-                        if (got := jsonl_record(raw)) is not None]
             out, starts = [], set()
             for i in range(limit):
                 offset = size * i // limit
@@ -391,6 +388,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def body(self, raw, ctype):
         self.send_response(200)
+        if "gzip" in self.headers.get("Accept-Encoding", ""):
+            raw = gzip.compress(raw, 5)
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
