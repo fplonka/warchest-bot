@@ -1,6 +1,5 @@
 
 import dataclasses
-import math
 import os
 import subprocess
 from dataclasses import dataclass
@@ -19,7 +18,7 @@ class Cfg:
     micro: int = 2048
     lr: float = 1e-3
     wd: float = 0.1
-    lr_final: float = 5e-5
+    lr_final: float = 0.0
     lr_warmup: float = 10.0
     lr_stable_frac: float = 0.9
     replay_ratio: float = 1.0
@@ -47,7 +46,7 @@ class Cfg:
         duration = self.minutes * 60.0
         stable = self.lr_stable_frac * duration
         cooled = min(1.0, max(0.0, (elapsed - stable) / (duration - stable)))
-        lr = self.lr_final + (self.lr - self.lr_final) * (1.0 + math.cos(math.pi * cooled)) / 2.0
+        lr = self.lr + (self.lr_final - self.lr) * cooled
         return min(1.0, elapsed / (self.lr_warmup * 60.0)) * lr
 
     def playout_at(self, elapsed):

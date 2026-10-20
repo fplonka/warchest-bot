@@ -305,7 +305,7 @@ def main():
             (args.target_every <= 0.0, "target_every must be positive minutes"),
             (args.snapshot_every <= 0.0, "snapshot_every must be positive minutes"),
             (not 0.0 <= args.warm_minutes <= args.minutes, "warm_minutes must be within the run"),
-            (args.lr_final <= 0.0 or args.lr_final > args.lr, "lr_final must be in (0, lr]"),
+            (not 0.0 <= args.lr_final <= args.lr, "lr_final must be in [0, lr]"),
             (args.lr_warmup <= 0.0, "lr_warmup must be positive minutes"),
             (not 0.0 <= args.lr_stable_frac < 1.0, "lr_stable_frac must be in [0, 1)"),
             (not 0.0 < args.pcr_full <= 1.0, "pcr_full must be in (0, 1]"),
