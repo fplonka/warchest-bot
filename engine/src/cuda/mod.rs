@@ -15,7 +15,7 @@ use crate::board::{board, N_HEXES};
 use crate::memo::Memo;
 use crate::net::{Layout, Lin, Net, D, FFN, HEADS, STATE, TOKENS};
 use crate::pbs::{
-    mover_row, HEX_BLOCK, HEX_CH, HEX_FACTS, LOOSE, MAX_COINS, NSLOT, NTYPE, OFF_CARDS, OFF_LOOSE, OFF_PILES,
+    mirror_row, HEX_BLOCK, HEX_CH, HEX_FACTS, LOOSE, MAX_COINS, NSLOT, NTYPE, OFF_CARDS, OFF_LOOSE, OFF_PILES,
     PILE_COUNTS, PLAYER_SCALARS, PUBFEAT, ROW_BAG_SIZE, ROW_BYTES, ROW_FD_SIZE, ROW_HAND_SIZE, ROW_HEX_HEIGHT,
     ROW_HEX_MARKER, ROW_HEX_OWNER, ROW_HEX_SLOT, ROW_IDS, ROW_INITIATIVE, ROW_INIT_MOVED, ROW_PILES, ROW_STACK_KIND,
     ROW_STACK_OWED, ROW_TO_ACT, ROW_WP,
@@ -205,9 +205,10 @@ impl<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Copy> Hos
         })
     }
 
-    fn fill(&mut self, f: impl FnOnce(&mut [T]) -> usize) -> Res<()> {
+    fn fill(&mut self, src: &[T]) -> Res<()> {
         self.sent.synchronize().map_err(err)?;
-        self.len = f(self.buf.as_mut_slice().map_err(err)?);
+        self.buf.as_mut_slice().map_err(err)?[..src.len()].copy_from_slice(src);
+        self.len = src.len();
         Ok(())
     }
 
@@ -236,8 +237,8 @@ impl<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Copy> Wir
         Ok(Wire { host: Host::new(stream, cap)?, dev: stream.alloc_zeros(cap).map_err(err)? })
     }
 
-    fn put(&mut self, stream: &Arc<CudaStream>, f: impl FnOnce(&mut [T]) -> usize) -> Res<()> {
-        self.host.fill(f)?;
+    fn put(&mut self, stream: &Arc<CudaStream>, src: &[T]) -> Res<()> {
+        self.host.fill(src)?;
         self.host.send(stream, &mut self.dev)
     }
 }
@@ -321,27 +322,10 @@ impl Card {
         let Card { stream, k, weights: w, card_facts, locations, s } = self;
         let n = r1 - r0;
         let (a0, a1) = (q.off[r0] as usize, q.off[r1] as usize);
-        s.rows.put(stream, |dst| {
-            for (r, dst) in (r0..r1).zip(dst.chunks_exact_mut(ROW_BYTES)) {
-                mover_row(q.row(r).0, dst);
-            }
-            n * ROW_BYTES
-        })?;
-        s.desc.put(stream, |dst| {
-            let dst = &mut dst[..(a1 - a0) * ACT_BYTES];
-            dst.copy_from_slice(&q.desc[a0 * ACT_BYTES..a1 * ACT_BYTES]);
-            for r in (r0..r1).filter(|&r| q.rows[r * ROW_BYTES + ROW_TO_ACT] == 1) {
-                let at = (q.off[r] as usize - a0) * ACT_BYTES..(q.off[r + 1] as usize - a0) * ACT_BYTES;
-                dst[at].chunks_exact_mut(ACT_BYTES).for_each(mirror_desc);
-            }
-            dst.len()
-        })?;
-        s.off.put(stream, |dst| {
-            for (d, &o) in dst.iter_mut().zip(&q.off[r0..=r1]) {
-                *d = o - a0 as u32;
-            }
-            n + 1
-        })?;
+        s.rows.put(stream, &q.rows[r0 * ROW_BYTES..r1 * ROW_BYTES])?;
+        s.desc.put(stream, &q.desc[a0 * ACT_BYTES..a1 * ACT_BYTES])?;
+        let off: Vec<u32> = q.off[r0..=r1].iter().map(|&o| o - a0 as u32).collect();
+        s.off.put(stream, &off)?;
         let (m, n_i) = (n * TOKENS, n as i32);
         let m_i = m as i32;
         let at = &w.at;
@@ -645,9 +629,21 @@ impl Gpu {
     }
 }
 
+fn face_movers(q: &mut Query) {
+    for r in 0..q.len() {
+        let (at, acts) = (r * ROW_BYTES..(r + 1) * ROW_BYTES, q.actions(r));
+        if q.rows[at.start + ROW_TO_ACT] == 1 {
+            let src = <[u8; ROW_BYTES]>::try_from(&q.rows[at.clone()]).expect("a row is ROW_BYTES long");
+            mirror_row(&src, &mut q.rows[at]);
+            q.desc[acts.start * ACT_BYTES..acts.end * ACT_BYTES].chunks_exact_mut(ACT_BYTES).for_each(mirror_desc);
+        }
+    }
+}
+
 impl Oracle for Gpu {
     fn eval(&self, q: &Query) -> Answer {
-        self.memo.eval(q, |q| {
+        self.memo.eval(q, |mut q| {
+            face_movers(&mut q);
             let (back, answer) = mpsc::channel();
             self.queue.push((q, back));
             answer.recv().expect("a gpu lane failed; its driver printed why")
