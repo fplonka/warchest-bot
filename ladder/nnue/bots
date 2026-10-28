@@ -3,3 +3,4 @@ runs/1028-teacher/bots/s256
 runs/1028-teacher/bots/s1024
 runs/1028-teacher/bots/s4096
 runs/1028-nnue-*/bots/*@*
+runs/1028-mix/bots/*
