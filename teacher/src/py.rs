@@ -187,9 +187,11 @@ fn labelled(py: Python<'_>, l: crate::selfplay::Labelled) -> PyResult<PyObject> 
 }
 
 #[pyfunction]
-fn nnue_eval(weights: PathBuf, rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>) -> PyResult<(Vec<f32>, Vec<f32>)> {
-    let answer = Nnue::load(&weights).map_err(PyValueError::new_err)?.eval(&Query { rows, desc, off });
-    Ok((answer.value, answer.prior))
+fn nnue_eval(py: Python<'_>, weights: PathBuf, rows: PyReadonlyArray1<u8>, desc: PyReadonlyArray1<u8>, off: PyReadonlyArray1<u32>) -> PyResult<PyObject> {
+    let nnue = Nnue::load(&weights).map_err(PyValueError::new_err)?;
+    let q = Query { rows: rows.as_slice()?.to_vec(), desc: desc.as_slice()?.to_vec(), off: off.as_slice()?.to_vec() };
+    let answer = py.allow_threads(|| nnue.eval(&q));
+    Ok((answer.value.into_pyarray_bound(py), answer.prior.into_pyarray_bound(py)).into_py(py))
 }
 
 #[pyfunction]
