@@ -330,11 +330,14 @@ fn affine<const N: usize>(w: &[i8], bias: &[i32], x: &[i8]) -> [i32; N] {
 }
 
 fn squash(c: &[i32; L2], shift: u32) -> [i8; 2 * L2] {
-    std::array::from_fn(|i| {
-        let x = c[i % L2].clamp(-32767, 32767);
-        let v = if i < L2 { (x * x) >> (2 * shift + 7) } else { x >> shift };
-        v.clamp(0, 127) as i8
-    })
+    let mut out = [0i8; 2 * L2];
+    let (sqr, lin) = out.split_at_mut(L2);
+    for ((s, l), &x) in sqr.iter_mut().zip(lin.iter_mut()).zip(c) {
+        let x = x.clamp(-32767, 32767);
+        *s = ((x * x) >> (2 * shift + 7)).min(127) as i8;
+        *l = (x >> shift).clamp(0, 127) as i8;
+    }
+    out
 }
 
 fn softmax(x: &mut [f32]) {
