@@ -23,7 +23,7 @@ CHUNK = 32768
 
 def batch(parts, device):
     rows, desc, parow, prior, value = parts
-    t = lambda a: torch.as_tensor(a, dtype=torch.float32).to(device, non_blocking=True)
+    t = lambda a: torch.as_tensor(a, dtype=torch.float32).pin_memory().to(device, non_blocking=True)
     return nnue.inputs(rows, desc, parow, device), (t(value) + 1) / 2, t(prior)
 
 
@@ -107,8 +107,9 @@ def main():
             s.load_state_dict(torch.load(latest(Path(args.init), f"w{l1}r{r}") / "student.pt", map_location=device))
     opts = [torch.optim.Adam(s.parameters(), lr=args.lr) for s in students]
     decays = [torch.optim.lr_scheduler.LambdaLR(o, lambda step: 1 - step / args.steps) for o in opts]
+    ready = stream.prefetch(args.batch, lambda parts: batch(parts, device))
     for step in range(1, args.steps + 1):
-        b = batch(stream.batch(args.batch), device)
+        b = ready.get()
         for s, o, d in zip(students, opts, decays):
             g = gaps(s, b)
             o.zero_grad(set_to_none=True)

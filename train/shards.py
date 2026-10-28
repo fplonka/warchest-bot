@@ -65,6 +65,16 @@ class Stream:
         self.loaded = queue.Queue(maxsize=2)
         threading.Thread(target=self.load, daemon=True).start()
 
+    def prefetch(self, n, make):
+        ready = queue.Queue(maxsize=4)
+
+        def fill():
+            while True:
+                ready.put(make(self.batch(n)))
+
+        threading.Thread(target=fill, daemon=True).start()
+        return ready
+
     def load(self):
         while True:
             files = [p for d in self.directories for p in listed(d, False)]
