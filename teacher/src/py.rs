@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use numpy::{IntoPyArray, PyArray1, PyArrayMethods, PyReadonlyArray1};
@@ -10,7 +11,8 @@ use warchest::board::board;
 use crate::net::Net;
 use engine::online::{Game, Site};
 use engine::pbs::{expand_row, mirror_row, mover_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
-use engine::search::{mirror_desc, ACT_BYTES};
+use engine::nnue::{self, Nnue, MAX_ACTIVE, MAX_MOVE};
+use engine::search::{mirror_desc, Oracle, Query, ACT_BYTES};
 use crate::selfplay::Data;
 use warchest::units::{write_card_features, CARD_FEATS, N_UNITS};
 
@@ -103,10 +105,32 @@ impl Farm {
 #[cfg(feature = "gpu")]
 #[pyfunction]
 fn evaluate(rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>, device: usize) -> PyResult<(Vec<f32>, Vec<f32>)> {
-    use engine::search::Oracle;
     let net = net()?;
     let gpu = crate::cuda::Gpu::new(&[device], &net).map_err(PyRuntimeError::new_err)?;
-    let answer = gpu.eval(&engine::search::Query { rows, desc, off });
+    let answer = gpu.eval(&Query { rows, desc, off });
+    Ok((answer.value, answer.prior))
+}
+
+#[pyfunction]
+fn nnue_features<'py>(py: Python<'py>, rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>) -> (Bound<'py, PyArray1<u16>>, Bound<'py, PyArray1<u16>>) {
+    let q = Query { rows, desc, off };
+    let (mut feats, mut moves) = (Vec::with_capacity(q.len() * MAX_ACTIVE), Vec::with_capacity(q.desc.len() / ACT_BYTES * MAX_MOVE));
+    for i in 0..q.len() {
+        let (row, desc) = q.row(i);
+        let row = row.try_into().unwrap();
+        let f = nnue::features(row);
+        feats.extend(f.iter().copied().chain(std::iter::repeat(nnue::FEATURES as u16)).take(MAX_ACTIVE));
+        for d in desc.chunks_exact(ACT_BYTES) {
+            let m = nnue::move_features(row, d);
+            moves.extend(m.iter().copied().chain(std::iter::repeat(nnue::MOVES as u16)).take(MAX_MOVE));
+        }
+    }
+    (feats.into_pyarray_bound(py), moves.into_pyarray_bound(py))
+}
+
+#[pyfunction]
+fn nnue_eval(weights: PathBuf, rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>) -> PyResult<(Vec<f32>, Vec<f32>)> {
+    let answer = Nnue::load(&weights).map_err(PyValueError::new_err)?.eval(&Query { rows, desc, off });
     Ok((answer.value, answer.prior))
 }
 
@@ -127,7 +151,7 @@ fn hex_location_flags() -> Vec<u8> {
 #[pyfunction]
 fn sample_positions(games: usize, seed: u64) -> (Vec<u8>, Vec<u8>, Vec<u32>) {
     let mut rng = warchest::rng::Rng::new(seed);
-    let mut q = engine::search::Query::default();
+    let mut q = Query::default();
     for _ in 0..games {
         let mut s = warchest::arena::game(&mut rng);
         let ctx = Ctx::new(&s);
@@ -265,6 +289,8 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_class::<Farm>()?;
         m.add_function(wrap_pyfunction!(evaluate, m)?)?;
     }
+    m.add_function(wrap_pyfunction!(nnue_features, m)?)?;
+    m.add_function(wrap_pyfunction!(nnue_eval, m)?)?;
     m.add_function(wrap_pyfunction!(card_features_table, m)?)?;
     m.add_function(wrap_pyfunction!(hex_location_flags, m)?)?;
     m.add_function(wrap_pyfunction!(sample_positions, m)?)?;
@@ -295,6 +321,10 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("OFF_CARDS", engine::pbs::OFF_CARDS)?;
     m.add("OFF_LOOSE", engine::pbs::OFF_LOOSE)?;
     m.add("ROW_TO_ACT", engine::pbs::ROW_TO_ACT)?;
+    m.add("NNUE_H", nnue::H)?;
+    m.add("NNUE_CLIP", nnue::CLIP)?;
+    m.add("NNUE_FEATURES", nnue::FEATURES)?;
+    m.add("NNUE_MOVES", nnue::MOVES)?;
     m.add("ATTENTION_INDEX", crate::net::attention_index())?;
     Ok(())
 }

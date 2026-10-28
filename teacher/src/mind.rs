@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use engine::bot::Brain;
+use engine::nnue::Nnue;
 use engine::packed::{Mind, Packed};
 use engine::search::{Oracle, Search};
 
@@ -9,6 +10,7 @@ pub fn load(packed: &Packed, devices: &[usize]) -> Result<Brain, String> {
     let m: Mind = serde_json::from_value(packed.manifest.search.clone()).map_err(|e| e.to_string())?;
     match m.mind.as_str() {
         "greedy" => Ok(Brain::Greedy),
+        "nnue" => Ok(Brain::Search { search: Search::Full(m.sims), oracle: Arc::new(Nnue::load(&packed.dir.join(&packed.manifest.weights))?) }),
         "search" => Ok(Brain::Search { search: Search::Full(m.sims), oracle: gpu(&packed.dir.join(&packed.manifest.weights), devices)? }),
         other => Err(format!("unknown mind {other}")),
     }

@@ -4,7 +4,8 @@ use std::time::Instant;
 
 use engine::bot::Brain;
 use warchest::rng::Rng;
-use engine::search::{Flat, Search};
+use engine::nnue::Nnue;
+use engine::search::{Flat, Oracle, Search};
 use teacher::selfplay::{play, Playout};
 
 fn main() {
@@ -14,7 +15,11 @@ fn main() {
         arg(2, "32").parse().expect("sims is a count"),
         arg(3, "1").parse().expect("p_full is a probability"),
     );
-    let search = |search| Brain::Search { search, oracle: Arc::new(Flat) };
+    let oracle: Arc<dyn Oracle> = match std::env::args().nth(4) {
+        Some(weights) => Arc::new(Nnue::load(weights.as_ref()).expect("the nnue weights load")),
+        None => Arc::new(Flat),
+    };
+    let search = |search| Brain::Search { search, oracle: oracle.clone() };
     let playout = Playout { full: search(Search::Full(sims)), fast: search(Search::Fast(16)), p_full };
     let (mut h, mut decisions, mut rows, t) = (DefaultHasher::new(), 0, 0, Instant::now());
     for seed in 0..games {
