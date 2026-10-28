@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::Path;
 
 use warchest::actions::N_KINDS;
@@ -11,13 +13,10 @@ use crate::pbs::{
 };
 use crate::search::{Answer, Oracle, Query, ACT_BYTES};
 
-pub const H: usize = 256;
-pub const CLIP: f32 = 1.0;
 pub const MAX_ACTIVE: usize = 128;
 pub const MAX_MOVE: usize = 8;
-const Q: i16 = 127;
-const QQ: f32 = (Q * Q) as f32;
-const LANES: usize = 128;
+pub const STACKS: usize = 8;
+pub const L2: usize = 32;
 const HEIGHT: usize = 5;
 const ZONES: usize = 7;
 const COINS: usize = 22;
@@ -130,15 +129,52 @@ pub fn move_features(row: &Row, desc: &[u8]) -> Active<MAX_MOVE> {
     out
 }
 
-pub const SIZES: [usize; 6] = [FEATURES * H, H, H, 1, MOVES * H, MOVES];
+pub fn phase(row: &Row) -> u8 {
+    let markers = row[ROW_HEX_MARKER..][..N_HEXES].iter().filter(|&&m| m != NONE).count() as u8;
+    let lost: u8 = (0..2 * NSLOT).map(|k| row[ROW_PILES + k * PILE_COUNTS + PILE_COUNTS - 1]).sum();
+    markers + lost
+}
+
+pub fn sizes(l1: usize, r: usize) -> [usize; 14] {
+    let half = l1 / 2;
+    [FEATURES * l1, l1, FEATURES * STACKS, STACKS * L2 * half, STACKS * L2, STACKS * L2 * 2 * L2, STACKS * L2, STACKS * 4 * L2, STACKS, r * half, r, MOVES * r, r, MOVES]
+}
+
+const FT_ONE: f32 = 256.0;
+const FT_CLIP: f32 = 0.99;
+const ONE: f32 = 128.0;
+const OUT: f32 = ONE * ONE;
 
 pub struct Nnue {
-    ft: Vec<[i8; H]>,
-    ft_bias: [i16; H],
-    value: [i8; H],
-    value_bias: f32,
-    policy: Vec<[i8; H]>,
-    policy_bias: Vec<f32>,
+    id: u64,
+    l1: usize,
+    r: usize,
+    thresholds: [u8; STACKS - 1],
+    ft: Vec<i16>,
+    ft_bias: Vec<i16>,
+    psqt: Vec<i32>,
+    fc0: Vec<i8>,
+    fc0_bias: Vec<i32>,
+    fc1: Vec<i8>,
+    fc1_bias: Vec<i32>,
+    out: Vec<i8>,
+    out_bias: Vec<i32>,
+    proj: Vec<i8>,
+    proj_bias: Vec<i32>,
+    emb: Vec<i32>,
+    head: Vec<i8>,
+    move_bias: Vec<i32>,
+}
+
+fn quantize<T: TryFrom<i64>>(a: &[f32], scale: f32, clip: f32) -> Result<Vec<T>, String> {
+    a.iter()
+        .map(|&x| {
+            if x.abs() > clip {
+                return Err(format!("weight {x} is outside the clip {clip}"));
+            }
+            T::try_from((x * scale).round() as i64).map_err(|_| format!("weight {x} does not fit at scale {scale}"))
+        })
+        .collect()
 }
 
 impl Nnue {
@@ -149,47 +185,156 @@ impl Nnue {
     }
 
     fn from_floats(floats: Vec<f32>) -> Result<Nnue, String> {
-        if floats.len() != SIZES.iter().sum::<usize>() {
-            return Err(format!("{} weights do not match the nnue's {}", floats.len(), SIZES.iter().sum::<usize>()));
+        let (dims, rest) = floats.split_at(2 + STACKS - 1);
+        let (l1, r) = (dims[0] as usize, dims[1] as usize);
+        let sizes = sizes(l1, r);
+        if l1 % 2 != 0 || rest.len() != sizes.iter().sum::<usize>() {
+            return Err(format!("{} weights do not match an nnue of width {l1} and policy rank {r}", rest.len()));
         }
-        if let Some(x) = floats.iter().find(|x| !(-CLIP..=CLIP).contains(*x)) {
-            return Err(format!("weight {x} is outside the clip {CLIP}"));
-        }
-        let mut rest = &floats[..];
-        let [ft, ft_bias, value, value_bias, policy, policy_bias] = SIZES.map(|n| {
+        let mut rest = rest;
+        let [ft, ft_bias, psqt, fc0, fc0_bias, fc1, fc1_bias, out, out_bias, proj, proj_bias, emb, head, move_bias] = sizes.map(|n| {
             let (a, b) = rest.split_at(n);
             rest = b;
             a
         });
-        let rows = |a: &[f32]| -> Vec<[i8; H]> {
-            a.chunks_exact(H).map(|r| std::array::from_fn(|i| (r[i] * Q as f32).round() as i8)).collect()
-        };
+        let wide = f32::INFINITY;
         Ok(Nnue {
-            ft: rows(ft),
-            ft_bias: rows(ft_bias)[0].map(i16::from),
-            value: rows(value)[0],
-            value_bias: value_bias[0],
-            policy: rows(policy),
-            policy_bias: policy_bias.to_vec(),
+            id: NETS.fetch_add(1, Ordering::Relaxed),
+            l1,
+            r,
+            thresholds: std::array::from_fn(|i| dims[2 + i] as u8),
+            ft: quantize(ft, FT_ONE, FT_CLIP)?,
+            ft_bias: quantize(ft_bias, FT_ONE, FT_CLIP)?,
+            psqt: quantize(psqt, OUT, wide)?,
+            fc0: quantize(fc0, ONE, 127.0 / ONE)?,
+            fc0_bias: quantize(fc0_bias, OUT, wide)?,
+            fc1: quantize(fc1, 64.0, 127.0 / 64.0)?,
+            fc1_bias: quantize(fc1_bias, 64.0 * ONE, wide)?,
+            out: quantize(out, ONE, 127.0 / ONE)?,
+            out_bias: quantize(out_bias, OUT, wide)?,
+            proj: quantize(proj, ONE, 127.0 / ONE)?,
+            proj_bias: quantize(proj_bias, OUT, wide)?,
+            emb: quantize(emb, OUT, wide)?,
+            head: quantize(head, ONE, 127.0 / ONE)?,
+            move_bias: quantize(move_bias, OUT, wide)?,
         })
     }
-}
 
-fn accumulate(table: &[[i8; H]], feats: &[u16], mut acc: [i16; H]) -> [i16; H] {
-    for (b, lanes) in acc.chunks_exact_mut(LANES).enumerate() {
-        let mut r: [i16; LANES] = (&*lanes).try_into().unwrap();
-        for &f in feats {
-            for (x, &w) in r.iter_mut().zip(&table[f as usize][b * LANES..][..LANES]) {
-                *x += w as i16;
-            }
-        }
-        lanes.copy_from_slice(&r);
+    fn stack(&self, row: &Row) -> usize {
+        let p = phase(row);
+        self.thresholds.iter().filter(|&&t| p >= t).count()
     }
-    acc
+
+    fn refresh(&self, bits: Bits) -> Accumulator {
+        let mut a = Accumulator { net: self.id, used: 0, bits, acc: self.ft_bias.clone(), psqt: [0; STACKS] };
+        for (w, &x) in bits.iter().enumerate() {
+            set(x).for_each(|b| a.add(self, w * 64 + b, 1));
+        }
+        a
+    }
+
+    fn accumulate(&self, feats: &[u16]) -> (Vec<i8>, [i32; STACKS]) {
+        let mut bits = [0u64; WORDS];
+        feats.iter().for_each(|&f| bits[f as usize / 64] |= 1 << (f % 64));
+        CACHE.with(|cache| {
+            let (clock, cache) = &mut *cache.borrow_mut();
+            *clock += 1;
+            let near = cache.iter().enumerate().filter(|(_, e)| e.net == self.id).map(|(i, e)| (i, distance(&e.bits, &bits))).min_by_key(|&(_, d)| d);
+            let at = match near {
+                Some((i, d)) if d < feats.len() => {
+                    cache[i].step(self, bits);
+                    i
+                }
+                _ if cache.len() < ENTRIES => {
+                    cache.push(self.refresh(bits));
+                    cache.len() - 1
+                }
+                _ => {
+                    let i = (0..ENTRIES).min_by_key(|&i| cache[i].used).unwrap();
+                    cache[i] = self.refresh(bits);
+                    i
+                }
+            };
+            cache[at].used = *clock;
+            (self.hidden(&cache[at].acc), cache[at].psqt)
+        })
+    }
+
+    fn hidden(&self, acc: &[i16]) -> Vec<i8> {
+        let (a, b) = acc.split_at(self.l1 / 2);
+        a.iter().zip(b).map(|(&x, &y)| ((x.clamp(0, 255) as i32 * y.clamp(0, 255) as i32) >> 9) as i8).collect()
+    }
+
+    fn value(&self, h: &[i8], stack: usize, psqt: i32) -> f32 {
+        let half = self.l1 / 2;
+        let c0 = affine::<L2>(&self.fc0[stack * L2 * half..][..L2 * half], &self.fc0_bias[stack * L2..][..L2], h);
+        let x0 = squash(&c0, 7);
+        let c1 = affine::<L2>(&self.fc1[stack * L2 * 2 * L2..][..L2 * 2 * L2], &self.fc1_bias[stack * L2..][..L2], &x0);
+        let x1 = squash(&c1, 6);
+        let w = &self.out[stack * 4 * L2..][..4 * L2];
+        let o = self.out_bias[stack] + dot(&w[..2 * L2], &x0) + dot(&w[2 * L2..], &x1);
+        (o + c0[L2 - 2] - c0[L2 - 1] + psqt) as f32 / OUT
+    }
 }
 
-fn dot(a: &[i8; H], b: &[i8; H]) -> i32 {
-    a.iter().zip(b).map(|(&x, &y)| x as i32 * y as i32).sum()
+const ENTRIES: usize = 4;
+static NETS: AtomicU64 = AtomicU64::new(0);
+
+const WORDS: usize = FEATURES.div_ceil(64);
+type Bits = [u64; WORDS];
+
+struct Accumulator {
+    net: u64,
+    used: u64,
+    bits: Bits,
+    acc: Vec<i16>,
+    psqt: [i32; STACKS],
+}
+
+impl Accumulator {
+    fn add(&mut self, net: &Nnue, f: usize, sign: i16) {
+        for (x, &w) in self.acc.iter_mut().zip(&net.ft[f * net.l1..][..net.l1]) {
+            *x += sign * w;
+        }
+        for (p, &w) in self.psqt.iter_mut().zip(&net.psqt[f * STACKS..][..STACKS]) {
+            *p += sign as i32 * w;
+        }
+    }
+
+    fn step(&mut self, net: &Nnue, bits: Bits) {
+        for w in 0..WORDS {
+            set(self.bits[w] ^ bits[w]).for_each(|b| self.add(net, w * 64 + b, if bits[w] >> b & 1 == 1 { 1 } else { -1 }));
+        }
+        self.bits = bits;
+    }
+}
+
+fn set(x: u64) -> impl Iterator<Item = usize> {
+    warchest::board::bits(x)
+}
+
+fn distance(a: &Bits, b: &Bits) -> usize {
+    a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones() as usize).sum()
+}
+
+thread_local! {
+    static CACHE: RefCell<(u64, Vec<Accumulator>)> = const { RefCell::new((0, Vec::new())) };
+}
+
+fn dot(w: &[i8], x: &[i8]) -> i32 {
+    w.iter().zip(x).map(|(&w, &x)| w as i32 * x as i32).sum()
+}
+
+fn affine<const N: usize>(w: &[i8], bias: &[i32], x: &[i8]) -> [i32; N] {
+    std::array::from_fn(|o| bias[o] + dot(&w[o * x.len()..][..x.len()], x))
+}
+
+fn squash(c: &[i32; L2], shift: u32) -> [i8; 2 * L2] {
+    std::array::from_fn(|i| {
+        let x = c[i % L2] as i64;
+        let v = if i < L2 { (x * x) >> (2 * shift + 7) } else { x >> shift };
+        v.clamp(0, 127) as i8
+    })
 }
 
 fn softmax(x: &mut [f32]) {
@@ -202,17 +347,24 @@ fn softmax(x: &mut [f32]) {
 impl Oracle for Nnue {
     fn eval(&self, q: &Query) -> Answer {
         let mut answer = Answer { value: Vec::with_capacity(q.len()), prior: Vec::with_capacity(q.desc.len() / ACT_BYTES) };
+        let half = self.l1 / 2;
         for i in 0..q.len() {
             let (row, desc) = q.row(i);
             let row = row.try_into().unwrap();
-            let hl = accumulate(&self.ft, &features(row), self.ft_bias).map(|x| x.clamp(0, Q) as i8);
-            answer.value.push(((dot(&hl, &self.value) as f32 / QQ + self.value_bias) / 2.0).tanh());
-            let start = answer.prior.len();
+            let stack = self.stack(row);
+            let (h, psqt) = self.accumulate(&features(row));
+            answer.value.push((self.value(&h, stack, psqt[stack]) / 2.0).tanh());
+            let z: Vec<i32> = (0..self.r).map(|k| self.proj_bias[k] + dot(&self.proj[k * half..][..half], &h)).collect();
+            let (start, mut zm) = (answer.prior.len(), z.clone());
             for d in desc.chunks_exact(ACT_BYTES) {
                 let moves = move_features(row, d);
-                let logit: i32 = moves.iter().map(|&f| dot(&hl, &self.policy[f as usize])).sum();
-                let bias: f32 = moves.iter().map(|&f| self.policy_bias[f as usize]).sum();
-                answer.prior.push(logit as f32 / QQ + bias);
+                zm.copy_from_slice(&z);
+                for &f in moves.iter() {
+                    zm.iter_mut().zip(&self.emb[f as usize * self.r..][..self.r]).for_each(|(a, &e)| *a += e);
+                }
+                let logit: i32 = zm.iter().zip(&self.head).map(|(&a, &w)| (a >> 7).clamp(0, 127) * w as i32).sum();
+                let bias: i32 = moves.iter().map(|&f| self.move_bias[f as usize]).sum();
+                answer.prior.push((logit + bias) as f32 / OUT);
             }
             softmax(&mut answer.prior[start..]);
         }
@@ -250,6 +402,13 @@ mod tests {
         out
     }
 
+    fn net(l1: usize, r: usize, scale: f32) -> Nnue {
+        let mut rng = Rng::new(7);
+        let mut floats = vec![l1 as f32, r as f32, 4.0, 8.0, 12.0, 16.0, 20.0, 24.0, 28.0];
+        floats.extend((0..sizes(l1, r).iter().sum::<usize>()).map(|_| scale * (rng.unit_f64() as f32 - 0.5)));
+        Nnue::from_floats(floats).unwrap()
+    }
+
     #[test]
     fn features_stay_in_range_and_ignore_the_mirror() {
         let q = positions();
@@ -262,6 +421,7 @@ mod tests {
             let feats = sorted(&features(row));
             assert!(feats.iter().all(|&f| (f as usize) < FEATURES) && feats.windows(2).all(|w| w[0] < w[1]), "{feats:?}");
             assert_eq!(feats, sorted(&features(&flipped)));
+            assert_eq!(phase(row), phase(&flipped));
             most = most.max(feats.len());
             for d in desc.chunks_exact(ACT_BYTES) {
                 let mut m = d.to_vec();
@@ -276,8 +436,22 @@ mod tests {
     #[test]
     fn a_zero_net_is_the_flat_oracle() {
         let q = positions();
-        let answer = Nnue::from_floats(vec![0.0; SIZES.iter().sum()]).unwrap().eval(&q);
+        let answer = net(64, 16, 0.0).eval(&q);
         assert!(answer.value.iter().all(|&v| v == 0.0));
         assert_eq!(answer.prior, uniform(&q));
+    }
+
+    #[test]
+    fn the_accumulator_cache_gives_what_a_refresh_gives() {
+        let (q, nnue) = (positions(), net(64, 16, 0.5));
+        for i in 0..q.len() {
+            let row: &Row = q.row(i).0.try_into().unwrap();
+            let feats = features(row);
+            let (h, psqt) = nnue.accumulate(&feats);
+            let mut bits = [0u64; WORDS];
+            feats.iter().for_each(|&f| bits[f as usize / 64] |= 1 << (f % 64));
+            let fresh = nnue.refresh(bits);
+            assert_eq!((h, psqt), (nnue.hidden(&fresh.acc), fresh.psqt));
+        }
     }
 }

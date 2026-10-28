@@ -138,12 +138,14 @@ class Buffer:
     def __len__(self):
         return self.rows - self.lo
 
-    def gather(self, ids):
+    def slots(self, ids):
         s = ids % self.cap
         lens = self.alen[s].astype(np.int64)
         within = np.arange(int(lens.sum())) - np.repeat(np.cumsum(lens) - lens, lens)
-        at = (np.repeat(self.astart[s], lens) + within) % self.acap
-        parow = np.repeat(np.arange(len(ids)), lens)
+        return s, (np.repeat(self.astart[s], lens) + within) % self.acap, np.repeat(np.arange(len(ids)), lens)
+
+    def gather(self, ids):
+        s, at, parow = self.slots(ids)
         return self.x[s], self.pa[at], parow, self.pp[at].astype(np.float32), self.z[s]
 
 

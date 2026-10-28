@@ -119,17 +119,19 @@ fn nnue_features<'py>(
     rows: PyReadonlyArray1<u8>,
     desc: PyReadonlyArray1<u8>,
     off: PyReadonlyArray1<u32>,
-) -> PyResult<(Indices<'py>, Indices<'py>)> {
+) -> PyResult<(Indices<'py>, Indices<'py>, Bound<'py, PyArray1<u8>>)> {
     let (rows, desc, off) = (rows.as_slice()?, desc.as_slice()?, off.as_slice()?);
     let (mut feats, mut moves) = (Vec::with_capacity(rows.len() / ROW_BYTES * MAX_ACTIVE), Vec::with_capacity(desc.len() / ACT_BYTES * MAX_MOVE));
+    let mut phases = Vec::with_capacity(rows.len() / ROW_BYTES);
     for (row, span) in rows.chunks_exact(ROW_BYTES).zip(off.windows(2)) {
         let row = row.try_into().unwrap();
+        phases.push(nnue::phase(row));
         feats.extend(nnue::features(row).iter().copied().chain(std::iter::repeat(nnue::FEATURES as u16)).take(MAX_ACTIVE));
         for d in desc[span[0] as usize * ACT_BYTES..span[1] as usize * ACT_BYTES].chunks_exact(ACT_BYTES) {
             moves.extend(nnue::move_features(row, d).iter().copied().chain(std::iter::repeat(nnue::MOVES as u16)).take(MAX_MOVE));
         }
     }
-    Ok((feats.into_pyarray_bound(py), moves.into_pyarray_bound(py)))
+    Ok((feats.into_pyarray_bound(py), moves.into_pyarray_bound(py), phases.into_pyarray_bound(py)))
 }
 
 #[pyfunction]
@@ -325,8 +327,8 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("OFF_CARDS", engine::pbs::OFF_CARDS)?;
     m.add("OFF_LOOSE", engine::pbs::OFF_LOOSE)?;
     m.add("ROW_TO_ACT", engine::pbs::ROW_TO_ACT)?;
-    m.add("NNUE_H", nnue::H)?;
-    m.add("NNUE_CLIP", nnue::CLIP)?;
+    m.add("NNUE_STACKS", nnue::STACKS)?;
+    m.add("NNUE_L2", nnue::L2)?;
     m.add("NNUE_FEATURES", nnue::FEATURES)?;
     m.add("NNUE_MOVES", nnue::MOVES)?;
     m.add("ATTENTION_INDEX", crate::net::attention_index())?;
