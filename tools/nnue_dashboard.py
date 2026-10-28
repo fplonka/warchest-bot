@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -25,13 +26,12 @@ def style(ax, title, xlabel, ylabel):
         ax.spines[side].set_visible(False)
 
 
-def student(shape):
-    l1, r = shape.split(":")
-    return f"w{l1}r{r}"
+def student(name):
+    return name if name[0] == "w" else "w{}r{}".format(*name.split(":"))
 
 
 def colors(names):
-    shapes = sorted((n for n in names if n[0] == "w"), key=lambda n: tuple(map(int, n[1:].split("r"))))
+    shapes = sorted((n for n in names if n[0] == "w"), key=lambda n: tuple(map(int, re.findall(r"\d+", n))))
     order = shapes + sorted(names - {"teacher"} - set(shapes))
     return {name: SERIES[i % len(SERIES)] for i, name in enumerate(["teacher"] + order)}
 

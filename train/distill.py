@@ -82,7 +82,7 @@ def main():
     ap = argparse.ArgumentParser(description="Train NNUE students on labelled shards streamed from disk, and pack them as bots.")
     ap.add_argument("--data", nargs="+", required=True, help="shard directories, re-read every pass so they may still be growing")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--students", nargs="+", required=True, help="width:rank of each student, trained on the same batches")
+    ap.add_argument("--students", nargs="+", required=True, help="width:rank:value-weight of each student, trained on the same batches")
     ap.add_argument("--steps", type=int, required=True)
     ap.add_argument("--sims", type=int, required=True)
     ap.add_argument("--init", help="a bots directory whose latest checkpoint of each shape to start from")
@@ -102,40 +102,41 @@ def main():
     thresholds = np.quantile(phases, np.arange(1, nnue.STACKS) / nnue.STACKS).round().astype(int)
     print(f"pool of {args.pool} shards loaded in {time.time() - t0:.0f}s; phase thresholds {thresholds.tolist()}", flush=True)
     shapes = [tuple(map(int, s.split(":"))) for s in args.students]
-    students = [nnue.Student(l1, r, thresholds).to(device) for l1, r in shapes]
+    names = [f"w{l1}r{r}v{v}" for l1, r, v in shapes]
+    students = [nnue.Student(l1, r, thresholds).to(device) for l1, r, _ in shapes]
     if args.init:
-        for (l1, r), s in zip(shapes, students):
-            s.load_state_dict(torch.load(latest(Path(args.init), f"w{l1}r{r}") / "student.pt", map_location=device))
+        for name, s in zip(names, students):
+            s.load_state_dict(torch.load(latest(Path(args.init), name) / "student.pt", map_location=device))
     opts = [torch.optim.Adam(s.parameters(), lr=args.lr) for s in students]
     decays = [torch.optim.lr_scheduler.LambdaLR(o, lambda step: 1 - step / args.steps) for o in opts]
     ready = stream.prefetch(args.batch, lambda parts: batch(parts, device))
     every, train = max(args.steps // 40, 1), [collections.Counter() for _ in students]
     for step in range(1, args.steps + 1):
         b = ready.get()
-        for s, o, d, seen in zip(students, opts, decays, train):
+        for (_, _, v), s, o, d, seen in zip(shapes, students, opts, decays, train):
             g = gaps(s, b)
             o.zero_grad(set_to_none=True)
-            (g["value"] + g["policy"]).backward()
+            (v * g["value"] + g["policy"]).backward()
             o.step()
             d.step()
             s.clip()
             seen.update({k: v.detach() for k, v in g.items()})
         if step % max(args.steps // 20, 1) == 0 or step == args.steps:
-            for (l1, r), s in zip(shapes, students):
-                pack(out, f"w{l1}r{r}-{step // 1000}k", s, args, t0)
+            for name, s in zip(names, students):
+                pack(out, f"{name}-{step // 1000}k", s, args, t0)
         if step % every == 0:
             sources = {"train": [{k: float(v) / every for k, v in seen.items()} for seen in train]}
             sources.update({Path(d).name: scores(students, held, device) for d in args.data if (held := holdout(d)) is not None})
             train = [collections.Counter() for _ in students]
             for name, gs in sources.items():
-                kl = {f"{l1}:{r}": g for (l1, r), g in zip(shapes, gs)}
+                kl = dict(zip(names, gs))
                 with open(out / "progress.jsonl", "a") as f:
                     f.write(json.dumps({"step": step, "t": time.time() - t0, "held": name, "kl": kl}) + "\n")
                 print(f"step {step} {time.time() - t0:.0f}s {name}, KL to the teacher: "
                       + "  ".join(f"{k} value {g['value']:.4f} policy {g['policy']:.4f}" for k, g in kl.items()), flush=True)
     held = holdout(args.data[0])
-    for (l1, r), s in zip(shapes, students):
-        print(f"{l1}:{r} {parity(s, held, device, out / 'bots' / f'w{l1}r{r}-{args.steps // 1000}k' / 'weights.bin')}", flush=True)
+    for name, s in zip(names, students):
+        print(f"{name} {parity(s, held, device, out / 'bots' / f'{name}-{args.steps // 1000}k' / 'weights.bin')}", flush=True)
 
 
 if __name__ == "__main__":
