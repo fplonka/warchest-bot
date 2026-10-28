@@ -62,18 +62,8 @@ class Stream:
     def __init__(self, directories, pool, rng):
         self.directories, self.rng, self.pool, self.size = directories, rng, [], pool
         self.order = np.random.default_rng(rng.integers(1 << 62))
-        self.loaded = queue.Queue(maxsize=2)
+        self.loaded, self.lock = queue.Queue(maxsize=2), threading.Lock()
         threading.Thread(target=self.load, daemon=True).start()
-
-    def prefetch(self, n, make):
-        ready = queue.Queue(maxsize=4)
-
-        def fill():
-            while True:
-                ready.put(make(self.batch(n)))
-
-        threading.Thread(target=fill, daemon=True).start()
-        return ready
 
     def load(self):
         while True:
@@ -81,10 +71,26 @@ class Stream:
             for i in self.order.permutation(len(files)):
                 self.loaded.put(Shard(files[i]))
 
-    def batch(self, n):
-        while len(self.pool) < self.size or not self.loaded.empty():
-            self.pool.append(self.loaded.get())
-            self.pool = self.pool[-self.size:]
-        sizes = np.array([len(s) for s in self.pool])
-        counts = self.rng.multinomial(n, sizes / sizes.sum())
-        return concat([s.gather(self.rng.integers(len(s), size=k)) for s, k in zip(self.pool, counts) if k])
+    def refresh(self):
+        with self.lock:
+            while len(self.pool) < self.size or not self.loaded.empty():
+                self.pool = (self.pool + [self.loaded.get()])[-self.size:]
+            return self.pool
+
+    def batch(self, n, rng=None):
+        rng = rng or self.rng
+        pool = self.refresh()
+        sizes = np.array([len(s) for s in pool])
+        counts = rng.multinomial(n, sizes / sizes.sum())
+        return concat([s.gather(rng.integers(len(s), size=k)) for s, k in zip(pool, counts) if k])
+
+    def prefetch(self, n, make, threads=4):
+        ready = queue.Queue(maxsize=2 * threads)
+
+        def fill(rng):
+            while True:
+                ready.put(make(self.batch(n, rng)))
+
+        for _ in range(threads):
+            threading.Thread(target=fill, args=(np.random.default_rng(self.rng.integers(1 << 62)),), daemon=True).start()
+        return ready
