@@ -31,7 +31,8 @@ def student(shape):
 
 
 def colors(names):
-    order = sorted(names - {"teacher"}, key=lambda n: tuple(map(int, n[1:].split("r"))))
+    shapes = sorted((n for n in names if n[0] == "w"), key=lambda n: tuple(map(int, n[1:].split("r"))))
+    order = shapes + sorted(names - {"teacher"} - set(shapes))
     return {name: SERIES[i % len(SERIES)] for i, name in enumerate(["teacher"] + order)}
 
 
@@ -47,11 +48,13 @@ def progress(ax, rows, key, color):
 
 
 def family(rating):
-    return "teacher" if rating["search"]["mind"] == "search" else rating["name"].split(".")[1].split("@")[0].split("-")[0]
+    mind = rating["search"]["mind"]
+    label = rating["name"].split(".")[1].split("@")[0]
+    return {"search": "teacher", "mix": label}.get(mind, label.split("-")[0])
 
 
 def steps(rating):
-    return int(rating["name"].split("@")[0].rsplit("-", 1)[1][:-1]) if family(rating) != "teacher" else 0
+    return int(rating["name"].split("@")[0].rsplit("-", 1)[1][:-1]) if rating["search"]["mind"] == "nnue" else 0
 
 
 def ladder(ax, ratings, color):
@@ -69,7 +72,7 @@ def ladder(ax, ratings, color):
         elo = [r["elo"] for r in rs]
         ax.errorbar(sims, elo, yerr=[1.96 * r["se"] for r in rs], fmt="-o", color=color[family_name],
                     linewidth=2, markersize=6, capsize=3,
-                    label=family_name if family_name == "teacher" else f"{family_name} at {newest[family_name]}k steps")
+                    label=f"{family_name} at {newest[family_name]}k steps" if newest[family_name] else family_name)
     ax.set_xscale("log", base=2)
     ax.axhline(0, color=MUTED, linewidth=0.8)
     ax.legend(frameon=False, fontsize=8)
