@@ -14,7 +14,7 @@ use crate::pbs::{
 use crate::search::{Answer, Oracle, Query, ACT_BYTES};
 
 const MAX_ACTIVE: usize = 128;
-const MAX_MOVE: usize = 8;
+const MAX_MOVE: usize = 14;
 pub const STACKS: usize = 8;
 pub const L2: usize = 32;
 const HEIGHT: usize = 5;
@@ -34,7 +34,10 @@ const KIND_COIN: usize = 0;
 const KIND_HEX: usize = KIND_COIN + N_KINDS * (N_UNITS + 1);
 const COIN_HEX: usize = KIND_HEX + N_KINDS * 3 * N_HEXES;
 const RECRUIT: usize = COIN_HEX + (N_UNITS + 1) * 3 * N_HEXES;
-pub const MOVES: usize = RECRUIT + N_UNITS;
+const OCCUPANTS: usize = 2 * N_UNITS * HEIGHT + 1;
+const OCCUPANT: usize = RECRUIT + N_UNITS;
+const MARKED: usize = OCCUPANT + N_KINDS * 3 * OCCUPANTS;
+pub const MOVES: usize = MARKED + N_KINDS * 3 * 3;
 
 pub struct Active<const N: usize> {
     at: [u16; N],
@@ -121,9 +124,18 @@ pub fn move_features(row: &Row, desc: &[u8]) -> Active<MAX_MOVE> {
     let unit = |t: u8| if t == NONE { N_UNITS } else { row[ROW_IDS + t as usize] as usize };
     let (kind, coin) = (desc[0] as usize, unit(desc[1]));
     out.push(KIND_COIN + kind * (N_UNITS + 1) + coin, true);
+    let side = |p: u8| if p == NONE { 2 } else { (p != row[ROW_TO_ACT]) as usize };
     for (slot, &h) in desc[3..].iter().enumerate().filter(|&(_, &h)| h != NONE) {
-        out.push(KIND_HEX + (kind * 3 + slot) * N_HEXES + hex(h as usize), true);
-        out.push(COIN_HEX + (coin * 3 + slot) * N_HEXES + hex(h as usize), true);
+        let (h, role) = (h as usize, kind * 3 + slot);
+        out.push(KIND_HEX + role * N_HEXES + hex(h), true);
+        out.push(COIN_HEX + (coin * 3 + slot) * N_HEXES + hex(h), true);
+        let owner = row[ROW_HEX_OWNER + h];
+        let occupant = match side(owner) {
+            2 => OCCUPANTS - 1,
+            s => (s * N_UNITS + unit(owner * NSLOT as u8 + row[ROW_HEX_SLOT + h])) * HEIGHT + row[ROW_HEX_HEIGHT + h] as usize - 1,
+        };
+        out.push(OCCUPANT + role * OCCUPANTS + occupant, true);
+        out.push(MARKED + role * 3 + side(row[ROW_HEX_MARKER + h]), true);
     }
     out.push(RECRUIT + unit(desc[2]), desc[2] != NONE);
     out
