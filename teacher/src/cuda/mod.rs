@@ -11,18 +11,18 @@ use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 use half::f16;
 use parking_lot::{Condvar, Mutex};
 
-use crate::board::{board, N_HEXES};
+use warchest::board::{board, N_HEXES};
 use crate::memo::Memo;
 use crate::net::{Layout, Lin, Net, D, FFN, HEADS, STATE, TOKENS};
-use crate::pbs::{
+use engine::pbs::{
     mirror_row, HEX_BLOCK, HEX_CH, HEX_FACTS, LOOSE, MAX_COINS, NSLOT, NTYPE, OFF_CARDS, OFF_LOOSE, OFF_PILES,
     PILE_COUNTS, PLAYER_SCALARS, PUBFEAT, ROW_BAG_SIZE, ROW_BYTES, ROW_FD_SIZE, ROW_HAND_SIZE, ROW_HEX_HEIGHT,
     ROW_HEX_MARKER, ROW_HEX_OWNER, ROW_HEX_SLOT, ROW_IDS, ROW_INITIATIVE, ROW_INIT_MOVED, ROW_PILES, ROW_STACK_KIND,
     ROW_STACK_OWED, ROW_TO_ACT, ROW_WP,
 };
-use crate::search::{mirror_desc, Answer, Oracle, Query, ACT_BYTES, COIN_PICKS, HEX_PICKS};
-use crate::state::{CONT_CAP, PENDING_KINDS};
-use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
+use engine::search::{mirror_desc, Answer, Oracle, Query, ACT_BYTES, COIN_PICKS, HEX_PICKS};
+use warchest::state::{CONT_CAP, PENDING_KINDS};
+use warchest::units::{write_card_features, CARD_FEATS, N_UNITS};
 
 type Res<T> = Result<T, String>;
 

@@ -4,35 +4,14 @@ use std::thread::JoinHandle;
 use parking_lot::{Condvar, Mutex};
 use rayon::prelude::*;
 
-use crate::actions::{Action, N_KINDS, N_PLAYS};
-use crate::arena::{Draft, Obs};
-use crate::board::NONE;
-use crate::bot::{Brain, Session};
-use crate::pbs::obs_key;
-use crate::rng::Rng;
-use crate::search::Query;
-use crate::state::{Cont, State, BLACK, WHITE};
-
-pub const DRAFT_POOL: [[u16; 2]; 16] = [
-    [1, 1], [2, 52], [3, 3], [4, 4], [5, 5], [6, 53], [7, 7], [8, 8],
-    [9, 9], [10, 10], [11, 11], [12, 12], [16, 16], [17, 17], [18, 54], [19, 19],
-];
-
-pub fn deal(rng: &mut Rng) -> [u16; 16] {
-    let mut pool = DRAFT_POOL.map(|slot| slot[(rng.next_u64() & 1) as usize]);
-    rng.shuffle(&mut pool);
-    pool
-}
-
-fn dealt(rng: &mut Rng) -> Draft {
-    let first = (rng.next_u64() & 1) as u8;
-    let pool = deal(rng);
-    Draft { white: pool[..4].to_vec(), black: pool[4..8].to_vec(), first }
-}
-
-pub fn game(rng: &mut Rng) -> State {
-    dealt(rng).state().expect("a dealt draft is legal")
-}
+use warchest::actions::{Action, N_KINDS, N_PLAYS};
+use warchest::arena::{dealt, Obs};
+use engine::bot::{Brain, Session};
+use warchest::actions::obs_key;
+use warchest::rng::Rng;
+use engine::search::Query;
+use warchest::rules::resolve_chance;
+use warchest::state::{BLACK, WHITE};
 
 pub const HORIZONS: [f32; 4] = [f32::INFINITY, 6.0, 16.0, 50.0];
 
@@ -129,7 +108,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
                 sess.observe(&obs, None).expect("a seat follows every draw");
             }
         }
-        if crate::finished(&s) {
+        if warchest::finished(&s) {
             break;
         }
         if !open() {
@@ -153,7 +132,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
         let obs = Obs::Act { player: p as u8, key: obs_key(&a) };
         seats[1 - p].observe(&obs, None).expect("a seat follows every move");
     }
-    d.z = targets(&seen, crate::score(&s, WHITE as usize));
+    d.z = targets(&seen, warchest::score(&s, WHITE as usize));
     d.games = 1;
     match s.winner() {
         Some(w) => d.wins[w as usize] += 1,
@@ -228,23 +207,6 @@ impl Drop for Farm {
     }
 }
 
-pub(crate) fn resolve_chance(s: &mut State, player: u8, rng: &mut Rng) -> Action {
-    debug_assert!(matches!(s.pending(), Cont::Draw { .. } | Cont::WarriorPriestDraw { .. }));
-    let pool = s.draw_pool(player);
-    let total = pool.iter().map(|&c| c as usize).sum::<usize>();
-    let mut k = rng.below(total.max(1));
-    let unit = pool.iter().position(|&c| match k.checked_sub(c as usize) {
-        Some(rest) => {
-            k = rest;
-            false
-        }
-        None => true,
-    });
-    let drawn = Action::DrawCoin { unit: unit.map_or(NONE, |u| u as u8) };
-    s.apply_inplace(drawn);
-    drawn
-}
-
 fn worker_seed(seed: u64, i: usize) -> u64 {
     seed.wrapping_mul(0x9E3779B97F4A7C15) ^ (i as u64).wrapping_mul(0xD1B54A32D192ED03)
 }
@@ -252,8 +214,8 @@ fn worker_seed(seed: u64, i: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pbs::ROW_BYTES;
-    use crate::search::{Flat, Search, ACT_BYTES};
+    use engine::pbs::ROW_BYTES;
+    use engine::search::{Flat, Search, ACT_BYTES};
 
     fn searcher(p_full: f64) -> Playout {
         let search = |search| Brain::Search { search, oracle: Arc::new(Flat) };

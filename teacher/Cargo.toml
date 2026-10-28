@@ -1,0 +1,32 @@
+[package]
+name = "teacher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+warchest = { path = "../core" }
+engine = { path = "../engine" }
+pyo3 = { version = "0.21", features = ["abi3-py39", "extension-module"], optional = true }
+numpy = { version = "0.21", optional = true }
+rayon.workspace = true
+serde_json.workspace = true
+parking_lot = "0.12"
+cudarc = { version = "0.17", optional = true, default-features = false, features = ["cuda-version-from-build-system", "dynamic-loading", "driver", "nvrtc", "f16"] }
+half = { version = "2", optional = true }
+
+[features]
+default = []
+python = ["pyo3", "numpy"]
+gpu = ["dep:cudarc", "dep:half"]
+
+[[test]]
+name = "gpu"
+path = "tests/gpu.rs"
+required-features = ["gpu"]

@@ -2,11 +2,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::actions::Action;
+use crate::actions::{Action, N_KINDS};
+use crate::board::board;
 use crate::rng::Rng;
-use crate::selfplay::resolve_chance;
+use crate::rules::resolve_chance;
 use crate::state::{State, BLACK, WHITE};
-use crate::units::index_of_id;
+use crate::units::{index_of_id, write_card_features, CARD_FEATS, N_UNITS};
 
 pub const PROTOCOL: u32 = 7;
 
@@ -205,7 +206,7 @@ impl Table {
         b.s.apply_inplace(action);
         b.pending[1 - player as usize].push(Obs::Act {
             player,
-            key: crate::pbs::obs_key(&action),
+            key: crate::actions::obs_key(&action),
         });
         Ok(())
     }
@@ -251,4 +252,46 @@ impl Table {
         self.retire();
         Ok(())
     }
+}
+
+pub const DRAFT_POOL: [[u16; 2]; 16] = [
+    [1, 1], [2, 52], [3, 3], [4, 4], [5, 5], [6, 53], [7, 7], [8, 8],
+    [9, 9], [10, 10], [11, 11], [12, 12], [16, 16], [17, 17], [18, 54], [19, 19],
+];
+
+pub fn deal(rng: &mut Rng) -> [u16; 16] {
+    let mut pool = DRAFT_POOL.map(|slot| slot[(rng.next_u64() & 1) as usize]);
+    rng.shuffle(&mut pool);
+    pool
+}
+
+pub fn dealt(rng: &mut Rng) -> Draft {
+    let first = (rng.next_u64() & 1) as u8;
+    let pool = deal(rng);
+    Draft { white: pool[..4].to_vec(), black: pool[4..8].to_vec(), first }
+}
+
+pub fn game(rng: &mut Rng) -> State {
+    dealt(rng).state().expect("a dealt draft is legal")
+}
+
+pub fn rules_table_hash() -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |x: u64| {
+        h ^= x;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    };
+    mix(N_KINDS as u64);
+    let bd = board();
+    for &l in bd.is_location.iter() {
+        mix(l as u64);
+    }
+    for u in 0..N_UNITS {
+        let mut f = [0.0f32; CARD_FEATS];
+        write_card_features(u as u8, &mut f);
+        for x in f {
+            mix(x.to_bits() as u64);
+        }
+    }
+    h
 }

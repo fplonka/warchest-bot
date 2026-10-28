@@ -1,5 +1,6 @@
 use crate::actions::Action;
 use crate::board::{bits, board, mask, NONE, N_HEXES};
+use crate::rng::Rng;
 use crate::state::*;
 use crate::units::*;
 
@@ -278,7 +279,7 @@ impl State {
         }
     }
 
-    pub(crate) fn draw_pool(&self, p: u8) -> [u8; N_UNITS] {
+    pub fn draw_pool(&self, p: u8) -> [u8; N_UNITS] {
         let z = &self.zones[p as usize];
         if z[Z_BAG].iter().any(|&c| c > 0) {
             return z[Z_BAG];
@@ -287,7 +288,7 @@ impl State {
     }
 
     #[inline]
-    pub(crate) fn pay_zone(&self) -> usize {
+    pub fn pay_zone(&self) -> usize {
         match self.pending {
             Cont::WarriorPriestPlay { .. } => Z_INFLIGHT,
             _ => Z_HAND,
@@ -879,4 +880,21 @@ impl ManVariant {
         attack: Some(|from, target| Action::TacCavalryAttack { from, target }),
         chain_cost: 0,
     };
+}
+
+pub fn resolve_chance(s: &mut State, player: u8, rng: &mut Rng) -> Action {
+    debug_assert!(matches!(s.pending(), Cont::Draw { .. } | Cont::WarriorPriestDraw { .. }));
+    let pool = s.draw_pool(player);
+    let total = pool.iter().map(|&c| c as usize).sum::<usize>();
+    let mut k = rng.below(total.max(1));
+    let unit = pool.iter().position(|&c| match k.checked_sub(c as usize) {
+        Some(rest) => {
+            k = rest;
+            false
+        }
+        None => true,
+    });
+    let drawn = Action::DrawCoin { unit: unit.map_or(NONE, |u| u as u8) };
+    s.apply_inplace(drawn);
+    drawn
 }

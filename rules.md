@@ -176,8 +176,8 @@ FAQ rulings that bind the implementation:
 
 ## 7. Engine architecture requirements
 
-- Rust crate at `engine/`, library + pyo3 module named `warchest` (abi3),
-  plus a small native benchmark binary.
+- Rust workspace: `core` (the rules, crate `warchest`), `engine` (CPU search and bots)
+  and `teacher` (GPU net, self-play, and the abi3 pyo3 module named `warchest`).
 - Flat state: 37 hexes indexed 0..36; per hex: occupant unit-type id, owner,
   stack height. Per player: multiset counts per zone per unit type (bag,
   hand, faceup discard, facedown discard, supply, eliminated), markers on

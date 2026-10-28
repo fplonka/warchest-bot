@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use crate::actions::Action;
-use crate::arena::{Draft, Obs};
-use crate::pbs::{obs_key, ways, Belief, Ctx};
+use warchest::actions::Action;
+use warchest::arena::{Draft, Obs};
+use warchest::actions::obs_key;
+use crate::pbs::{ways, Belief, Ctx};
 use crate::policy;
-use crate::rng::{cumulative, Rng};
+use warchest::rng::{cumulative, Rng};
 use crate::search::{think, Choice, Oracle, Query, Search};
-use crate::state::State;
+use warchest::state::State;
 
 const EPS: f64 = 0.3;
 
@@ -26,22 +27,6 @@ pub enum Brain {
 }
 
 impl Brain {
-    #[cfg(feature = "gpu")]
-    pub fn load(packed: &crate::packed::Packed, devices: &[usize]) -> Result<Brain, String> {
-        let m: crate::packed::Mind = serde_json::from_value(packed.manifest.search.clone()).map_err(|e| e.to_string())?;
-        match m.mind.as_str() {
-            "greedy" => Ok(Brain::Greedy),
-            "search" => {
-                let weights = packed.dir.join(&packed.manifest.weights);
-                let net = crate::net::Net::load_bin(weights.to_str().ok_or("invalid weights path")?)
-                    .map_err(|e| format!("{}: {e}", weights.display()))?;
-                let oracle = crate::cuda::Gpu::new(devices, &net)?;
-                Ok(Brain::Search { search: Search::Full(m.sims), oracle: Arc::new(oracle) })
-            }
-            other => Err(format!("unknown mind {other}")),
-        }
-    }
-
     pub fn net(&self) -> Option<&dyn Oracle> {
         match self {
             Brain::Search { oracle, .. } => Some(oracle.as_ref()),
@@ -158,7 +143,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::{Done, Table};
+    use warchest::arena::{Done, Table};
     use crate::search::Flat;
 
     fn draft() -> Draft {

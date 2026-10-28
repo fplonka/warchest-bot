@@ -4,10 +4,10 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde::Serialize;
 use warchest::arena::{Done, Draft, Hello, Reply, Request, Table, PROTOCOL};
-use warchest::packed::Packed;
-use warchest::pbs::rules_table_hash;
+use engine::packed::Packed;
+use warchest::arena::rules_table_hash;
 use warchest::rng::Rng;
-use warchest::selfplay::deal;
+use warchest::arena::deal;
 
 struct BotProcess {
     child: Child,

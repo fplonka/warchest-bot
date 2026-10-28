@@ -1,8 +1,8 @@
-use crate::actions::{Action, N_KINDS};
-use crate::board::{bits, board, mask, NONE, N_HEXES};
-use crate::rng::{cumulative, Rng};
-use crate::state::{State, CONT_CAP, PENDING_KINDS, Z_BAG, Z_ELIM, Z_FACEDOWN, Z_FACEUP, Z_HAND, Z_INFLIGHT, Z_SUPPLY};
-use crate::units::{write_card_features, CARD_FEATS, ENSIGN, MARSHAL, N_UNITS, ROYAL_COIN};
+use warchest::actions::{action_coin, Action};
+use warchest::board::{bits, board, mask, NONE, N_HEXES};
+use warchest::rng::{cumulative, Rng};
+use warchest::state::{State, CONT_CAP, PENDING_KINDS, Z_BAG, Z_ELIM, Z_FACEDOWN, Z_FACEUP, Z_HAND, Z_INFLIGHT, Z_SUPPLY};
+use warchest::units::{write_card_features, CARD_FEATS, N_UNITS};
 
 pub const NSLOT: usize = 5;
 const HIDDEN: [usize; 4] = [Z_INFLIGHT, Z_HAND, Z_FACEDOWN, Z_BAG];
@@ -130,35 +130,6 @@ fn copies(s: &State, a: &Action) -> u8 {
     }
 }
 
-pub(crate) fn action_coin(a: &Action, s: &State) -> u8 {
-    use Action::*;
-    match *a {
-        Deploy { unit, .. } | Bolster { unit, .. } => unit,
-        ClaimInitiative { coin } | Recruit { coin, .. } | Pass { coin } => coin,
-        TacRoyalGuard { .. } => ROYAL_COIN,
-        TacEnsign { .. } => ENSIGN,
-        TacMarshal { .. } => MARSHAL,
-        Move { from, .. }
-        | Control { from }
-        | Attack { from, .. }
-        | TacArcher { from, .. }
-        | TacCavalryMove { from, .. }
-        | TacCrossbow { from, .. }
-        | TacLancer { from, .. }
-        | TacLightCav { from, .. } => s.hex_type[from as usize],
-        _ => NONE,
-    }
-}
-
-pub fn obs_key(a: &Action) -> u32 {
-    let code = a.encode();
-    match a {
-        Action::Pass { .. } | Action::ClaimInitiative { .. } => code & 63,
-        Action::Recruit { unit, .. } => (code & 63) | ((*unit as u32) << 12),
-        _ => code,
-    }
-}
-
 pub const MAX_COINS: f32 = 4.0 * 5.0 + 1.0;
 
 pub const NTYPE: usize = 2 * NSLOT;
@@ -191,27 +162,6 @@ pub const ROW_WP: usize = ROW_TO_ACT + 1;
 pub const ROW_STACK_KIND: usize = ROW_WP + 1;
 pub const ROW_STACK_OWED: usize = ROW_STACK_KIND + CONT_CAP;
 pub const ROW_BYTES: usize = ROW_STACK_OWED + CONT_CAP * 8;
-
-pub fn rules_table_hash() -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut mix = |x: u64| {
-        h ^= x;
-        h = h.wrapping_mul(0x1000_0000_01b3);
-    };
-    mix(N_KINDS as u64);
-    let bd = board();
-    for &l in bd.is_location.iter() {
-        mix(l as u64);
-    }
-    for u in 0..N_UNITS {
-        let mut f = [0.0f32; CARD_FEATS];
-        write_card_features(u as u8, &mut f);
-        for x in f {
-            mix(x.to_bits() as u64);
-        }
-    }
-    h
-}
 
 pub const PUBFEAT: usize = OFF_LOOSE + LOOSE;
 
@@ -383,8 +333,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::selfplay::resolve_chance;
-    use crate::state::WHITE;
+    use warchest::actions::obs_key;
+    use warchest::rules::resolve_chance;
+    use warchest::state::WHITE;
 
     fn toy(worlds: &[(State, Vec<Action>)]) -> Vec<f64> {
         worlds
@@ -461,7 +412,7 @@ mod tests {
                 _ => s.apply(s.legal_actions()[0]),
             };
         }
-        let [t, x, y] = [17, 12, 4].map(|id| crate::units::index_of_id(id).unwrap());
+        let [t, x, y] = [17, 12, 4].map(|id| warchest::units::index_of_id(id).unwrap());
         let deploy = Action::Deploy { unit: t, hex: board().location_hexes[0] };
         belief.update(&s, |a| *a == deploy, ways).unwrap();
         let weight = |coins: &[u8]| {

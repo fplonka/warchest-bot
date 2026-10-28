@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::search::{Answer, Keyed, Query};
+use engine::search::{Answer, Keyed, Query};
 
 const SHARDS: usize = 64;
 const GENERATION: usize = 1 << 12;
@@ -88,13 +88,13 @@ impl Memo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pbs::Ctx;
-    use crate::rng::Rng;
-    use crate::search::uniform;
+    use engine::pbs::Ctx;
+    use warchest::rng::Rng;
+    use engine::search::uniform;
 
     fn positions() -> Query {
         let mut rng = Rng::new(9);
-        let mut s = crate::selfplay::game(&mut rng);
+        let mut s = warchest::arena::game(&mut rng);
         let ctx = Ctx::new(&s);
         let mut q = Query::default();
         while q.len() < 40 && !s.is_terminal() {

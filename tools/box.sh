@@ -22,11 +22,11 @@ $*"; }
 
 build_script="[ -d venv ] || python -m venv --system-site-packages venv
 source venv/bin/activate
-find engine/src engine/tests -type f -exec touch {} +
-cd engine
+find core engine teacher -type f -exec touch {} +
+cd teacher
 maturin develop --release --features python,gpu >maturin.log 2>&1 || { tail -40 maturin.log; exit 1; }
 tail -2 maturin.log
-cargo build --release --features gpu --bin bot --bin ladder >cargo.log 2>&1 || { tail -40 cargo.log; exit 1; }
+cd .. && cargo build --release --features teacher/gpu --bin bot --bin ladder >cargo.log 2>&1 || { tail -40 cargo.log; exit 1; }
 tail -1 cargo.log"
 
 case "${1:-}" in

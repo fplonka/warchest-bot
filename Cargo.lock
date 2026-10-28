@@ -106,6 +106,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 
 [[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2",
+ "warchest",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -586,6 +597,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
+name = "teacher"
+version = "0.1.0"
+dependencies = [
+ "cudarc",
+ "engine",
+ "half",
+ "numpy",
+ "parking_lot",
+ "pyo3",
+ "rayon",
+ "serde_json",
+ "warchest",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -610,18 +636,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "warchest-engine"
+name = "warchest"
 version = "0.1.0"
 dependencies = [
- "cudarc",
- "half",
- "numpy",
- "parking_lot",
- "pyo3",
- "rayon",
  "serde",
- "serde_json",
- "sha2",
 ]
 
 [[package]]

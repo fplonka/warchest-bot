@@ -6,13 +6,13 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{IntoPyDict, PyDict};
 
-use crate::board::board;
+use warchest::board::board;
 use crate::net::Net;
-use crate::online::{Game, Site};
-use crate::pbs::{expand_row, mirror_row, mover_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
-use crate::search::{mirror_desc, ACT_BYTES};
+use engine::online::{Game, Site};
+use engine::pbs::{expand_row, mirror_row, mover_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
+use engine::search::{mirror_desc, ACT_BYTES};
 use crate::selfplay::Data;
-use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
+use warchest::units::{write_card_features, CARD_FEATS, N_UNITS};
 
 static NET: LazyLock<RwLock<Option<Arc<Net>>>> = LazyLock::new(|| RwLock::new(None));
 
@@ -44,7 +44,7 @@ fn data_to_dict(py: Python<'_>, d: Data) -> PyResult<PyObject> {
     for (name, v) in PLAYS.iter().zip(d.plays) {
         out.set_item(format!("plays_{name}"), v)?;
     }
-    out.set_item("kinds", crate::actions::KIND_NAMES.iter().zip(d.kinds.0).collect::<Vec<_>>().into_py_dict_bound(py))?;
+    out.set_item("kinds", warchest::actions::KIND_NAMES.iter().zip(d.kinds.0).collect::<Vec<_>>().into_py_dict_bound(py))?;
     out.set_item("rows", d.q.rows.into_pyarray_bound(py))?;
     out.set_item("desc", d.q.desc.into_pyarray_bound(py))?;
     out.set_item("off", d.q.off.into_pyarray_bound(py))?;
@@ -73,7 +73,8 @@ struct Farm {
 impl Farm {
     #[new]
     fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32, fast_sims: u32, p_full: f64, chunk: usize) -> PyResult<Farm> {
-        use crate::{bot::Brain, search::Search, selfplay::Playout};
+        use crate::selfplay::Playout;
+        use engine::{bot::Brain, search::Search};
         let net = net()?;
         let gpu = Arc::new(crate::cuda::Gpu::new(&devices, &net).map_err(PyRuntimeError::new_err)?);
         let search = |search| Brain::Search { search, oracle: gpu.clone() };
@@ -102,10 +103,10 @@ impl Farm {
 #[cfg(feature = "gpu")]
 #[pyfunction]
 fn evaluate(rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>, device: usize) -> PyResult<(Vec<f32>, Vec<f32>)> {
-    use crate::search::Oracle;
+    use engine::search::Oracle;
     let net = net()?;
     let gpu = crate::cuda::Gpu::new(&[device], &net).map_err(PyRuntimeError::new_err)?;
-    let answer = gpu.eval(&crate::search::Query { rows, desc, off });
+    let answer = gpu.eval(&engine::search::Query { rows, desc, off });
     Ok((answer.value, answer.prior))
 }
 
@@ -125,10 +126,10 @@ fn hex_location_flags() -> Vec<u8> {
 
 #[pyfunction]
 fn sample_positions(games: usize, seed: u64) -> (Vec<u8>, Vec<u8>, Vec<u32>) {
-    let mut rng = crate::rng::Rng::new(seed);
-    let mut q = crate::search::Query::default();
+    let mut rng = warchest::rng::Rng::new(seed);
+    let mut q = engine::search::Query::default();
     for _ in 0..games {
-        let mut s = crate::selfplay::game(&mut rng);
+        let mut s = warchest::arena::game(&mut rng);
         let ctx = Ctx::new(&s);
         for _ in 0..160 {
             if s.is_terminal() {
@@ -169,7 +170,7 @@ fn mirror_descs<'py>(py: Python<'py>, desc: PyReadonlyArray1<u8>) -> PyResult<Bo
 
 #[pyfunction]
 fn rules_table_hash() -> u64 {
-    crate::pbs::rules_table_hash()
+    warchest::arena::rules_table_hash()
 }
 
 #[pyfunction]
@@ -200,7 +201,7 @@ fn expand_rows_cuda(rows: u64, cards: u64, locations: u64, out: u64, n: usize, s
 
 #[pyfunction]
 fn opening(white: Vec<u16>, black: Vec<u16>, first: u8) -> PyResult<Vec<u8>> {
-    let mut s = crate::arena::Draft { white, black, first }.state().map_err(PyValueError::new_err)?;
+    let mut s = warchest::arena::Draft { white, black, first }.state().map_err(PyValueError::new_err)?;
     while s.is_chance() {
         s.apply_inplace(s.legal_actions()[0]);
     }
@@ -255,7 +256,8 @@ impl Online {
 }
 
 #[pymodule]
-fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
+#[pyo3(name = "warchest")]
+fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_weights, m)?)?;
     m.add_function(wrap_pyfunction!(warm, m)?)?;
     #[cfg(feature = "gpu")]
@@ -277,22 +279,22 @@ fn warchest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("HORIZONS", crate::selfplay::HORIZONS.to_vec())?;
     m.add("ROW_BYTES", ROW_BYTES)?;
     m.add("ACT_BYTES", ACT_BYTES)?;
-    m.add("N_HEXES", crate::board::N_HEXES)?;
-    m.add("N_LOCATIONS", crate::board::N_LOCATIONS)?;
+    m.add("N_HEXES", warchest::board::N_HEXES)?;
+    m.add("N_LOCATIONS", warchest::board::N_LOCATIONS)?;
     m.add("N_UNITS", N_UNITS)?;
-    m.add("N_KINDS", crate::actions::N_KINDS)?;
-    m.add("KIND_NAMES", crate::actions::KIND_NAMES.to_vec())?;
+    m.add("N_KINDS", warchest::actions::N_KINDS)?;
+    m.add("KIND_NAMES", warchest::actions::KIND_NAMES.to_vec())?;
     m.add("CARD_FEATS", CARD_FEATS)?;
-    m.add("NSLOT", crate::pbs::NSLOT)?;
-    m.add("NTYPE", crate::pbs::NTYPE)?;
-    m.add("HEX_CH", crate::pbs::HEX_CH)?;
-    m.add("HEX_FACTS", crate::pbs::HEX_FACTS)?;
-    m.add("PILE_COUNTS", crate::pbs::PILE_COUNTS)?;
-    m.add("LOOSE", crate::pbs::LOOSE)?;
-    m.add("OFF_PILES", crate::pbs::OFF_PILES)?;
-    m.add("OFF_CARDS", crate::pbs::OFF_CARDS)?;
-    m.add("OFF_LOOSE", crate::pbs::OFF_LOOSE)?;
-    m.add("ROW_TO_ACT", crate::pbs::ROW_TO_ACT)?;
+    m.add("NSLOT", engine::pbs::NSLOT)?;
+    m.add("NTYPE", engine::pbs::NTYPE)?;
+    m.add("HEX_CH", engine::pbs::HEX_CH)?;
+    m.add("HEX_FACTS", engine::pbs::HEX_FACTS)?;
+    m.add("PILE_COUNTS", engine::pbs::PILE_COUNTS)?;
+    m.add("LOOSE", engine::pbs::LOOSE)?;
+    m.add("OFF_PILES", engine::pbs::OFF_PILES)?;
+    m.add("OFF_CARDS", engine::pbs::OFF_CARDS)?;
+    m.add("OFF_LOOSE", engine::pbs::OFF_LOOSE)?;
+    m.add("ROW_TO_ACT", engine::pbs::ROW_TO_ACT)?;
     m.add("ATTENTION_INDEX", crate::net::attention_index())?;
     Ok(())
 }

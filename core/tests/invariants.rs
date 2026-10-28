@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use warchest::board::{board, NONE, N_HEXES, N_LOCATIONS};
 use warchest::rng::Rng;
-use warchest::selfplay::{game, DRAFT_POOL};
+use warchest::arena::{game, DRAFT_POOL};
 use warchest::state::{Cont, State, BLACK, WHITE, Z_INFLIGHT};
 use warchest::units::{def, N_UNITS, ROYAL_COIN};
 

@@ -1,4 +1,6 @@
 use crate::board::NONE;
+use crate::state::State;
+use crate::units::{ENSIGN, MARSHAL, ROYAL_COIN};
 
 pub const KIND_BITS: u32 = 6;
 pub const FIELD_BITS: u32 = 6;
@@ -173,5 +175,34 @@ impl Action {
             | SwordsmanMove { .. } => Play::Maneuver,
             _ => Play::Other,
         }
+    }
+}
+
+pub fn action_coin(a: &Action, s: &State) -> u8 {
+    use Action::*;
+    match *a {
+        Deploy { unit, .. } | Bolster { unit, .. } => unit,
+        ClaimInitiative { coin } | Recruit { coin, .. } | Pass { coin } => coin,
+        TacRoyalGuard { .. } => ROYAL_COIN,
+        TacEnsign { .. } => ENSIGN,
+        TacMarshal { .. } => MARSHAL,
+        Move { from, .. }
+        | Control { from }
+        | Attack { from, .. }
+        | TacArcher { from, .. }
+        | TacCavalryMove { from, .. }
+        | TacCrossbow { from, .. }
+        | TacLancer { from, .. }
+        | TacLightCav { from, .. } => s.hex_type[from as usize],
+        _ => NONE,
+    }
+}
+
+pub fn obs_key(a: &Action) -> u32 {
+    let code = a.encode();
+    match a {
+        Action::Pass { .. } | Action::ClaimInitiative { .. } => code & 63,
+        Action::Recruit { unit, .. } => (code & 63) | ((*unit as u32) << 12),
+        _ => code,
     }
 }

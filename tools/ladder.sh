@@ -11,7 +11,7 @@ python=$here/.venv/bin/python
 while [ "$(date +%s)" -lt "$deadline" ]; do
     read -r a b games seed kind name_a name_b < <("$python" "$here/tools/ladder.py" "$campaign") || break
     echo "[$(date +%FT%T)] $kind: $name_a vs $name_b (seed $seed)"
-    "$here/tools/box.sh" "engine/target/release/ladder $a $b $games $seed 2>/workspace/logs/m$seed.log" \
+    "$here/tools/box.sh" "target/release/ladder $a $b $games $seed 2>/workspace/logs/m$seed.log" \
         | grep '^{' >> "$campaign/matches.jsonl" || { echo "  match failed; see /workspace/logs/m$seed.log"; break; }
     "$python" "$here/tools/ladder.py" "$campaign" report | head -8
 done

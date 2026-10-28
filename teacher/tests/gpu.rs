@@ -2,13 +2,14 @@
 
 use std::sync::Arc;
 
-use warchest::bot::Brain;
-use warchest::cuda::Gpu;
-use warchest::net::Net;
-use warchest::pbs::Ctx;
+use engine::bot::Brain;
+use teacher::cuda::Gpu;
+use teacher::net::Net;
+use engine::pbs::Ctx;
 use warchest::rng::Rng;
-use warchest::search::{Oracle, Query, Search};
-use warchest::selfplay::{game, Farm, Playout};
+use engine::search::{Oracle, Query, Search};
+use teacher::selfplay::{Farm, Playout};
+use warchest::arena::game;
 
 fn positions(games: u64) -> Query {
     let mut q = Query::default();

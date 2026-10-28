@@ -1,6 +1,6 @@
-use crate::actions::Action;
-use crate::board::{board, NONE, N_HEXES, N_LOCATIONS};
-use crate::state::{State, Z_ELIM};
+use warchest::actions::Action;
+use warchest::board::{board, NONE, N_HEXES, N_LOCATIONS};
+use warchest::state::{State, Z_ELIM};
 
 const TEMP: f32 = 2.0;
 

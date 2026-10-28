@@ -4,9 +4,9 @@ use std::sync::Mutex;
 
 use rayon::prelude::*;
 use warchest::arena::{Ask, Done, Hello, Reply, Request, PROTOCOL};
-use warchest::bot::{Brain, Session};
-use warchest::packed::Packed;
-use warchest::pbs::rules_table_hash;
+use engine::bot::{Brain, Session};
+use engine::packed::Packed;
+use warchest::arena::rules_table_hash;
 
 fn work(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain) -> Result<Done, String> {
     let mut session = match ask.start {
@@ -44,7 +44,7 @@ fn run() -> Result<(), String> {
         .split(',')
         .map(|x| x.parse().map_err(|_| format!("invalid device {x}")))
         .collect::<Result<Vec<_>, _>>()?;
-    let brain = Brain::load(&packed, &devices)?;
+    let brain = teacher::mind::load(&packed, &devices)?;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(THINKERS)
         .build()

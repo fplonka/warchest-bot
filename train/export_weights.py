@@ -24,7 +24,7 @@ def write_bin(net, path):
     net.flat().tofile(path)
 
 
-BOT = Path(__file__).resolve().parents[1] / "engine/target/release/bot"
+BOT = Path(__file__).resolve().parents[1] / "target/release/bot"
 SEARCH = {"mind": "search", "sims": 32}
 GREEDY = {**SEARCH, "mind": "greedy"}
 

@@ -2,10 +2,10 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 
-use warchest::bot::Brain;
+use engine::bot::Brain;
 use warchest::rng::Rng;
-use warchest::search::{Flat, Search};
-use warchest::selfplay::{play, Playout};
+use engine::search::{Flat, Search};
+use teacher::selfplay::{play, Playout};
 
 fn main() {
     let arg = |i: usize, default: &str| std::env::args().nth(i).unwrap_or(default.into());

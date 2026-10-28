@@ -1,11 +1,11 @@
 use std::ops::Range;
 
-use crate::actions::N_KINDS;
-use crate::board::{board, N_HEXES};
-use crate::pbs::{HEX_FACTS, LOOSE, NSLOT, NTYPE, PILE_COUNTS};
-use crate::search::ACT_BYTES;
+use warchest::actions::N_KINDS;
+use warchest::board::{board, N_HEXES};
+use engine::pbs::{HEX_FACTS, LOOSE, NSLOT, NTYPE, PILE_COUNTS};
+use engine::search::ACT_BYTES;
 use crate::selfplay::HORIZONS;
-use crate::units::{write_card_features, CARD_FEATS, N_UNITS};
+use warchest::units::{write_card_features, CARD_FEATS, N_UNITS};
 
 pub const D: usize = 256;
 pub const LAYERS: usize = 12;
@@ -140,7 +140,7 @@ impl Net {
     }
 
     pub fn random(seed: u64) -> Net {
-        let mut r = crate::rng::Rng::new(seed);
+        let mut r = warchest::rng::Rng::new(seed);
         let at = Layout::new();
         let mut w: Vec<f32> = (0..at.len).map(|_| (r.unit_f64() as f32 - 0.5) * 0.2).collect();
         for n in at.blocks.iter().flat_map(|b| [b.ln1, b.ln2]).chain([at.ln]) {

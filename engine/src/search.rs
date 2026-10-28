@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
 
-use crate::actions::Action;
-use crate::board::{NONE, N_HEXES};
-use crate::pbs::{action_coin, obs_key, pack_row, Belief, Ctx, NSLOT, NTYPE, ROW_BYTES};
-use crate::rng::Rng;
-use crate::selfplay::resolve_chance;
-use crate::state::{mirror_hex, State, Z_FACEDOWN, Z_HAND, Z_INFLIGHT};
+use warchest::actions::Action;
+use warchest::board::{NONE, N_HEXES};
+use warchest::actions::{action_coin, obs_key};
+use crate::pbs::{pack_row, Belief, Ctx, NSLOT, NTYPE, ROW_BYTES};
+use warchest::rng::Rng;
+use warchest::rules::resolve_chance;
+use warchest::state::{mirror_hex, State, Z_FACEDOWN, Z_HAND, Z_INFLIGHT};
 
 pub const ACT_BYTES: usize = 6;
 pub const COIN_PICKS: Range<usize> = 1..3;
@@ -288,7 +289,7 @@ impl Tree {
             while w.is_chance() {
                 resolve_chance(w, w.to_act(), rng);
             }
-            if crate::finished(w) {
+            if warchest::finished(w) {
                 return Leaf::Ended;
             }
             let p = w.to_act();
@@ -334,7 +335,7 @@ impl Tree {
                 opp.deal(&mut w, rng);
                 match self.descend(&mut w, ctx, rng, visits[next], path) {
                     Leaf::Ended => {
-                        self.backup(&path[start..], crate::score(&w, 0));
+                        self.backup(&path[start..], warchest::score(&w, 0));
                         path.truncate(start);
                     }
                     Leaf::Busy => {
@@ -424,7 +425,7 @@ impl Oracle for Flat {
 mod tests {
     use super::*;
     use crate::policy::greedy;
-    use crate::rng::cumulative;
+    use warchest::rng::cumulative;
 
     fn root(prior: &[f32], value: f32, visits: &[(u32, f32)]) -> Tree {
         let mut tree = Tree::new(0);
@@ -486,9 +487,9 @@ mod tests {
     fn thirty_two_simulations_find_the_only_winning_move() {
         let (mut rng, mut found) = (Rng::new(1), 0);
         while found < 10 {
-            let mut s = crate::selfplay::game(&mut rng);
+            let mut s = warchest::arena::game(&mut rng);
             let ctx = Ctx::new(&s);
-            while !crate::finished(&s) {
+            while !warchest::finished(&s) {
                 let acts = s.legal_actions();
                 if s.is_chance() {
                     s.apply_inplace(acts[rng.below(acts.len())]);

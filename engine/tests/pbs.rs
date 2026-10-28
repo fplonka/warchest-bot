@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use warchest::pbs::*;
+use engine::pbs::*;
 use warchest::rng::Rng;
-use warchest::selfplay::game;
+use warchest::arena::game;
 use warchest::state::{State, Z_BAG, Z_FACEDOWN, Z_HAND, Z_INFLIGHT};
 use warchest::units::{write_card_features, CARD_FEATS, N_UNITS};
 

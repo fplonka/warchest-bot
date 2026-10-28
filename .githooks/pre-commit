@@ -15,8 +15,8 @@ uv run -q --python 3.13 --with tree-sitter-language-pack "$root/tools/nocomments
 
 if grep -q '\.rs$' <<<"$staged"; then
     command -v nvcc >/dev/null || export CUDARC_CUDA_VERSION=12080
-    cargo clippy -q --manifest-path "$root/engine/Cargo.toml" --all-targets --features gpu,python --message-format=short
-    machete=$(cargo machete "$root/engine" 2>&1) || { echo "$machete"; exit 1; }
+    cargo clippy -q --manifest-path "$root/Cargo.toml" --workspace --all-targets --features teacher/gpu,teacher/python --message-format=short
+    machete=$(cargo machete "$root" 2>&1) || { echo "$machete"; exit 1; }
 fi
 if grep -q '\.py$' <<<"$staged"; then
     uv run -q --python 3.13 --with vulture vulture --min-confidence 80 "$root/train" "$root/tools" "$root/gpu_ci.py"

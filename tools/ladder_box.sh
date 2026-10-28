@@ -27,7 +27,7 @@ for _ in $(seq 80); do "$here/tools/box.sh" true 2>/dev/null && break; sleep 15;
 "$here/tools/box.sh" "apt-get update -qq && apt-get install -y -qq rsync libjemalloc2 build-essential curl >/dev/null
 curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null"
 "$here/tools/box.sh" sync
-"$here/tools/box.sh" "cd engine && cargo build --release --bin ladder >/tmp/ladder.log 2>&1 || { tail -30 /tmp/ladder.log; exit 1; }"
+"$here/tools/box.sh" "cargo build --release --bin ladder >/tmp/ladder.log 2>&1 || { tail -30 /tmp/ladder.log; exit 1; }"
 (cd "$here" && rsync -azR -e "ssh -i $key -p $port -o StrictHostKeyChecking=no" \
     $(cat "$campaign/bots") "root@$host:/workspace/warchest-engine/")
 "$here/tools/ladder.sh" "$campaign" "$hours"

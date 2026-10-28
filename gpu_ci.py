@@ -46,14 +46,14 @@ def _run(test: str, release: bool):
         ["tar", "xzf", "/root/src/repo.tgz", "-C", "/repo", "--strip-components=1"],
         check=True,
     )
-    cmd = ["cargo", "test", "--features", "gpu", "--lib", "--tests"]
+    cmd = ["cargo", "test", "--workspace", "--features", "teacher/gpu", "--lib", "--tests"]
     if release:
         cmd.append("--release")
     if test:
         cmd.append(test)
     cmd += ["--", "--nocapture", "--test-threads=1"]
     print("$", " ".join(cmd), flush=True)
-    p = subprocess.run(cmd, cwd="/repo/engine", env={**os.environ, **ENV})
+    p = subprocess.run(cmd, cwd="/repo", env={**os.environ, **ENV})
     if p.returncode != 0:
         raise SystemExit(p.returncode)
 
