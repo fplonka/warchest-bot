@@ -1,2 +1,5 @@
-runs/1028-teacher/bots/*
-runs/1028-nnue-r*/bots/*@*
+runs/1028-teacher/bots/s64
+runs/1028-teacher/bots/s256
+runs/1028-teacher/bots/s1024
+runs/1028-teacher/bots/s4096
+runs/1028-nnue-*/bots/*@*

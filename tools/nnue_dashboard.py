@@ -46,20 +46,29 @@ def progress(ax, rows, key, color):
 
 
 def family(rating):
-    return "teacher" if rating["search"]["mind"] == "search" else rating["name"].split(".")[1].split("@")[0]
+    return "teacher" if rating["search"]["mind"] == "search" else rating["name"].split(".")[1].split("@")[0].split("-")[0]
+
+
+def steps(rating):
+    return int(rating["name"].split("@")[0].rsplit("-", 1)[1][:-1]) if family(rating) != "teacher" else 0
 
 
 def ladder(ax, ratings, color):
     anchor = next((r["elo"] for r in ratings if family(r) == "teacher" and r["search"]["sims"] == 256), 0.0)
+    newest = {}
+    for r in ratings:
+        newest[family(r)] = max(newest.get(family(r), 0), steps(r))
     families = {}
     for r in ratings:
-        families.setdefault(family(r), []).append(r)
+        if steps(r) == newest[family(r)]:
+            families.setdefault(family(r), []).append(r)
     for family_name, rs in sorted(families.items()):
         rs.sort(key=lambda r: r["search"]["sims"])
         sims = [r["search"]["sims"] for r in rs]
         elo = [r["elo"] - anchor for r in rs]
         ax.errorbar(sims, elo, yerr=[1.96 * r["se"] for r in rs], fmt="-o", color=color[family_name],
-                    linewidth=2, markersize=6, capsize=3, label=family_name)
+                    linewidth=2, markersize=6, capsize=3,
+                    label=family_name if family_name == "teacher" else f"{family_name} at {newest[family_name]}k steps")
     ax.set_xscale("log", base=2)
     ax.axhline(0, color=MUTED, linewidth=0.8)
     ax.legend(frameon=False, fontsize=8)

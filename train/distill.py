@@ -66,6 +66,17 @@ def parity(student, held, device, weights):
             f"prior {np.abs(logp.exp().cpu().numpy() - prior).mean():.1e}")
 
 
+def latest(bots, shape):
+    return max(bots.glob(f"{shape}-*k"), key=lambda b: int(b.name.rsplit("-", 1)[1][:-1]))
+
+
+def pack(out, label, student, args, t0):
+    bot = out / "bots" / label
+    export_weights.pack(bot, f"{out.name}.{label}", student, config.git_sha(), {"mind": "nnue", "sims": args.sims},
+                        (time.time() - t0) / 60, f"nnue {label}, {args.batch} a step from {' '.join(args.data)}")
+    torch.save(student.state_dict(), bot / "student.pt")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Train NNUE students on labelled shards streamed from disk, and pack them as bots.")
     ap.add_argument("--data", nargs="+", required=True, help="shard directories, re-read every pass so they may still be growing")
@@ -73,7 +84,7 @@ def main():
     ap.add_argument("--students", nargs="+", required=True, help="width:rank of each student, trained on the same batches")
     ap.add_argument("--steps", type=int, required=True)
     ap.add_argument("--sims", type=int, required=True)
-    ap.add_argument("--init", help="a directory of bots whose students to start from")
+    ap.add_argument("--init", help="a bots directory whose latest checkpoint of each shape to start from")
     ap.add_argument("--batch", type=int, default=16384)
     ap.add_argument("--lr", type=float, default=8.75e-4)
     ap.add_argument("--pool", type=int, default=24, help="shards held in memory at once")
@@ -93,7 +104,7 @@ def main():
     students = [nnue.Student(l1, r, thresholds).to(device) for l1, r in shapes]
     if args.init:
         for (l1, r), s in zip(shapes, students):
-            s.load_state_dict(torch.load(Path(args.init) / f"w{l1}r{r}" / "student.pt", map_location=device))
+            s.load_state_dict(torch.load(latest(Path(args.init), f"w{l1}r{r}") / "student.pt", map_location=device))
     opts = [torch.optim.Adam(s.parameters(), lr=args.lr) for s in students]
     decays = [torch.optim.lr_scheduler.LambdaLR(o, lambda step: 1 - step / args.steps) for o in opts]
     for step in range(1, args.steps + 1):
@@ -105,6 +116,9 @@ def main():
             o.step()
             d.step()
             s.clip()
+        if step % max(args.steps // 20, 1) == 0 or step == args.steps:
+            for (l1, r), s in zip(shapes, students):
+                pack(out, f"w{l1}r{r}-{step // 1000}k", s, args, t0)
         if step % max(args.steps // 40, 1) == 0:
             for directory in args.data:
                 held = holdout(directory)
@@ -117,11 +131,7 @@ def main():
                       + "  ".join(f"{k} value {g['value']:.4f} policy {g['policy']:.4f}" for k, g in kl.items()), flush=True)
     held = holdout(args.data[0])
     for (l1, r), s in zip(shapes, students):
-        bot = out / "bots" / f"w{l1}r{r}"
-        export_weights.pack(bot, f"{out.name}.w{l1}r{r}", s, config.git_sha(), {"mind": "nnue", "sims": args.sims},
-                            (time.time() - t0) / 60, f"nnue {l1}/{r}, {args.steps} steps of {args.batch} from {' '.join(args.data)}")
-        torch.save(s.state_dict(), bot / "student.pt")
-        print(f"{l1}:{r} {parity(s, held, device, bot / 'weights.bin')}", flush=True)
+        print(f"{l1}:{r} {parity(s, held, device, out / 'bots' / f'w{l1}r{r}-{args.steps // 1000}k' / 'weights.bin')}", flush=True)
 
 
 if __name__ == "__main__":
