@@ -55,6 +55,7 @@ def steps(rating):
 
 
 def ladder(ax, ratings, color):
+    ratings = [r for r in ratings if r["se"] < 300]
     newest = {}
     for r in ratings:
         newest[family(r)] = max(newest.get(family(r), 0), steps(r))
