@@ -35,8 +35,9 @@ def colors(names):
 
 
 def progress(ax, rows, key, color):
+    sources = sorted({r["held"] for r in rows})
     for s in sorted({s for r in rows for s in r["kl"]}):
-        for held, dash in (("roots", "-"), ("leaves", "--")):
+        for held, dash in zip(sources, ("-", "--", ":", "-.")):
             pts = [(r["step"], r["kl"][s][key]) for r in rows if r["held"] == held and s in r["kl"]]
             if pts:
                 ax.plot(*zip(*pts), dash, color=color[student(s)], linewidth=2, label=f"{student(s)} {held}")
@@ -76,7 +77,7 @@ def main():
         run = distill[-1].parent
         progress(axes[0], rows, "value", color)
         progress(axes[1], rows, "policy", color)
-        style(axes[0], f"{run.name}: held-out value KL to the teacher (solid roots, dashed leaves)", "training step", "nats")
+        style(axes[0], f"{run.name}: held-out value KL to the teacher", "training step", "nats")
         style(axes[1], f"{run.name}: held-out policy KL to the teacher", "training step", "nats")
     if ratings:
         ladder(axes[2], rs, color)

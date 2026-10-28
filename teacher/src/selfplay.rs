@@ -153,20 +153,42 @@ pub fn warm(games: usize, seed: u64) -> Data {
         })
 }
 
-struct Sampled {
-    oracle: Arc<dyn Oracle>,
-    keep: u64,
-    kept: Mutex<Query>,
+#[derive(Default)]
+pub struct Labelled {
+    pub q: Query,
+    pub value: Vec<f32>,
+    pub prior: Vec<f32>,
 }
 
-impl Oracle for Sampled {
+pub struct Recorder {
+    oracle: Arc<dyn Oracle>,
+    keep: u64,
+    kept: Mutex<Labelled>,
+}
+
+impl Recorder {
+    pub fn new(oracle: Arc<dyn Oracle>, keep: f64) -> Recorder {
+        Recorder { oracle, keep: (keep * u64::MAX as f64) as u64, kept: Mutex::new(Labelled::default()) }
+    }
+
+    pub fn take(&self) -> Labelled {
+        std::mem::take(&mut *self.kept.lock())
+    }
+}
+
+impl Oracle for Recorder {
     fn eval(&self, q: &Query) -> Answer {
+        let answer = self.oracle.eval(q);
         let picked: Vec<usize> = (0..q.len()).filter(|&i| digest(q.row(i).0) < self.keep).collect();
         if !picked.is_empty() {
             let mut kept = self.kept.lock();
-            picked.into_iter().for_each(|i| kept.push_row(q.row(i)));
+            for i in picked {
+                kept.q.push_row(q.row(i));
+                kept.value.push(answer.value[i]);
+                kept.prior.extend_from_slice(&answer.prior[q.actions(i)]);
+            }
         }
-        self.oracle.eval(q)
+        answer
     }
 }
 
@@ -177,15 +199,14 @@ fn digest(row: &[u8]) -> u64 {
     })
 }
 
-pub fn leaves(oracle: Arc<dyn Oracle>, sims: u32, keep: f64, games: usize, seed: u64) -> Query {
-    let sampled = Arc::new(Sampled { oracle, keep: (keep * u64::MAX as f64) as u64, kept: Mutex::new(Query::default()) });
-    let full = Brain::Search { search: Search::Full(sims), oracle: sampled.clone() };
+pub fn leaves(oracle: Arc<dyn Oracle>, sims: u32, keep: f64, games: usize, seed: u64) -> Labelled {
+    let recorder = Arc::new(Recorder::new(oracle, keep));
+    let full = Brain::Search { search: Search::Full(sims), oracle: recorder.clone() };
     let playout = Playout { full, fast: Brain::Greedy, p_full: 1.0 };
     (0..games).into_par_iter().for_each(|i| {
         play(&playout, &mut Rng::new(worker_seed(seed, i)), || true);
     });
-    let kept = std::mem::take(&mut *sampled.kept.lock());
-    kept
+    recorder.take()
 }
 
 pub struct Farm {

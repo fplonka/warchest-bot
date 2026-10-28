@@ -65,7 +65,7 @@ def reference(net, rows, desc, parow, dtype):
 def evaluation_parity(name, net, device):
     net.push()
     rows, desc, off = positions(12, 5)
-    got = warchest.evaluate(rows.ravel().tolist(), desc.ravel().tolist(), off.tolist(), device.index)
+    got = warchest.evaluate(rows.ravel(), desc.ravel(), off.astype(np.uint32), device.index)
     parow = np.repeat(np.arange(len(rows)), np.diff(off))
     rows, desc = mirror.to_mover(rows, desc, parow)
     net = net.to(device).eval()

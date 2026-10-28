@@ -103,12 +103,46 @@ impl Farm {
 }
 
 #[cfg(feature = "gpu")]
+#[pyclass]
+struct Generator {
+    farm: crate::selfplay::Farm,
+    recorder: Arc<crate::selfplay::Recorder>,
+}
+
+#[cfg(feature = "gpu")]
+#[pymethods]
+impl Generator {
+    #[new]
+    fn new(seed: u64, games: usize, devices: Vec<usize>, sims: u32, fast_sims: u32, p_full: f64, keep: f64, chunk: usize) -> PyResult<Generator> {
+        use crate::selfplay::{Playout, Recorder};
+        use engine::{bot::Brain, search::Search};
+        let gpu = Arc::new(crate::cuda::Gpu::new(&devices, &*net()?).map_err(PyRuntimeError::new_err)?);
+        let recorder = Arc::new(Recorder::new(gpu, keep));
+        let search = |search| Brain::Search { search, oracle: recorder.clone() };
+        let playout = Playout { full: search(Search::Full(sims)), fast: search(Search::Fast(fast_sims)), p_full };
+        Ok(Generator { farm: crate::selfplay::Farm::new(seed, games, Arc::new(playout), chunk), recorder })
+    }
+
+    fn take(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+        let farm = &self.farm;
+        py.allow_threads(|| farm.collect()).ok_or_else(|| PyRuntimeError::new_err("a self-play game died; the log says why"))?;
+        labelled(py, self.recorder.take())
+    }
+}
+
+#[cfg(feature = "gpu")]
 #[pyfunction]
-fn evaluate(rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>, device: usize) -> PyResult<(Vec<f32>, Vec<f32>)> {
-    let net = net()?;
-    let gpu = crate::cuda::Gpu::new(&[device], &net).map_err(PyRuntimeError::new_err)?;
-    let answer = gpu.eval(&Query { rows, desc, off });
-    Ok((answer.value, answer.prior))
+fn evaluate(
+    py: Python<'_>,
+    rows: PyReadonlyArray1<u8>,
+    desc: PyReadonlyArray1<u8>,
+    off: PyReadonlyArray1<u32>,
+    device: usize,
+) -> PyResult<PyObject> {
+    let gpu = crate::cuda::Gpu::new(&[device], &*net()?).map_err(PyRuntimeError::new_err)?;
+    let q = Query { rows: rows.as_slice()?.to_vec(), desc: desc.as_slice()?.to_vec(), off: off.as_slice()?.to_vec() };
+    let answer = py.allow_threads(|| gpu.eval(&q));
+    Ok((answer.value.into_pyarray_bound(py), answer.prior.into_pyarray_bound(py)).into_py(py))
 }
 
 type Indices<'py> = Bound<'py, PyArray1<u16>>;
@@ -137,8 +171,18 @@ fn nnue_features<'py>(
 #[pyfunction]
 fn nnue_leaves(py: Python<'_>, weights: PathBuf, sims: u32, keep: f64, games: usize, seed: u64) -> PyResult<PyObject> {
     let nnue: Arc<dyn Oracle> = Arc::new(Nnue::load(&weights).map_err(PyValueError::new_err)?);
-    let q = py.allow_threads(|| crate::selfplay::leaves(nnue, sims, keep, games, seed));
-    Ok((q.rows.into_pyarray_bound(py), q.desc.into_pyarray_bound(py), q.off.into_pyarray_bound(py)).into_py(py))
+    let l = py.allow_threads(|| crate::selfplay::leaves(nnue, sims, keep, games, seed));
+    labelled(py, l)
+}
+
+fn labelled(py: Python<'_>, l: crate::selfplay::Labelled) -> PyResult<PyObject> {
+    let out = PyDict::new_bound(py);
+    out.set_item("rows", l.q.rows.into_pyarray_bound(py))?;
+    out.set_item("desc", l.q.desc.into_pyarray_bound(py))?;
+    out.set_item("off", l.q.off.into_pyarray_bound(py))?;
+    out.set_item("value", l.value.into_pyarray_bound(py))?;
+    out.set_item("prior", l.prior.into_pyarray_bound(py))?;
+    Ok(out.into())
 }
 
 #[pyfunction]
@@ -300,6 +344,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "gpu")]
     {
         m.add_class::<Farm>()?;
+        m.add_class::<Generator>()?;
         m.add_function(wrap_pyfunction!(evaluate, m)?)?;
     }
     m.add_function(wrap_pyfunction!(nnue_features, m)?)?;
