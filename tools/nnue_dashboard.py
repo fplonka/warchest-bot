@@ -54,7 +54,6 @@ def steps(rating):
 
 
 def ladder(ax, ratings, color):
-    anchor = next((r["elo"] for r in ratings if family(r) == "teacher" and r["search"]["sims"] == 256), 0.0)
     newest = {}
     for r in ratings:
         newest[family(r)] = max(newest.get(family(r), 0), steps(r))
@@ -65,7 +64,7 @@ def ladder(ax, ratings, color):
     for family_name, rs in sorted(families.items()):
         rs.sort(key=lambda r: r["search"]["sims"])
         sims = [r["search"]["sims"] for r in rs]
-        elo = [r["elo"] - anchor for r in rs]
+        elo = [r["elo"] for r in rs]
         ax.errorbar(sims, elo, yerr=[1.96 * r["se"] for r in rs], fmt="-o", color=color[family_name],
                     linewidth=2, markersize=6, capsize=3,
                     label=family_name if family_name == "teacher" else f"{family_name} at {newest[family_name]}k steps")

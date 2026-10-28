@@ -15,5 +15,5 @@ while :; do
     seed=$(( seed * 4 + lane ))
     echo "[$(date +%T)] lane $lane $kind $na vs $nb seed $seed"
     target/release/ladder $a $b $games $seed 2>>$C/err.$lane.log | grep "^{" > $C/out.$lane
-    flock $C/lock sh -c "cat $C/out.$lane >> $C/matches.jsonl && python tools/ladder.py $C json"
+    flock $C/lock sh -c "cat $C/out.$lane >> $C/matches.jsonl && python tools/ladder.py $C json 1028-teacher.s256"
 done
