@@ -56,7 +56,7 @@ pull)
     if [ -z "$name" ]; then
         filters+=(--include '*/' --include '*.html' --include 'plotly.min.js'
                   --include 'log.json' --include 'epochs.jsonl' --include 'bot.json'
-                  --include 'ladder.json' --include 'elo.json' --include 'comparisons/*.json'
+                  --include 'ladder.json' --include 'progress.jsonl' --include 'elo.json' --include 'comparisons/*.json'
                   --include 'config.json' --include 'NOTES.md'
                   --include 'train.log' --exclude '*')
     fi

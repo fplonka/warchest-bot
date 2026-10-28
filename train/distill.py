@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 import time
@@ -139,9 +140,11 @@ def main():
             s.clip()
         if step % max(args.steps // 20, 1) == 0:
             for name, buf in zip(("roots", "leaves"), sources):
-                report = "  ".join(f"{l1}:{r} value {g['value']:.4f} policy {g['policy']:.4f}"
-                                   for (l1, r), g in zip(shapes, scores(students, buf, device)))
-                print(f"step {step} {time.time() - t0:.0f}s held-out {name}, KL to the teacher: {report}", flush=True)
+                kl = {f"{l1}:{r}": g for (l1, r), g in zip(shapes, scores(students, buf, device))}
+                with open(out / "progress.jsonl", "a") as f:
+                    f.write(json.dumps({"step": step, "t": time.time() - t0, "held": name, "kl": kl}) + "\n")
+                print(f"step {step} {time.time() - t0:.0f}s held-out {name}, KL to the teacher: "
+                      + "  ".join(f"{k} value {g['value']:.4f} policy {g['policy']:.4f}" for k, g in kl.items()), flush=True)
     for (l1, r), s in zip(shapes, students):
         bot = out / "bots" / f"w{l1}r{r}"
         export_weights.pack(bot, f"{out.name}.w{l1}r{r}", s, config.git_sha(), {"mind": "nnue", "sims": args.sims},

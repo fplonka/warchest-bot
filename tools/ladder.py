@@ -180,6 +180,12 @@ def main():
     matches_path.touch()
     bots, names, played, mean, covariance = ratings(campaign)
     ages = [round(bots[name][0]) for name in names]
+    if sys.argv[2:] == ["json"]:
+        se = covariance.diagonal().sqrt()
+        (campaign / "ladder.json").write_text(json.dumps([
+            {"name": name, "search": json.loads((ROOT / bots[name][1] / "bot.json").read_text())["search"],
+             "elo": float(mean[i]), "se": float(se[i])} for i, name in enumerate(names)]))
+        return
     if sys.argv[2:] == ["report"]:
         trained = list(optimizer_rows(bots[name] for name in names))
         report(names, ages, trained, mean, covariance, played)
