@@ -12,11 +12,12 @@ import warchest
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Play an NNUE bot against itself on every CPU core and keep about two of its search's leaf positions per move, at each budget.")
+    ap = argparse.ArgumentParser(description="Play an NNUE bot against itself on every CPU core and keep some of its search's leaf positions per move, at each budget.")
     ap.add_argument("--bot", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--sims", type=int, nargs="+", required=True)
     ap.add_argument("--positions", type=int, required=True, help="leaf positions to keep at each budget")
+    ap.add_argument("--per-move", type=float, default=8.0, help="leaf positions to keep per move, on average")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     out = Path(args.out)
@@ -24,7 +25,7 @@ def main():
     for sims in args.sims:
         t0, parts, kept, seed = time.time(), [], 0, args.seed
         while kept < args.positions:
-            rows, desc, off = warchest.nnue_leaves(str(Path(args.bot) / "weights.bin"), sims, 2 / sims, 256, seed)
+            rows, desc, off = warchest.nnue_leaves(str(Path(args.bot) / "weights.bin"), sims, args.per_move / sims, 256, seed)
             parts.append((rows, desc, off.astype(np.int64)))
             kept, seed = kept + len(off) - 1, seed + 1
         base = np.cumsum([0] + [p[2][-1] for p in parts[:-1]])
