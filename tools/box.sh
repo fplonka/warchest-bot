@@ -126,19 +126,24 @@ kill)
     run_remote "[ \"\$(cat /workspace/logs/$tag.owner 2>/dev/null)\" = $remote ] || { echo \"$tag was not started from $remote; not killed\"; exit 1; }
 kill -- -\$(cat /workspace/logs/$tag.pid) && echo killed $tag"
     ;;
+run)
+    sha=$(git -C "$here" rev-parse --short=7 "${2:?usage: run <commit> <tag> <command...>}^{commit}")
+    tag=${3:?usage: run <commit> <tag> <command...>}
+    shift 3
+    code=/workspace/code/$sha
+    run_remote "[ -d $code ]" || git -C "$here" archive "$sha" ':!runs' | ssh "${ssh_opts[@]}" "root@$host" \
+        "mkdir -p $code.tmp && tar x -C $code.tmp && echo $sha > $code.tmp/.gitsha && ln -s $runs $code.tmp/runs && mv $code.tmp $code"
+    WARCHEST_BOX_DIR=$code "$0" start "$tag" bash -c "($build_script) && source venv/bin/activate && exec $(printf '%q ' "$@")"
+    ;;
 go)
-    sha=$(git -C "$here" rev-parse --short=7 "${2:?usage: go <commit> out=<name> [knob=value ...]}^{commit}")
+    commit=${2:?usage: go <commit> out=<name> [knob=value ...]}
     shift 2
     out=
     for a in "$@"; do
         case "$a" in out=*) out=${a#out=} ;; esac
     done
     [ -n "$out" ] || { echo "go needs out=<name>" >&2; exit 1; }
-    code=/workspace/code/$sha
-    run_remote "[ -d $code ]" || git -C "$here" archive "$sha" ':!runs' | ssh "${ssh_opts[@]}" "root@$host" \
-        "mkdir -p $code.tmp && tar x -C $code.tmp && echo $sha > $code.tmp/.gitsha && ln -s $runs $code.tmp/runs && mv $code.tmp $code"
-    export WARCHEST_BOX_DIR=$code
-    "$0" start "$out" bash -c "($build_script) && source venv/bin/activate && python train/check_parity.py && exec bash tools/resume_train.sh $(printf '%q ' "$@")"
+    "$0" run "$commit" "$out" bash -c "python train/check_parity.py && exec bash tools/resume_train.sh $(printf '%q ' "$@")"
     "$0" follow "$out" "$out"
     ;;
 "")  sed -n '4,11p' "$0" ;;
