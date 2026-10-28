@@ -18,7 +18,7 @@ fn work(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain) -> Res
             .ok_or_else(|| format!("game {} was never started", ask.id))?,
     };
     for obs in &ask.obs {
-        session.observe(obs, brain.net())?;
+        session.observe(obs)?;
     }
     let action = session.decide(brain)?;
     sessions.lock().unwrap().insert(ask.id, session);

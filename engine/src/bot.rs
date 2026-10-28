@@ -9,17 +9,6 @@ use warchest::rng::{cumulative, Rng};
 use crate::search::{think, Choice, Oracle, Query, Search};
 use warchest::state::State;
 
-const EPS: f64 = 0.3;
-
-fn read(net: &dyn Oracle, ctx: &Ctx, worlds: &[(State, Vec<Action>)]) -> Vec<f64> {
-    let mut q = Query::default();
-    for (s, acts) in worlds {
-        q.push(s, ctx, acts);
-    }
-    let n = worlds.iter().flat_map(|(_, acts)| std::iter::repeat_n(acts.len() as f64, acts.len()));
-    net.eval(&q).prior.into_iter().zip(n).map(|(pi, n)| (1.0 - EPS) * pi as f64 + EPS / n).collect()
-}
-
 pub enum Brain {
     Random,
     Greedy,
@@ -27,13 +16,6 @@ pub enum Brain {
 }
 
 impl Brain {
-    pub fn net(&self) -> Option<&dyn Oracle> {
-        match self {
-            Brain::Search { oracle, .. } => Some(oracle.as_ref()),
-            _ => None,
-        }
-    }
-
     fn policy(&self, s: &State, ctx: &Ctx, opp: &Belief, acts: &[Action], rng: &mut Rng) -> Choice {
         let probs = match self {
             _ if acts.len() == 1 => return Choice { probs: vec![1.0], pick: 0, value: 0.0 },
@@ -66,11 +48,11 @@ impl Session {
         })
     }
 
-    pub fn observe(&mut self, obs: &Obs, net: Option<&dyn Oracle>) -> Result<(), String> {
+    pub fn observe(&mut self, obs: &Obs) -> Result<(), String> {
         match *obs {
             Obs::Draw { player, code } => self.drew(player, code),
             Obs::Act { player, key } if player == self.seat => self.acted(key),
-            Obs::Act { player, key } => self.watched(player, key, net),
+            Obs::Act { player, key } => self.watched(player, key),
         }
     }
 
@@ -96,18 +78,13 @@ impl Session {
         Ok(())
     }
 
-    fn watched(&mut self, player: u8, key: u32, net: Option<&dyn Oracle>) -> Result<(), String> {
+    fn watched(&mut self, player: u8, key: u32) -> Result<(), String> {
         if !self.to_move(player) {
             return Err(format!("player {} is not to act", player));
         }
-        let ctx = &self.ctx;
-        let likelihood = |worlds: &[(State, Vec<Action>)]| match net {
-            Some(net) => read(net, ctx, worlds),
-            None => ways(worlds),
-        };
         self.s = self
             .opp
-            .update(&self.s, |a| obs_key(a) == key, likelihood)
+            .update(&self.s, |a| obs_key(a) == key, ways)
             .ok_or_else(|| format!("observation {} is unreachable from this state", key))?;
         Ok(())
     }
@@ -144,7 +121,6 @@ impl Session {
 mod tests {
     use super::*;
     use warchest::arena::{Done, Table};
-    use crate::search::Flat;
 
     fn draft() -> Draft {
         Draft {
@@ -156,42 +132,40 @@ mod tests {
 
     #[test]
     fn a_seat_is_told_nothing_private_and_follows_the_game() {
-        for net in [None, Some(&Flat as &dyn Oracle)] {
-            let brain = Brain::Random;
-            let mut table = Table::new();
-            table.start(1, &draft(), [0, 1], 8191).unwrap();
-            let mut seats = [
-                Session::new(&draft(), 0, 1).unwrap(),
-                Session::new(&draft(), 1, 2).unwrap(),
-            ];
-            let mut checked = 0;
-            while table.live() > 0 {
-                table.settle();
-                for bot in 0..2 {
-                    let request = table.request(bot);
-                    let mut done = Vec::new();
-                    for ask in request.go {
-                        for obs in &ask.obs {
-                            match *obs {
-                                Obs::Draw { player, code } => {
-                                    assert_eq!(code.is_some(), player == bot as u8, "seat {} saw a draw it should not", bot);
-                                }
-                                Obs::Act { player, key } => {
-                                    assert_ne!(player, bot as u8);
-                                    if let Some(action) = Action::decode(key) {
-                                        assert_eq!(obs_key(&action), key, "an observation carried more than was seen");
-                                    }
+        let brain = Brain::Random;
+        let mut table = Table::new();
+        table.start(1, &draft(), [0, 1], 8191).unwrap();
+        let mut seats = [
+            Session::new(&draft(), 0, 1).unwrap(),
+            Session::new(&draft(), 1, 2).unwrap(),
+        ];
+        let mut checked = 0;
+        while table.live() > 0 {
+            table.settle();
+            for bot in 0..2 {
+                let request = table.request(bot);
+                let mut done = Vec::new();
+                for ask in request.go {
+                    for obs in &ask.obs {
+                        match *obs {
+                            Obs::Draw { player, code } => {
+                                assert_eq!(code.is_some(), player == bot as u8, "seat {} saw a draw it should not", bot);
+                            }
+                            Obs::Act { player, key } => {
+                                assert_ne!(player, bot as u8);
+                                if let Some(action) = Action::decode(key) {
+                                    assert_eq!(obs_key(&action), key, "an observation carried more than was seen");
                                 }
                             }
-                            checked += 1;
-                            seats[bot].observe(obs, net).unwrap();
                         }
-                        done.push(Done { id: ask.id, action: seats[bot].decide(&brain).unwrap() });
+                        checked += 1;
+                        seats[bot].observe(obs).unwrap();
                     }
-                    table.accept(bot, done).unwrap();
+                    done.push(Done { id: ask.id, action: seats[bot].decide(&brain).unwrap() });
                 }
+                table.accept(bot, done).unwrap();
             }
-            assert!(checked > 100, "the game was too short to have tested anything");
         }
+        assert!(checked > 100, "the game was too short to have tested anything");
     }
 }
