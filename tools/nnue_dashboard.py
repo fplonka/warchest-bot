@@ -41,7 +41,7 @@ def progress(ax, rows, key, color):
         for held, dash in zip(sources, ("-", "--", ":", "-.")):
             pts = [(r["step"], r["kl"][s][key]) for r in rows if r["held"] == held and s in r["kl"]]
             if pts:
-                ax.plot(*zip(*pts), dash, color=color[student(s)], linewidth=2, label=f"{student(s)} {held}")
+                ax.plot(*zip(*pts), dash, marker="o", markersize=4, color=color[student(s)], linewidth=2, label=f"{student(s)} {held}")
     ax.set_yscale("log")
     ax.legend(frameon=False, fontsize=8)
 
