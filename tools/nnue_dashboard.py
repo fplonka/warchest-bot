@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +77,8 @@ def ladder(ax, ratings, color):
 def main():
     runs = ROOT / "runs"
     distill = sorted(runs.glob("*/progress.jsonl"))
+    for campaign in runs.glob("*-ladder"):
+        subprocess.run([sys.executable, ROOT / "tools/ladder.py", campaign, "json", "1028-teacher.s256"], check=True)
     ratings = sorted(runs.glob("*-ladder/ladder.json"))
     rows = [json.loads(line) for line in distill[-1].read_text().splitlines()] if distill else []
     rs = json.loads(ratings[-1].read_text()) if ratings else []
