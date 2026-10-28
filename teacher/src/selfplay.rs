@@ -9,7 +9,7 @@ use warchest::arena::{dealt, Obs};
 use engine::bot::{Brain, Session};
 use warchest::actions::obs_key;
 use warchest::rng::Rng;
-use engine::search::Query;
+use engine::search::{Answer, Oracle, Query, Search};
 use warchest::rules::resolve_chance;
 use warchest::state::{BLACK, WHITE};
 
@@ -151,6 +151,41 @@ pub fn warm(games: usize, seed: u64) -> Data {
             a.merge(b);
             a
         })
+}
+
+struct Sampled {
+    oracle: Arc<dyn Oracle>,
+    keep: u64,
+    kept: Mutex<Query>,
+}
+
+impl Oracle for Sampled {
+    fn eval(&self, q: &Query) -> Answer {
+        let picked: Vec<usize> = (0..q.len()).filter(|&i| digest(q.row(i).0) < self.keep).collect();
+        if !picked.is_empty() {
+            let mut kept = self.kept.lock();
+            picked.into_iter().for_each(|i| kept.push_row(q.row(i)));
+        }
+        self.oracle.eval(q)
+    }
+}
+
+fn digest(row: &[u8]) -> u64 {
+    row.chunks(8).fold(0x9E37_79B9_7F4A_7C15, |h, c| {
+        let x = c.iter().rev().fold(0u64, |x, &b| x << 8 | b as u64);
+        (h ^ x).wrapping_mul(0xFF51_AFD7_ED55_8CCD).rotate_left(29)
+    })
+}
+
+pub fn leaves(oracle: Arc<dyn Oracle>, sims: u32, keep: f64, games: usize, seed: u64) -> Query {
+    let sampled = Arc::new(Sampled { oracle, keep: (keep * u64::MAX as f64) as u64, kept: Mutex::new(Query::default()) });
+    let full = Brain::Search { search: Search::Full(sims), oracle: sampled.clone() };
+    let playout = Playout { full, fast: Brain::Greedy, p_full: 1.0 };
+    (0..games).into_par_iter().for_each(|i| {
+        play(&playout, &mut Rng::new(worker_seed(seed, i)), || true);
+    });
+    let kept = std::mem::take(&mut *sampled.kept.lock());
+    kept
 }
 
 pub struct Farm {

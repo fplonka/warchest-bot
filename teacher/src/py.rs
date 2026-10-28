@@ -135,6 +135,13 @@ fn nnue_features<'py>(
 }
 
 #[pyfunction]
+fn nnue_leaves(py: Python<'_>, weights: PathBuf, sims: u32, keep: f64, games: usize, seed: u64) -> PyResult<PyObject> {
+    let nnue: Arc<dyn Oracle> = Arc::new(Nnue::load(&weights).map_err(PyValueError::new_err)?);
+    let q = py.allow_threads(|| crate::selfplay::leaves(nnue, sims, keep, games, seed));
+    Ok((q.rows.into_pyarray_bound(py), q.desc.into_pyarray_bound(py), q.off.into_pyarray_bound(py)).into_py(py))
+}
+
+#[pyfunction]
 fn nnue_eval(weights: PathBuf, rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>) -> PyResult<(Vec<f32>, Vec<f32>)> {
     let answer = Nnue::load(&weights).map_err(PyValueError::new_err)?.eval(&Query { rows, desc, off });
     Ok((answer.value, answer.prior))
@@ -297,6 +304,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     m.add_function(wrap_pyfunction!(nnue_features, m)?)?;
     m.add_function(wrap_pyfunction!(nnue_eval, m)?)?;
+    m.add_function(wrap_pyfunction!(nnue_leaves, m)?)?;
     m.add_function(wrap_pyfunction!(card_features_table, m)?)?;
     m.add_function(wrap_pyfunction!(hex_location_flags, m)?)?;
     m.add_function(wrap_pyfunction!(sample_positions, m)?)?;
