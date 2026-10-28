@@ -148,19 +148,22 @@ fn evaluate(
 #[pyfunction]
 fn nnue_features(py: Python<'_>, rows: PyReadonlyArray1<u8>, desc: PyReadonlyArray1<u8>, off: PyReadonlyArray1<u32>) -> PyResult<PyObject> {
     let (rows, desc, off) = (rows.as_slice()?, desc.as_slice()?, off.as_slice()?);
-    let (mut feats, mut counts, mut moves, mut sizes, mut phases) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    for (row, span) in rows.chunks_exact(ROW_BYTES).zip(off.windows(2)) {
-        let row = row.try_into().unwrap();
-        phases.push(nnue::phase(row));
-        let f = nnue::features(row);
-        feats.extend_from_slice(&f);
-        counts.push(f.len() as u8);
-        for d in desc[span[0] as usize * ACT_BYTES..span[1] as usize * ACT_BYTES].chunks_exact(ACT_BYTES) {
-            let m = nnue::move_features(row, d);
-            moves.extend_from_slice(&m);
-            sizes.push(m.len() as u8);
+    let (feats, counts, moves, sizes, phases) = py.allow_threads(|| {
+        let (mut feats, mut counts, mut moves, mut sizes, mut phases) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (row, span) in rows.chunks_exact(ROW_BYTES).zip(off.windows(2)) {
+            let row = row.try_into().unwrap();
+            phases.push(nnue::phase(row));
+            let f = nnue::features(row);
+            feats.extend_from_slice(&f);
+            counts.push(f.len() as u8);
+            for d in desc[span[0] as usize * ACT_BYTES..span[1] as usize * ACT_BYTES].chunks_exact(ACT_BYTES) {
+                let m = nnue::move_features(row, d);
+                moves.extend_from_slice(&m);
+                sizes.push(m.len() as u8);
+            }
         }
-    }
+        (feats, counts, moves, sizes, phases)
+    });
     Ok((feats.into_pyarray_bound(py), counts.into_pyarray_bound(py), moves.into_pyarray_bound(py), sizes.into_pyarray_bound(py),
         phases.into_pyarray_bound(py))
         .into_py(py))
