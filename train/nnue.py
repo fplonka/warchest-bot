@@ -23,7 +23,7 @@ def acts(x):
 
 
 def bag(table, ids, scale):
-    return F.embedding_bag(ids, F.pad(weights(table, scale), (0, 0, 0, 1)), mode="sum", padding_idx=len(table))
+    return F.embedding_bag(ids[0], weights(table, scale), ids[1], mode="sum")
 
 
 def log_softmax(logit, parow, n):
@@ -34,9 +34,10 @@ def log_softmax(logit, parow, n):
 
 def inputs(rows, desc, parow, device):
     off = np.concatenate([[0], np.cumsum(np.bincount(parow, minlength=len(rows)))]).astype(np.uint32)
-    feats, moves, phases = warchest.nnue_features(rows.ravel(), desc.ravel(), off)
+    feats, counts, moves, sizes, phases = warchest.nnue_features(rows.ravel(), desc.ravel(), off)
     t = lambda a: torch.as_tensor(a.astype(np.int64)).to(device, non_blocking=True)
-    return t(feats.reshape(len(rows), -1)), t(moves.reshape(len(desc), -1)), t(parow), t(phases)
+    starts = lambda n: t(np.concatenate([[0], np.cumsum(n)[:-1]]))
+    return (t(feats), starts(counts)), (t(moves), starts(sizes)), t(parow), t(phases)
 
 
 class Student(nn.Module):
@@ -72,11 +73,11 @@ class Student(nn.Module):
         c1 = self.stacked(self.fc1, x0, 64.0, stack)
         x1 = torch.cat([acts(c1 * c1), acts(c1)], 1)
         out = self.stacked(self.out, torch.cat([x0, x1], 1), ONE, stack).squeeze(1)
-        psqt = bag(self.psqt, feats, OUT)[torch.arange(len(feats), device=feats.device), stack]
+        psqt = bag(self.psqt, feats, OUT)[torch.arange(len(h), device=h.device), stack]
         value = out + c0[:, L2 - 2] - c0[:, L2 - 1] + psqt
         z = F.linear(h, weights(self.proj.weight, ONE), weights(self.proj.bias, OUT))[parow] + bag(self.emb, moves, OUT)
         logit = acts(z) @ weights(self.head, ONE) + bag(self.move_bias, moves, OUT).squeeze(1)
-        return value, log_softmax(logit, parow, len(feats))
+        return value, log_softmax(logit, parow, len(h))
 
     def clip(self):
         with torch.no_grad():

@@ -11,7 +11,7 @@ use warchest::board::board;
 use crate::net::Net;
 use engine::online::{Game, Site};
 use engine::pbs::{expand_row, mirror_row, mover_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
-use engine::nnue::{self, Nnue, MAX_ACTIVE, MAX_MOVE};
+use engine::nnue::{self, Nnue};
 use engine::search::{mirror_desc, Oracle, Query, ACT_BYTES};
 use crate::selfplay::Data;
 use warchest::units::{write_card_features, CARD_FEATS, N_UNITS};
@@ -145,27 +145,25 @@ fn evaluate(
     Ok((answer.value.into_pyarray_bound(py), answer.prior.into_pyarray_bound(py)).into_py(py))
 }
 
-type Indices<'py> = Bound<'py, PyArray1<u16>>;
-
 #[pyfunction]
-fn nnue_features<'py>(
-    py: Python<'py>,
-    rows: PyReadonlyArray1<u8>,
-    desc: PyReadonlyArray1<u8>,
-    off: PyReadonlyArray1<u32>,
-) -> PyResult<(Indices<'py>, Indices<'py>, Bound<'py, PyArray1<u8>>)> {
+fn nnue_features(py: Python<'_>, rows: PyReadonlyArray1<u8>, desc: PyReadonlyArray1<u8>, off: PyReadonlyArray1<u32>) -> PyResult<PyObject> {
     let (rows, desc, off) = (rows.as_slice()?, desc.as_slice()?, off.as_slice()?);
-    let (mut feats, mut moves) = (Vec::with_capacity(rows.len() / ROW_BYTES * MAX_ACTIVE), Vec::with_capacity(desc.len() / ACT_BYTES * MAX_MOVE));
-    let mut phases = Vec::with_capacity(rows.len() / ROW_BYTES);
+    let (mut feats, mut counts, mut moves, mut sizes, mut phases) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (row, span) in rows.chunks_exact(ROW_BYTES).zip(off.windows(2)) {
         let row = row.try_into().unwrap();
         phases.push(nnue::phase(row));
-        feats.extend(nnue::features(row).iter().copied().chain(std::iter::repeat(nnue::FEATURES as u16)).take(MAX_ACTIVE));
+        let f = nnue::features(row);
+        feats.extend_from_slice(&f);
+        counts.push(f.len() as u8);
         for d in desc[span[0] as usize * ACT_BYTES..span[1] as usize * ACT_BYTES].chunks_exact(ACT_BYTES) {
-            moves.extend(nnue::move_features(row, d).iter().copied().chain(std::iter::repeat(nnue::MOVES as u16)).take(MAX_MOVE));
+            let m = nnue::move_features(row, d);
+            moves.extend_from_slice(&m);
+            sizes.push(m.len() as u8);
         }
     }
-    Ok((feats.into_pyarray_bound(py), moves.into_pyarray_bound(py), phases.into_pyarray_bound(py)))
+    Ok((feats.into_pyarray_bound(py), counts.into_pyarray_bound(py), moves.into_pyarray_bound(py), sizes.into_pyarray_bound(py),
+        phases.into_pyarray_bound(py))
+        .into_py(py))
 }
 
 #[pyfunction]

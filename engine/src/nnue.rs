@@ -13,8 +13,8 @@ use crate::pbs::{
 };
 use crate::search::{Answer, Oracle, Query, ACT_BYTES};
 
-pub const MAX_ACTIVE: usize = 128;
-pub const MAX_MOVE: usize = 8;
+const MAX_ACTIVE: usize = 128;
+const MAX_MOVE: usize = 8;
 pub const STACKS: usize = 8;
 pub const L2: usize = 32;
 const HEIGHT: usize = 5;
