@@ -81,7 +81,6 @@ def main():
     wins = label(teacher, buf, device)
     teacher_stats = lambda parts: losses(teacher, *gpu_batch.make_batch(parts, device), 1.0)[1]
     print(f"labelled in {time.time() - t0:.0f}s; teacher on held-out rows: {scores(teacher_stats, held)}", flush=True)
-    del teacher
     student = nnue.Student().to(device)
     opt = torch.optim.AdamW(student.parameters(), lr=args.lr, weight_decay=0.0)
     decay = torch.optim.lr_scheduler.LambdaLR(opt, lambda step: 1 - step / args.steps)
