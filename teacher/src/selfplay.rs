@@ -44,6 +44,7 @@ impl Default for KindCounts {
 pub struct Data {
     pub q: Query,
     pub target: Vec<f32>,
+    pub value: Vec<f32>,
     pub z: Vec<[f32; 4]>,
     pub games: usize,
     pub decisions: usize,
@@ -58,6 +59,7 @@ impl Data {
     pub fn merge(&mut self, o: Data) {
         self.q.append(&o.q);
         self.target.extend(o.target);
+        self.value.extend(o.value);
         self.z.extend(o.z);
         self.games += o.games;
         self.decisions += o.decisions;
@@ -122,6 +124,7 @@ pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option
             if full {
                 seats[p].query(&acts, &mut d.q);
                 d.target.extend_from_slice(&c.probs);
+                d.value.push(c.value);
             }
             seen.push((p, c.value, full));
         }
@@ -227,6 +230,7 @@ mod tests {
         assert_eq!(d.q.rows.len(), d.q.len() * ROW_BYTES);
         assert_eq!(d.q.desc.len(), d.target.len() * ACT_BYTES);
         assert_eq!(d.z.len(), d.q.len());
+        assert_eq!(d.value.len(), d.q.len());
         for i in 0..d.q.len() {
             let total: f32 = d.target[d.q.actions(i)].iter().sum();
             assert!((total - 1.0).abs() < 1e-4, "row {i} target sums to {total}");
