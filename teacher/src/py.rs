@@ -111,21 +111,25 @@ fn evaluate(rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>, device: usize) -> PyRes
     Ok((answer.value, answer.prior))
 }
 
+type Indices<'py> = Bound<'py, PyArray1<u16>>;
+
 #[pyfunction]
-fn nnue_features<'py>(py: Python<'py>, rows: Vec<u8>, desc: Vec<u8>, off: Vec<u32>) -> (Bound<'py, PyArray1<u16>>, Bound<'py, PyArray1<u16>>) {
-    let q = Query { rows, desc, off };
-    let (mut feats, mut moves) = (Vec::with_capacity(q.len() * MAX_ACTIVE), Vec::with_capacity(q.desc.len() / ACT_BYTES * MAX_MOVE));
-    for i in 0..q.len() {
-        let (row, desc) = q.row(i);
+fn nnue_features<'py>(
+    py: Python<'py>,
+    rows: PyReadonlyArray1<u8>,
+    desc: PyReadonlyArray1<u8>,
+    off: PyReadonlyArray1<u32>,
+) -> PyResult<(Indices<'py>, Indices<'py>)> {
+    let (rows, desc, off) = (rows.as_slice()?, desc.as_slice()?, off.as_slice()?);
+    let (mut feats, mut moves) = (Vec::with_capacity(rows.len() / ROW_BYTES * MAX_ACTIVE), Vec::with_capacity(desc.len() / ACT_BYTES * MAX_MOVE));
+    for (row, span) in rows.chunks_exact(ROW_BYTES).zip(off.windows(2)) {
         let row = row.try_into().unwrap();
-        let f = nnue::features(row);
-        feats.extend(f.iter().copied().chain(std::iter::repeat(nnue::FEATURES as u16)).take(MAX_ACTIVE));
-        for d in desc.chunks_exact(ACT_BYTES) {
-            let m = nnue::move_features(row, d);
-            moves.extend(m.iter().copied().chain(std::iter::repeat(nnue::MOVES as u16)).take(MAX_MOVE));
+        feats.extend(nnue::features(row).iter().copied().chain(std::iter::repeat(nnue::FEATURES as u16)).take(MAX_ACTIVE));
+        for d in desc[span[0] as usize * ACT_BYTES..span[1] as usize * ACT_BYTES].chunks_exact(ACT_BYTES) {
+            moves.extend(nnue::move_features(row, d).iter().copied().chain(std::iter::repeat(nnue::MOVES as u16)).take(MAX_MOVE));
         }
     }
-    (feats.into_pyarray_bound(py), moves.into_pyarray_bound(py))
+    Ok((feats.into_pyarray_bound(py), moves.into_pyarray_bound(py)))
 }
 
 #[pyfunction]
