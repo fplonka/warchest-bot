@@ -20,6 +20,7 @@ class Probe(nn.Module):
     def __init__(self, width, rank):
         super().__init__()
         self.ft = nn.EmbeddingBag(nnue.FEATURES, width, mode="sum")
+        nn.init.normal_(self.ft.weight, std=0.065)
         self.value = nn.Sequential(nn.ReLU(), nn.Linear(width, 512), nn.ReLU(), nn.Linear(512, 256), nn.ReLU(), nn.Linear(256, 1))
         self.proj = nn.Linear(width, rank)
         self.emb = nn.EmbeddingBag(nnue.MOVES, rank, mode="sum")
