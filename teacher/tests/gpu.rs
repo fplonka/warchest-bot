@@ -68,7 +68,7 @@ fn a_position_evaluates_the_same_alone_or_in_a_crowd() {
 fn a_farm_searches_on_the_card() {
     let gpu = Arc::new(Gpu::new(&[0], &Net::random(3)).unwrap());
     let search = |search| Brain::Search { search, oracle: gpu.clone() };
-    let playout = Playout { full: search(Search::Full(128)), fast: search(Search::Fast(16)), p_full: 0.5 };
+    let playout = Playout { full: search(Search::full(128)), fast: search(Search::fast(16)), p_full: 0.5 };
     let farm = Farm::new(1, 64, Arc::new(playout), 2000);
     let t0 = std::time::Instant::now();
     let d = farm.collect().expect("no game thread dies");

@@ -201,7 +201,7 @@ fn digest(row: &[u8]) -> u64 {
 
 pub fn leaves(oracle: Arc<dyn Oracle>, sims: u32, keep: f64, games: usize, seed: u64) -> Labelled {
     let recorder = Arc::new(Recorder::new(oracle, keep));
-    let full = Brain::Search { search: Search::Full(sims), oracle: recorder.clone() };
+    let full = Brain::Search { search: Search::full(sims), oracle: recorder.clone() };
     let playout = Playout { full, fast: Brain::Greedy, p_full: 1.0 };
     (0..games).into_par_iter().for_each(|i| {
         play(&playout, &mut Rng::new(worker_seed(seed, i)), || true);
@@ -275,7 +275,7 @@ mod tests {
 
     fn searcher(p_full: f64) -> Playout {
         let search = |search| Brain::Search { search, oracle: Arc::new(Flat) };
-        Playout { full: search(Search::Full(32)), fast: search(Search::Fast(16)), p_full }
+        Playout { full: search(Search::full(32)), fast: search(Search::fast(16)), p_full }
     }
 
     fn check(d: &Data) {

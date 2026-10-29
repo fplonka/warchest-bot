@@ -80,7 +80,7 @@ impl Farm {
         let net = net()?;
         let gpu = Arc::new(crate::cuda::Gpu::new(&devices, &net).map_err(PyRuntimeError::new_err)?);
         let search = |search| Brain::Search { search, oracle: gpu.clone() };
-        let playout = Playout { full: search(Search::Full(sims)), fast: search(Search::Fast(fast_sims)), p_full };
+        let playout = Playout { full: search(Search::full(sims)), fast: search(Search::fast(fast_sims)), p_full };
         let farm = crate::selfplay::Farm::new(seed, games, Arc::new(playout), chunk);
         Ok(Farm { gpu, farm, net })
     }
@@ -119,7 +119,7 @@ impl Generator {
         let gpu = Arc::new(crate::cuda::Gpu::new(&devices, &*net()?).map_err(PyRuntimeError::new_err)?);
         let recorder = Arc::new(Recorder::new(gpu, keep));
         let search = |search| Brain::Search { search, oracle: recorder.clone() };
-        let playout = Playout { full: search(Search::Full(sims)), fast: search(Search::Fast(fast_sims)), p_full };
+        let playout = Playout { full: search(Search::full(sims)), fast: search(Search::fast(fast_sims)), p_full };
         Ok(Generator { farm: crate::selfplay::Farm::new(seed, games, Arc::new(playout), chunk), recorder })
     }
 

@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
 
+use serde::Deserialize;
+
 use warchest::actions::Action;
 use warchest::board::{NONE, N_HEXES};
 use warchest::actions::{action_coin, obs_key};
@@ -14,7 +16,6 @@ pub const ACT_BYTES: usize = 6;
 pub const COIN_PICKS: Range<usize> = 1..3;
 pub const HEX_PICKS: Range<usize> = 3..ACT_BYTES;
 const C_VISIT: f32 = 50.0;
-const C_SCALE: f32 = 1.0;
 
 pub fn action_desc(a: &Action, s: &State, ctx: &Ctx) -> [u8; ACT_BYTES] {
     let p = s.to_act();
@@ -200,12 +201,13 @@ struct Tree {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     index: HashMap<u64, u32, BuildHasherDefault<Keyed>>,
+    scale: f32,
 }
 
 impl Tree {
-    fn new(sims: u32) -> Tree {
-        let nodes = 1 + sims as usize;
-        Tree { nodes: Vec::with_capacity(nodes), edges: Vec::new(), index: HashMap::with_capacity_and_hasher(nodes, Default::default()) }
+    fn new(search: Search) -> Tree {
+        let nodes = 1 + search.sims as usize;
+        Tree { nodes: Vec::with_capacity(nodes), edges: Vec::new(), index: HashMap::with_capacity_and_hasher(nodes, Default::default()), scale: search.scale }
     }
 
     fn node(&mut self, player: u8) -> u32 {
@@ -244,7 +246,7 @@ impl Tree {
 
     fn sigma(&self, node: u32) -> impl Fn(&Edge) -> f32 {
         let most = self.edges(node).iter().map(|e| e.n).max().unwrap_or(0) as f32;
-        let (q, scale) = (self.completed(node), (C_VISIT + most) * C_SCALE);
+        let (q, scale) = (self.completed(node), (C_VISIT + most) * self.scale);
         move |e| scale * (q(e) + 1.0) / 2.0
     }
 
@@ -373,21 +375,45 @@ pub struct Choice {
     pub value: f32,
 }
 
-#[derive(Clone, Copy)]
-pub enum Search {
-    Full(u32),
-    Fast(u32),
+#[derive(Clone, Copy, Deserialize)]
+pub struct Search {
+    pub sims: u32,
+    #[serde(default = "eight")]
+    pub considered: usize,
+    #[serde(default = "yes")]
+    pub noise: bool,
+    #[serde(default = "one")]
+    pub scale: f32,
+}
+
+fn eight() -> usize {
+    8
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+impl Search {
+    pub fn full(sims: u32) -> Search {
+        Search { sims, considered: 8, noise: true, scale: 1.0 }
+    }
+
+    pub fn fast(sims: u32) -> Search {
+        Search { sims, considered: 4, noise: false, scale: 1.0 }
+    }
 }
 
 pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> Choice {
     let (acts, mut batch) = (root.legal_actions(), Batch::default());
     batch.q.push(root, ctx, &acts);
     let answer = oracle.eval(&batch.q);
-    let (sims, considered, noisy) = match search {
-        Search::Full(sims) => (sims, 8, true),
-        Search::Fast(sims) => (sims, 4, false),
-    };
-    let mut tree = Tree::new(sims);
+    let Search { sims, considered, noise: noisy, .. } = search;
+    let mut tree = Tree::new(search);
     let node = tree.node(root.to_act());
     tree.expand(node, &acts, &answer.prior, answer.value[0]);
     let gumbel: Vec<f32> = acts.iter().map(|_| if noisy { rng.gumbel() } else { 0.0 }).collect();
@@ -428,7 +454,7 @@ mod tests {
     use warchest::rng::cumulative;
 
     fn root(prior: &[f32], value: f32, visits: &[(u32, f32)]) -> Tree {
-        let mut tree = Tree::new(0);
+        let mut tree = Tree::new(Search::full(0));
         let acts: Vec<Action> = (0..prior.len() as u8).map(|coin| Action::Pass { coin }).collect();
         let node = tree.node(0);
         tree.expand(node, &acts, prior, value);
@@ -498,7 +524,7 @@ mod tests {
                 let me = s.to_act();
                 let wins: Vec<bool> = acts.iter().map(|&a| s.apply(a).winner() == Some(me)).collect();
                 if acts.len() <= 8 && wins.iter().filter(|&&w| w).count() == 1 {
-                    let c = think(&Flat, Search::Full(32), &s, &ctx, &Belief::new(&s, 1 - me), &mut rng);
+                    let c = think(&Flat, Search::full(32), &s, &ctx, &Belief::new(&s, 1 - me), &mut rng);
                     assert!(wins[c.pick], "the search missed the win");
                     assert!(c.probs[c.pick] > 0.9, "the target gives the win only {}", c.probs[c.pick]);
                     assert!(c.value > 0.5, "the root value of a won position is only {}", c.value);

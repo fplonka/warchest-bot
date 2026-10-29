@@ -20,7 +20,7 @@ fn main() {
         None => Arc::new(Flat),
     };
     let search = |search| Brain::Search { search, oracle: oracle.clone() };
-    let playout = Playout { full: search(Search::Full(sims)), fast: search(Search::Fast(16)), p_full };
+    let playout = Playout { full: search(Search::full(sims)), fast: search(Search::fast(16)), p_full };
     let (mut h, mut decisions, mut rows, t) = (DefaultHasher::new(), 0, 0, Instant::now());
     for seed in 0..games {
         let d = play(&playout, &mut Rng::new(seed), || true).expect("an unstopped game ends");

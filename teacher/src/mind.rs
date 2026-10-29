@@ -4,13 +4,13 @@ use std::sync::Arc;
 use engine::bot::Brain;
 use engine::nnue::Nnue;
 use engine::packed::{Mind, Packed};
-use engine::search::{Answer, Oracle, Query, Search};
+use engine::search::{Answer, Oracle, Query};
 
 pub fn load(packed: &Packed, devices: &[usize]) -> Result<Brain, String> {
     let m: Mind = serde_json::from_value(packed.manifest.search.clone()).map_err(|e| e.to_string())?;
     match m.mind.as_str() {
         "greedy" => Ok(Brain::Greedy),
-        _ => Ok(Brain::Search { search: Search::Full(m.sims), oracle: oracle(packed, devices)? }),
+        _ => Ok(Brain::Search { search: m.search, oracle: oracle(packed, devices)? }),
     }
 }
 
