@@ -121,7 +121,7 @@ def main():
             d.step()
             s.clip()
             seen.update({k: v.detach() for k, v in g.items()})
-        if step % max(args.steps // 20, 1) == 0 or step == args.steps:
+        if step % max(args.steps // 5, 1) == 0 or step == args.steps:
             for name, s in zip(names, students):
                 pack(out, f"{name}-{step // 1000}k", s, args, t0)
         if step % every == 0:
