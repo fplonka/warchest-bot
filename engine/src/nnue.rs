@@ -30,7 +30,9 @@ const CONT: usize = FLAG + 4;
 const OWED: usize = CONT + CONT_CAP * PENDING_KINDS;
 const PAIR: usize = OWED + CONT_CAP * N_HEXES;
 const NEAR: usize = PAIR + (2 * N_UNITS) * (2 * N_UNITS) * 2;
-pub const FEATURES: usize = NEAR + 2 * N_UNITS * 3;
+const TARGETS: usize = 2 * N_UNITS + 1;
+const LEGAL: usize = NEAR + 2 * N_UNITS * 3;
+pub const FEATURES: usize = LEGAL + N_KINDS * (N_UNITS + 1) * TARGETS;
 
 const KIND_COIN: usize = 0;
 const KIND_HEX: usize = KIND_COIN + N_KINDS * (N_UNITS + 1);
@@ -86,7 +88,7 @@ fn present(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
     bits(mask(bytes.len(), |i| bytes[i] != NONE))
 }
 
-pub fn features(row: &Row) -> Active<MAX_ACTIVE> {
+pub fn features(row: &Row, desc: &[u8]) -> Active<MAX_ACTIVE> {
     let mut out = Active::new();
     let me = row[ROW_TO_ACT];
     let side = |p: u8| (p != me) as usize;
@@ -141,6 +143,14 @@ pub fn features(row: &Row) -> Active<MAX_ACTIVE> {
         for h in bits(u64::from_le_bytes(row[ROW_STACK_OWED + 8 * d..][..8].try_into().unwrap())) {
             out.push(OWED + d * N_HEXES + hex(h), true);
         }
+    }
+    for d in desc.chunks_exact(ACT_BYTES) {
+        let coin = if d[1] == NONE { N_UNITS } else { row[ROW_IDS + d[1] as usize] as usize };
+        let target = d[3..].iter().rev().find(|&&h| h != NONE).map_or(TARGETS - 1, |&h| {
+            let owner = row[ROW_HEX_OWNER + h as usize];
+            if owner == NONE { TARGETS - 1 } else { units[h as usize].1 }
+        });
+        out.push(LEGAL + (d[0] as usize * (N_UNITS + 1) + coin) * TARGETS + target, true);
     }
     out.set()
 }
@@ -385,7 +395,7 @@ impl Oracle for Nnue {
             let (row, desc) = q.row(i);
             let row = row.try_into().unwrap();
             let stack = self.stack(row);
-            let (h, psqt) = self.accumulate(&features(row));
+            let (h, psqt) = self.accumulate(&features(row, desc));
             answer.value.push((self.value(&h, stack, psqt[stack]) / 2.0).tanh());
             let z: Vec<i32> = (0..self.r).map(|k| self.proj_bias[k] + dot(&self.proj[k * half..][..half], &h)).collect();
             let (start, mut zm) = (answer.prior.len(), z.clone());
@@ -451,9 +461,11 @@ mod tests {
             let row: &Row = row.try_into().unwrap();
             let mut flipped = [0u8; ROW_BYTES];
             mirror_row(row, &mut flipped);
-            let feats = sorted(&features(row));
+            let mut mirrored = desc.to_vec();
+            mirrored.chunks_exact_mut(ACT_BYTES).for_each(mirror_desc);
+            let feats = sorted(&features(row, desc));
             assert!(feats.iter().all(|&f| (f as usize) < FEATURES) && feats.windows(2).all(|w| w[0] < w[1]), "{feats:?}");
-            assert_eq!(feats, sorted(&features(&flipped)));
+            assert_eq!(feats, sorted(&features(&flipped, &mirrored)));
             assert_eq!(phase(row), phase(&flipped));
             most = most.max(feats.len());
             for d in desc.chunks_exact(ACT_BYTES) {
@@ -463,7 +475,7 @@ mod tests {
                 assert_eq!(sorted(&move_features(row, d)), sorted(&move_features(&flipped, &m)));
             }
         }
-        assert!(most < 96, "{most} features");
+        assert!(most < 256, "{most} features");
     }
 
     #[test]
@@ -479,7 +491,7 @@ mod tests {
         let (q, nnue) = (positions(), net(64, 16, 0.5));
         for i in 0..q.len() {
             let row: &Row = q.row(i).0.try_into().unwrap();
-            let feats = features(row);
+            let feats = features(row, q.row(i).1);
             let (h, psqt) = nnue.accumulate(&feats);
             let mut bits = [0u64; WORDS];
             feats.iter().for_each(|&f| bits[f as usize / 64] |= 1 << (f % 64));

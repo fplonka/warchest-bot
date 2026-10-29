@@ -153,7 +153,7 @@ fn nnue_features(py: Python<'_>, rows: PyReadonlyArray1<u8>, desc: PyReadonlyArr
         for (row, span) in rows.chunks_exact(ROW_BYTES).zip(off.windows(2)) {
             let row = row.try_into().unwrap();
             phases.push(nnue::phase(row));
-            let f = nnue::features(row);
+            let f = nnue::features(row, &desc[span[0] as usize * ACT_BYTES..span[1] as usize * ACT_BYTES]);
             feats.extend_from_slice(&f);
             counts.push(f.len() as u8);
             for d in desc[span[0] as usize * ACT_BYTES..span[1] as usize * ACT_BYTES].chunks_exact(ACT_BYTES) {
