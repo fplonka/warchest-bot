@@ -16,7 +16,7 @@ use crate::search::{Answer, Oracle, Query, ACT_BYTES};
 const MAX_ACTIVE: usize = 512;
 const MAX_MOVE: usize = 8;
 pub const STACKS: usize = 8;
-pub const L2: usize = 32;
+pub const L2: usize = 64;
 const HEIGHT: usize = 5;
 const ZONES: usize = 7;
 const COINS: usize = 22;
