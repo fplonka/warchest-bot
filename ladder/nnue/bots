@@ -4,4 +4,3 @@ runs/1028-teacher/bots/s1024
 runs/1029-legal/bots/w2048r128v4-20k@*
 runs/1029-legal80k/bots/w2048r128v4-80k@*
 runs/1029-mid80k/bots/w2048r128v4-80k@*
-runs/1029-tune/bots/w2048r128v4-*k@*
