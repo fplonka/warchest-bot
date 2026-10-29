@@ -80,7 +80,7 @@ def pack(out, label, student, args, t0):
 
 def main():
     ap = argparse.ArgumentParser(description="Train NNUE students on labelled shards streamed from disk, and pack them as bots.")
-    ap.add_argument("--data", nargs="+", required=True, help="shard directories, drawn from equally and re-read every pass so they may still be growing")
+    ap.add_argument("--data", nargs="+", required=True, help="shard directories, re-read every pass so they may still be growing")
     ap.add_argument("--out", required=True)
     ap.add_argument("--students", nargs="+", required=True, help="width:rank:value-weight of each student, trained on the same batches")
     ap.add_argument("--steps", type=int, required=True)
