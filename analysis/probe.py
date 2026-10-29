@@ -24,20 +24,20 @@ class Probe(nn.Module):
         self.value = nn.Sequential(nn.ReLU(), nn.Linear(width, 512), nn.ReLU(), nn.Linear(512, 256), nn.ReLU(), nn.Linear(256, 1))
         self.proj = nn.Linear(width, rank)
         self.emb = nn.EmbeddingBag(nnue.MOVES, rank, mode="sum")
-        self.head = nn.Linear(rank, 1)
+        self.head = nn.Sequential(nn.ReLU(), nn.Linear(2 * rank, 512), nn.ReLU(), nn.Linear(512, 256), nn.ReLU(), nn.Linear(256, 1))
 
     def forward(self, feats, moves, parow, phases):
         h = self.ft(*feats)
-        logit = self.head(F.relu(self.proj(F.relu(h))[parow] + self.emb(*moves))).squeeze(1)
+        logit = self.head(torch.cat([self.proj(F.relu(h))[parow], self.emb(*moves)], 1)).squeeze(1)
         return self.value(h).squeeze(1), nnue.log_softmax(logit, parow, len(h))
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Train a float probe net with a deep value tail on the NNUE's own inputs, to see whether the inputs or the NNUE's shape limit its accuracy.")
+    ap = argparse.ArgumentParser(description="Train a float probe net with deep value and move tails on the NNUE's own inputs, to see whether the inputs or the NNUE's shape limit its accuracy.")
     ap.add_argument("--data", required=True)
     ap.add_argument("--steps", type=int, required=True)
     ap.add_argument("--width", type=int, default=2048)
-    ap.add_argument("--rank", type=int, default=128)
+    ap.add_argument("--rank", type=int, default=256)
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
     t0, rng = time.time(), np.random.default_rng(0)
