@@ -40,7 +40,7 @@ def holdout(directory):
     files = shards.listed(directory, True)
     if not files:
         return None
-    shard = shards.Shard(files[0])
+    shard = shards.Shard(files[-1])
     return shard.gather(np.arange(min(HELD, len(shard))))
 
 
