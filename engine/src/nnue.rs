@@ -13,8 +13,8 @@ use crate::pbs::{
 };
 use crate::search::{Answer, Oracle, Query, ACT_BYTES};
 
-const MAX_ACTIVE: usize = 128;
-const MAX_MOVE: usize = 14;
+const MAX_ACTIVE: usize = 512;
+const MAX_MOVE: usize = 8;
 pub const STACKS: usize = 8;
 pub const L2: usize = 32;
 const HEIGHT: usize = 5;
@@ -28,16 +28,15 @@ const COUNT: usize = MARKER + 2 * N_HEXES;
 const FLAG: usize = COUNT + 2 * 4 * COINS;
 const CONT: usize = FLAG + 4;
 const OWED: usize = CONT + CONT_CAP * PENDING_KINDS;
-pub const FEATURES: usize = OWED + CONT_CAP * N_HEXES;
+const PAIR: usize = OWED + CONT_CAP * N_HEXES;
+const NEAR: usize = PAIR + (2 * N_UNITS) * (2 * N_UNITS) * 2;
+pub const FEATURES: usize = NEAR + 2 * N_UNITS * 3;
 
 const KIND_COIN: usize = 0;
 const KIND_HEX: usize = KIND_COIN + N_KINDS * (N_UNITS + 1);
 const COIN_HEX: usize = KIND_HEX + N_KINDS * 3 * N_HEXES;
 const RECRUIT: usize = COIN_HEX + (N_UNITS + 1) * 3 * N_HEXES;
-const OCCUPANTS: usize = 2 * N_UNITS * HEIGHT + 1;
-const OCCUPANT: usize = RECRUIT + N_UNITS;
-const MARKED: usize = OCCUPANT + N_KINDS * 3 * OCCUPANTS;
-pub const MOVES: usize = MARKED + N_KINDS * 3 * 3;
+pub const MOVES: usize = RECRUIT + N_UNITS;
 
 pub struct Active<const N: usize> {
     at: [u16; N],
@@ -52,6 +51,20 @@ impl<const N: usize> Active<N> {
     fn push(&mut self, f: usize, on: bool) {
         self.at[self.len] = f as u16;
         self.len += on as usize;
+    }
+
+    fn set(mut self) -> Self {
+        let at = &mut self.at[..self.len];
+        at.sort_unstable();
+        let mut n = 0;
+        for i in 0..at.len() {
+            if n == 0 || at[i] != at[n - 1] {
+                at[n] = at[i];
+                n += 1;
+            }
+        }
+        self.len = n;
+        self
     }
 }
 
@@ -79,10 +92,24 @@ pub fn features(row: &Row) -> Active<MAX_ACTIVE> {
     let side = |p: u8| (p != me) as usize;
     let hex = orient(row);
     let unit = |p: usize, k: usize| row[ROW_IDS + p * NSLOT + k] as usize;
-    for h in present(&row[ROW_HEX_OWNER..][..N_HEXES]) {
+    let board = board();
+    let mut units = [(0usize, 0usize); N_HEXES];
+    let occupied = mask(N_HEXES, |h| row[ROW_HEX_OWNER + h] != NONE);
+    for h in bits(occupied) {
         let owner = row[ROW_HEX_OWNER + h];
         let u = unit(owner as usize, row[ROW_HEX_SLOT + h] as usize);
-        out.push(STACK + ((side(owner) * N_UNITS + u) * N_HEXES + hex(h)) * HEIGHT + row[ROW_HEX_HEIGHT + h] as usize - 1, true);
+        units[h] = (h, side(owner) * N_UNITS + u);
+        out.push(STACK + (units[h].1 * N_HEXES + hex(h)) * HEIGHT + row[ROW_HEX_HEIGHT + h] as usize - 1, true);
+    }
+    for a in bits(occupied) {
+        for b in bits(occupied & !(1 << a)) {
+            let d = board.dist[a][b] as usize;
+            out.push(PAIR + (units[a].1 * 2 * N_UNITS + units[b].1) * 2 + d - 1, d <= 2);
+        }
+        for &l in board.location_hexes.iter().filter(|&&l| board.dist[a][l as usize] == 1) {
+            let m = row[ROW_HEX_MARKER + l as usize];
+            out.push(NEAR + units[a].1 * 3 + if m == NONE { 2 } else { side(m) }, true);
+        }
     }
     let mut markers = [0u8; 2];
     for h in present(&row[ROW_HEX_MARKER..][..N_HEXES]) {
@@ -115,7 +142,7 @@ pub fn features(row: &Row) -> Active<MAX_ACTIVE> {
             out.push(OWED + d * N_HEXES + hex(h), true);
         }
     }
-    out
+    out.set()
 }
 
 pub fn move_features(row: &Row, desc: &[u8]) -> Active<MAX_MOVE> {
@@ -124,18 +151,9 @@ pub fn move_features(row: &Row, desc: &[u8]) -> Active<MAX_MOVE> {
     let unit = |t: u8| if t == NONE { N_UNITS } else { row[ROW_IDS + t as usize] as usize };
     let (kind, coin) = (desc[0] as usize, unit(desc[1]));
     out.push(KIND_COIN + kind * (N_UNITS + 1) + coin, true);
-    let side = |p: u8| if p == NONE { 2 } else { (p != row[ROW_TO_ACT]) as usize };
     for (slot, &h) in desc[3..].iter().enumerate().filter(|&(_, &h)| h != NONE) {
-        let (h, role) = (h as usize, kind * 3 + slot);
-        out.push(KIND_HEX + role * N_HEXES + hex(h), true);
-        out.push(COIN_HEX + (coin * 3 + slot) * N_HEXES + hex(h), true);
-        let owner = row[ROW_HEX_OWNER + h];
-        let occupant = match side(owner) {
-            2 => OCCUPANTS - 1,
-            s => (s * N_UNITS + unit(owner * NSLOT as u8 + row[ROW_HEX_SLOT + h])) * HEIGHT + row[ROW_HEX_HEIGHT + h] as usize - 1,
-        };
-        out.push(OCCUPANT + role * OCCUPANTS + occupant, true);
-        out.push(MARKED + role * 3 + side(row[ROW_HEX_MARKER + h]), true);
+        out.push(KIND_HEX + (kind * 3 + slot) * N_HEXES + hex(h as usize), true);
+        out.push(COIN_HEX + (coin * 3 + slot) * N_HEXES + hex(h as usize), true);
     }
     out.push(RECRUIT + unit(desc[2]), desc[2] != NONE);
     out
