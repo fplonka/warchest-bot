@@ -40,8 +40,8 @@ def holdout(directory):
     files = shards.listed(directory, True)
     if not files:
         return None
-    shard = shards.Shard(files[-1])
-    return shard.gather(np.arange(min(HELD, len(shard))))
+    return shards.concat([s.gather(np.sort(np.random.default_rng(0).choice(len(s), min(HELD // len(files), len(s)), replace=False)))
+                          for s in map(shards.Shard, files)])
 
 
 def sub(held, lo, hi):
