@@ -13,6 +13,7 @@ local_dir=${WARCHEST_BOX_LOCAL_DIR:-$here}
 ssh_opts=(-i "$key" -p "$port" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o LogLevel=ERROR)
 prelude="export PATH=/root/.cargo/bin:/usr/local/cuda/bin:\$PATH
 unset CONDA_PREFIX
+ulimit -c 0
 [ -f /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ] && export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
 mkdir -p $remote && cd $remote
 [ -f venv/bin/activate ] && source venv/bin/activate"
