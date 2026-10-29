@@ -153,7 +153,7 @@ pub fn sizes(l1: usize, r: usize) -> [usize; 14] {
 }
 
 const FT_ONE: f32 = 256.0;
-const FT_CLIP: f32 = 0.99;
+const FT_CLIP: f32 = 127.0;
 const ONE: f32 = 128.0;
 const OUT: f32 = ONE * ONE;
 
@@ -163,7 +163,7 @@ pub struct Nnue {
     r: usize,
     thresholds: [u8; STACKS - 1],
     ft: Vec<i16>,
-    ft_bias: Vec<i16>,
+    ft_bias: Vec<i32>,
     psqt: Vec<i32>,
     fc0: Vec<i8>,
     fc0_bias: Vec<i32>,
@@ -272,9 +272,9 @@ impl Nnue {
         })
     }
 
-    fn hidden(&self, acc: &[i16]) -> Vec<i8> {
+    fn hidden(&self, acc: &[i32]) -> Vec<i8> {
         let (a, b) = acc.split_at(self.l1 / 2);
-        a.iter().zip(b).map(|(&x, &y)| ((x.clamp(0, 255) as i32 * y.clamp(0, 255) as i32) >> 9) as i8).collect()
+        a.iter().zip(b).map(|(&x, &y)| ((x.clamp(0, 255) * y.clamp(0, 255)) >> 9) as i8).collect()
     }
 
     fn value(&self, h: &[i8], stack: usize, psqt: i32) -> f32 {
@@ -299,17 +299,17 @@ struct Accumulator {
     net: u64,
     used: u64,
     bits: Bits,
-    acc: Vec<i16>,
+    acc: Vec<i32>,
     psqt: [i32; STACKS],
 }
 
 impl Accumulator {
-    fn add(&mut self, net: &Nnue, f: usize, sign: i16) {
+    fn add(&mut self, net: &Nnue, f: usize, sign: i32) {
         for (x, &w) in self.acc.iter_mut().zip(&net.ft[f * net.l1..][..net.l1]) {
-            *x += sign * w;
+            *x += sign * w as i32;
         }
         for (p, &w) in self.psqt.iter_mut().zip(&net.psqt[f * STACKS..][..STACKS]) {
-            *p += sign as i32 * w;
+            *p += sign * w;
         }
     }
 

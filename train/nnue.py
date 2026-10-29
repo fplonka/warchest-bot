@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import warchest
 
 FEATURES, MOVES, STACKS, L2 = warchest.NNUE_FEATURES, warchest.NNUE_MOVES, warchest.NNUE_STACKS, warchest.NNUE_L2
-FT_ONE, FT_CLIP, ONE = 256.0, 0.99, 128.0
+FT_ONE, FT_CLIP, ONE = 256.0, 127.0, 128.0
 OUT = ONE * ONE
 
 
