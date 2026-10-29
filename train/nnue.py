@@ -55,7 +55,8 @@ class Student(nn.Module):
         self.out = nn.Linear(4 * L2, STACKS)
         self.proj = nn.Linear(half, r)
         self.emb = nn.Parameter(torch.randn(MOVES, r) * 0.1)
-        self.head = nn.Parameter(torch.randn(r) * r ** -0.5)
+        self.mid = nn.Linear(r, L2)
+        self.head = nn.Parameter(torch.randn(L2) * L2 ** -0.5)
         self.move_bias = nn.Parameter(torch.zeros(MOVES, 1))
         self.clip()
 
@@ -76,18 +77,19 @@ class Student(nn.Module):
         psqt = bag(self.psqt, feats, OUT)[torch.arange(len(h), device=h.device), stack]
         value = out + c0[:, L2 - 2] - c0[:, L2 - 1] + psqt
         z = F.linear(h, weights(self.proj.weight, ONE), weights(self.proj.bias, OUT))[parow] + bag(self.emb, moves, OUT)
-        logit = acts(z) @ weights(self.head, ONE) + bag(self.move_bias, moves, OUT).squeeze(1)
+        logit = acts(F.linear(acts(z), weights(self.mid.weight, ONE), weights(self.mid.bias, OUT))) @ weights(self.head, ONE) + bag(self.move_bias, moves, OUT).squeeze(1)
         return value, log_softmax(logit, parow, len(h))
 
     def clip(self):
         with torch.no_grad():
             for p, bound in ((self.ft, FT_CLIP), (self.ft_bias, FT_CLIP), (self.fc0.weight, 127 / ONE),
                              (self.fc1.weight, 127 / 64), (self.out.weight, 127 / ONE), (self.proj.weight, 127 / ONE),
-                             (self.head, 127 / ONE)):
+                             (self.mid.weight, 127 / ONE), (self.head, 127 / ONE)):
                 p.clamp_(-bound, bound)
 
     def flat(self):
         arrays = (self.ft, self.ft_bias, self.psqt, self.fc0.weight, self.fc0.bias, self.fc1.weight, self.fc1.bias,
-                  self.out.weight, self.out.bias, self.proj.weight, self.proj.bias, self.emb, self.head, self.move_bias)
+                  self.out.weight, self.out.bias, self.proj.weight, self.proj.bias, self.emb, self.mid.weight, self.mid.bias, self.head,
+                  self.move_bias)
         head = np.array([self.l1, self.r, *self.thresholds.tolist()], np.float32)
         return np.concatenate([head, *(a.detach().cpu().float().numpy().ravel() for a in arrays)])

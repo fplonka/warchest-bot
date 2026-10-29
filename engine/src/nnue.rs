@@ -175,9 +175,9 @@ pub fn phase(row: &Row) -> u8 {
     markers + lost
 }
 
-pub fn sizes(l1: usize, r: usize) -> [usize; 14] {
+pub fn sizes(l1: usize, r: usize) -> [usize; 16] {
     let half = l1 / 2;
-    [FEATURES * l1, l1, FEATURES * STACKS, STACKS * L2 * half, STACKS * L2, STACKS * L2 * 2 * L2, STACKS * L2, STACKS * 4 * L2, STACKS, r * half, r, MOVES * r, r, MOVES]
+    [FEATURES * l1, l1, FEATURES * STACKS, STACKS * L2 * half, STACKS * L2, STACKS * L2 * 2 * L2, STACKS * L2, STACKS * 4 * L2, STACKS, r * half, r, MOVES * r, L2 * r, L2, L2, MOVES]
 }
 
 const FT_ONE: f32 = 256.0;
@@ -202,6 +202,8 @@ pub struct Nnue {
     proj: Vec<i8>,
     proj_bias: Vec<i32>,
     emb: Vec<i32>,
+    mid: Vec<i8>,
+    mid_bias: Vec<i32>,
     head: Vec<i8>,
     move_bias: Vec<i32>,
 }
@@ -232,7 +234,7 @@ impl Nnue {
             return Err(format!("{} weights do not match an nnue of width {l1} and policy rank {r}", rest.len()));
         }
         let mut rest = rest;
-        let [ft, ft_bias, psqt, fc0, fc0_bias, fc1, fc1_bias, out, out_bias, proj, proj_bias, emb, head, move_bias] = sizes.map(|n| {
+        let [ft, ft_bias, psqt, fc0, fc0_bias, fc1, fc1_bias, out, out_bias, proj, proj_bias, emb, mid, mid_bias, head, move_bias] = sizes.map(|n| {
             let (a, b) = rest.split_at(n);
             rest = b;
             a
@@ -255,6 +257,8 @@ impl Nnue {
             proj: quantize(proj, ONE, 127.0 / ONE)?,
             proj_bias: quantize(proj_bias, OUT, wide)?,
             emb: quantize(emb, OUT, wide)?,
+            mid: quantize(mid, ONE, 127.0 / ONE)?,
+            mid_bias: quantize(mid_bias, OUT, wide)?,
             head: quantize(head, ONE, 127.0 / ONE)?,
             move_bias: quantize(move_bias, OUT, wide)?,
         })
@@ -398,14 +402,15 @@ impl Oracle for Nnue {
             let (h, psqt) = self.accumulate(&features(row, desc));
             answer.value.push((self.value(&h, stack, psqt[stack]) / 2.0).tanh());
             let z: Vec<i32> = (0..self.r).map(|k| self.proj_bias[k] + dot(&self.proj[k * half..][..half], &h)).collect();
-            let (start, mut zm) = (answer.prior.len(), z.clone());
+            let (start, mut zm, mut act) = (answer.prior.len(), z.clone(), vec![0i8; self.r]);
             for d in desc.chunks_exact(ACT_BYTES) {
                 let moves = move_features(row, d);
                 zm.copy_from_slice(&z);
                 for &f in moves.iter() {
                     zm.iter_mut().zip(&self.emb[f as usize * self.r..][..self.r]).for_each(|(a, &e)| *a += e);
                 }
-                let logit: i32 = zm.iter().zip(&self.head).map(|(&a, &w)| (a >> 7).clamp(0, 127) * w as i32).sum();
+                act.iter_mut().zip(&zm).for_each(|(a, &z)| *a = (z >> 7).clamp(0, 127) as i8);
+                let logit = dot(&self.head, &affine::<L2>(&self.mid, &self.mid_bias, &act).map(|m| (m >> 7).clamp(0, 127) as i8));
                 let bias: i32 = moves.iter().map(|&f| self.move_bias[f as usize]).sum();
                 answer.prior.push((logit + bias) as f32 / OUT);
             }
