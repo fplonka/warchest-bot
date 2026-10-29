@@ -67,9 +67,9 @@ class Stream:
 
     def load(self):
         while True:
-            files = [p for d in self.directories for p in listed(d, False)]
-            for i in self.order.permutation(len(files)):
-                self.loaded.put(Shard(files[i]))
+            lists = [files for files in (listed(d, False) for d in self.directories) if files]
+            for path in (path for group in zip(*(self.order.permutation(files) for files in lists)) for path in group):
+                self.loaded.put(Shard(path))
 
     def refresh(self):
         with self.lock:
