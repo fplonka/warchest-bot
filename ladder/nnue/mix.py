@@ -11,7 +11,7 @@ teacher, student, out = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
 for sims in map(int, sys.argv[4:]):
     for value, prior, label in ((teacher, student, "tv-sp"), (student, teacher, "sv-tp")):
         bot = out / f"{label}@{sims}"
-        shutil.copytree(student, bot, dirs_exist_ok=True)
+        shutil.copytree(student, bot, dirs_exist_ok=True, ignore=shutil.ignore_patterns("student.pt"))
         shutil.copy2(export_weights.BOT, bot / "bot")
         manifest = json.loads((bot / "bot.json").read_text())
         manifest.update(name=f"{out.parent.name}.{label}@{sims}", binary=export_weights.digest(bot / "bot"),

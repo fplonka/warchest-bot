@@ -6,7 +6,7 @@ from pathlib import Path
 bot = Path(sys.argv[1])
 for sims in map(int, sys.argv[2:]):
     copy = bot.with_name(f"{bot.name}@{sims}")
-    shutil.copytree(bot, copy, dirs_exist_ok=True)
+    shutil.copytree(bot, copy, dirs_exist_ok=True, ignore=shutil.ignore_patterns("student.pt"))
     manifest = json.loads((copy / "bot.json").read_text())
     manifest["name"] = f"{manifest['name']}@{sims}"
     manifest["search"]["sims"] = sims
