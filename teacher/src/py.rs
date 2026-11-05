@@ -297,9 +297,10 @@ fn opening(white: Vec<u16>, black: Vec<u16>, first: u8) -> PyResult<Vec<u8>> {
 
 #[pyfunction]
 fn replay_snapshots(py: Python<'_>, snapshots: &str, log: &str) -> PyResult<PyObject> {
-    let (start, decisions) = engine::online::decisions(snapshots, log).map_err(PyValueError::new_err)?;
+    let (draft, decisions) = engine::online::decisions(snapshots, log).map_err(PyValueError::new_err)?;
+    let start = draft.state().map_err(PyValueError::new_err)?;
     let (ctx, mut q, mut chosen, mut mover) = (Ctx::new(&start), Query::default(), Vec::new(), Vec::new());
-    for (s, a) in decisions {
+    for (s, a) in decisions.into_iter().filter(|(s, _)| !s.is_chance()) {
         let acts = s.legal_actions();
         if acts.len() > 1 {
             q.push(&s, &ctx, &acts);
@@ -340,6 +341,31 @@ impl Player {
         let ask = request.go.into_iter().next().ok_or_else(|| PyValueError::new_err("the request asks nothing"))?;
         let brain = engine::bot::Brain::Search { search: engine::search::Search { sims, ..self.search }, oracle: self.oracle.clone() };
         py.allow_threads(|| engine::bot::answer(ask, &self.sessions, &brain, &self.opponent)).map(|d| d.action).map_err(PyRuntimeError::new_err)
+    }
+
+    #[pyo3(signature = (snapshots, log, seat, human=None))]
+    fn trace(&self, py: Python<'_>, snapshots: &str, log: &str, seat: u8, human: Option<(f64, f64)>) -> PyResult<Vec<f64>> {
+        use engine::bot::{Human, Opponent, Session};
+        use warchest::arena::Obs;
+        let opponent = human.map_or(Opponent::Counted, |(temperature, epsilon)| Opponent::Human(Human { temperature, epsilon }, self.oracle.clone()));
+        py.allow_threads(|| {
+            let (draft, steps) = engine::online::decisions(snapshots, log)?;
+            let mut session = Session::new(&draft, seat, 0, opponent)?;
+            let mut out = Vec::new();
+            for (s, a) in steps {
+                let player = s.to_act();
+                if !s.is_chance() && player != seat {
+                    out.push(session.belief(&s));
+                }
+                session.observe(&match (s.is_chance(), player == seat) {
+                    (true, mine) => Obs::Draw { player, code: mine.then(|| a.encode()) },
+                    (false, true) => Obs::Act { player, key: a.encode() },
+                    (false, false) => Obs::Act { player, key: warchest::actions::obs_key(&a) },
+                })?;
+            }
+            Ok(out)
+        })
+        .map_err(|e: String| PyValueError::new_err(e))
     }
 
     fn values(&self, py: Python<'_>, drafts: Vec<(Vec<u16>, Vec<u16>, u8)>, deals: u64) -> PyResult<Vec<f64>> {

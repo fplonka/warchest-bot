@@ -148,6 +148,10 @@ impl Session {
         Ok(acts[c.pick].encode())
     }
 
+    pub fn belief(&self, truth: &State) -> f64 {
+        self.opp.weight(truth)
+    }
+
     pub fn query(&self, acts: &[Action], q: &mut Query) {
         q.push(&self.s, &self.ctx, acts);
     }
