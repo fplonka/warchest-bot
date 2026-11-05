@@ -203,32 +203,21 @@ impl State {
             self.start_round_draws();
         }
     }
-    fn queue_wp_post(&mut self, hex: usize) {
-        if !self.wp_trigger_ready(hex) {
+    fn queue_wp_post(&mut self, unit: u8, owner: u8) {
+        if !self.wp_trigger_ready(unit) {
             return;
         }
-        if def(self.hex_type[hex]).warrior_priest_v2 {
+        if def(unit).warrior_priest_v2 {
             self.wp_v2_triggered = true;
         }
-        let p = self.hex_owner[hex];
         self.push_cont(Cont::WarriorPriestDraw {
-            player: p,
+            player: owner,
             rg_hex: NONE,
         });
     }
 
-    fn wp_trigger_ready(&self, hex: usize) -> bool {
-        if self.hex_type[hex] == NONE {
-            return false;
-        }
-        let d = def(self.hex_type[hex]);
-        if !d.warrior_priest {
-            return false;
-        }
-        if self.wp_v2_triggered {
-            return false;
-        }
-        true
+    fn wp_trigger_ready(&self, unit: u8) -> bool {
+        unit != NONE && def(unit).warrior_priest && !self.wp_v2_triggered
     }
 
     fn do_move(&mut self, from: usize, to: usize) {
@@ -240,23 +229,23 @@ impl State {
         let p = self.hex_owner[hex];
         self.place_marker(hex, p);
         self.queue_maneuver_post(hex, false, false);
-        self.queue_wp_post(hex);
+        self.queue_wp_post(self.hex_type[hex], p);
     }
 
     fn do_attack(&mut self, from: usize, target: usize) {
+        let (attacker, p) = (self.hex_type[from], self.hex_owner[from]);
         self.resolve_attack(from, target);
         if self.interrupt {
-            if self.wp_trigger_ready(from) {
+            if self.wp_trigger_ready(attacker) {
                 if let Cont::RoyalGuardChoice { rg_hex, .. } = self.pending {
-                    if def(self.hex_type[from]).warrior_priest_v2 {
+                    if def(attacker).warrior_priest_v2 {
                         self.wp_v2_triggered = true;
                     }
-                    let p = self.hex_owner[from];
                     self.set_pending(Cont::WarriorPriestDraw { player: p, rg_hex });
                 }
             }
         } else {
-            self.queue_wp_post(from);
+            self.queue_wp_post(attacker, p);
         }
     }
     fn adj_empty(&self, from: usize) -> impl Iterator<Item = u8> + '_ {

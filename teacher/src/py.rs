@@ -295,6 +295,27 @@ fn opening(white: Vec<u16>, black: Vec<u16>, first: u8) -> PyResult<Vec<u8>> {
     Ok(mover)
 }
 
+#[pyfunction]
+fn replay_snapshots(py: Python<'_>, snapshots: &str, log: &str) -> PyResult<PyObject> {
+    let (start, decisions) = engine::online::decisions(snapshots, log).map_err(PyValueError::new_err)?;
+    let (ctx, mut q, mut chosen, mut mover) = (Ctx::new(&start), Query::default(), Vec::new(), Vec::new());
+    for (s, a) in decisions {
+        let acts = s.legal_actions();
+        if acts.len() > 1 {
+            q.push(&s, &ctx, &acts);
+            chosen.push(acts.iter().position(|&b| b == a).expect("a replayed move is legal") as u32);
+            mover.push(s.to_act());
+        }
+    }
+    let out = PyDict::new_bound(py);
+    out.set_item("rows", q.rows.into_pyarray_bound(py))?;
+    out.set_item("desc", q.desc.into_pyarray_bound(py))?;
+    out.set_item("off", q.off.into_pyarray_bound(py))?;
+    out.set_item("chosen", chosen.into_pyarray_bound(py))?;
+    out.set_item("mover", mover.into_pyarray_bound(py))?;
+    Ok(out.into())
+}
+
 #[pyclass(name = "Game")]
 struct Online(Game);
 
@@ -363,6 +384,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(expand_rows, m)?)?;
     m.add_function(wrap_pyfunction!(expand_rows_cuda, m)?)?;
     m.add_function(wrap_pyfunction!(opening, m)?)?;
+    m.add_function(wrap_pyfunction!(replay_snapshots, m)?)?;
     m.add_class::<Online>()?;
     m.add("PUBFEAT", PUBFEAT)?;
     m.add("HORIZONS", crate::selfplay::HORIZONS.to_vec())?;
