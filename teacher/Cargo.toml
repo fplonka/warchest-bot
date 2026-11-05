@@ -20,13 +20,12 @@ serde_json.workspace = true
 parking_lot = "0.12"
 cudarc = { version = "0.17", optional = true, default-features = false, features = ["cuda-version-from-build-system", "dynamic-loading", "driver", "nvrtc", "f16"] }
 half = { version = "2", optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-metal = { version = "0.3", optional = true }
+objc2-foundation = { version = "0.3", optional = true }
 
 [features]
 default = []
 python = ["pyo3", "numpy"]
 gpu = ["dep:cudarc", "dep:half"]
-
-[[test]]
-name = "gpu"
-path = "tests/gpu.rs"
-required-features = ["gpu"]
+metal = ["dep:objc2", "dep:objc2-metal", "dep:objc2-foundation", "dep:half"]

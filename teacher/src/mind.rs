@@ -6,6 +6,8 @@ use engine::nnue::Nnue;
 use engine::packed::{Mind, Packed};
 use engine::search::{Answer, Oracle, Query};
 
+use crate::net::Net;
+
 pub fn load(packed: &Packed, devices: &[usize]) -> Result<Brain, String> {
     let m: Mind = serde_json::from_value(packed.manifest.search.clone()).map_err(|e| e.to_string())?;
     match m.mind.as_str() {
@@ -19,7 +21,10 @@ fn oracle(packed: &Packed, devices: &[usize]) -> Result<Arc<dyn Oracle>, String>
     let part = |key: &str| oracle(&Packed::load(Path::new(search[key].as_str().ok_or(format!("a mix needs a {key} bot"))?))?, devices);
     match search["mind"].as_str() {
         Some("nnue") => Ok(Arc::new(Nnue::load(&packed.dir.join(&packed.manifest.weights))?)),
-        Some("search") => gpu(&packed.dir.join(&packed.manifest.weights), devices),
+        Some("search") => {
+            let weights = packed.dir.join(&packed.manifest.weights);
+            accelerator(&Net::load_bin(weights.to_str().ok_or("invalid weights path")?).map_err(|e| format!("{}: {e}", weights.display()))?, devices)
+        }
         Some("mix") => Ok(Arc::new(Mix { value: part("value")?, prior: part("prior")? })),
         other => Err(format!("unknown mind {other:?}")),
     }
@@ -36,13 +41,17 @@ impl Oracle for Mix {
     }
 }
 
-#[cfg(feature = "gpu")]
-fn gpu(weights: &Path, devices: &[usize]) -> Result<Arc<dyn Oracle>, String> {
-    let net = crate::net::Net::load_bin(weights.to_str().ok_or("invalid weights path")?).map_err(|e| format!("{}: {e}", weights.display()))?;
-    Ok(Arc::new(crate::cuda::Gpu::new(devices, &net)?))
+#[cfg(feature = "metal")]
+pub fn accelerator(net: &Net, _: &[usize]) -> Result<Arc<dyn Oracle>, String> {
+    Ok(Arc::new(crate::metal::Metal::new(net)?))
 }
 
-#[cfg(not(feature = "gpu"))]
-fn gpu(weights: &Path, _: &[usize]) -> Result<Arc<dyn Oracle>, String> {
-    Err(format!("{} needs a bot built with the gpu feature", weights.display()))
+#[cfg(all(feature = "gpu", not(feature = "metal")))]
+pub fn accelerator(net: &Net, devices: &[usize]) -> Result<Arc<dyn Oracle>, String> {
+    Ok(Arc::new(crate::cuda::Gpu::new(devices, net)?))
+}
+
+#[cfg(not(any(feature = "gpu", feature = "metal")))]
+pub fn accelerator(_: &Net, _: &[usize]) -> Result<Arc<dyn Oracle>, String> {
+    Err("this bot was built without a gpu backend".into())
 }

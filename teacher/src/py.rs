@@ -18,7 +18,7 @@ use warchest::units::{write_card_features, CARD_FEATS, N_UNITS};
 
 static NET: LazyLock<RwLock<Option<Arc<Net>>>> = LazyLock::new(|| RwLock::new(None));
 
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "metal"))]
 fn net() -> PyResult<Arc<Net>> {
     NET.read().clone().ok_or_else(|| PyValueError::new_err("no weights pushed"))
 }
@@ -130,7 +130,7 @@ impl Generator {
     }
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "metal"))]
 #[pyfunction]
 fn evaluate(
     py: Python<'_>,
@@ -139,7 +139,7 @@ fn evaluate(
     off: PyReadonlyArray1<u32>,
     device: usize,
 ) -> PyResult<PyObject> {
-    let gpu = crate::cuda::Gpu::new(&[device], &*net()?).map_err(PyRuntimeError::new_err)?;
+    let gpu = crate::mind::accelerator(&*net()?, &[device]).map_err(PyRuntimeError::new_err)?;
     let q = Query { rows: rows.as_slice()?.to_vec(), desc: desc.as_slice()?.to_vec(), off: off.as_slice()?.to_vec() };
     let answer = py.allow_threads(|| gpu.eval(&q));
     Ok((answer.value.into_pyarray_bound(py), answer.prior.into_pyarray_bound(py)).into_py(py))
@@ -348,8 +348,9 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     {
         m.add_class::<Farm>()?;
         m.add_class::<Generator>()?;
-        m.add_function(wrap_pyfunction!(evaluate, m)?)?;
     }
+    #[cfg(any(feature = "gpu", feature = "metal"))]
+    m.add_function(wrap_pyfunction!(evaluate, m)?)?;
     m.add_function(wrap_pyfunction!(nnue_features, m)?)?;
     m.add_function(wrap_pyfunction!(nnue_eval, m)?)?;
     m.add_function(wrap_pyfunction!(nnue_leaves, m)?)?;

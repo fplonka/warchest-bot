@@ -7,7 +7,7 @@ use serde::Deserialize;
 use warchest::actions::Action;
 use warchest::board::{NONE, N_HEXES};
 use warchest::actions::{action_coin, obs_key};
-use crate::pbs::{pack_row, Belief, Ctx, NSLOT, NTYPE, ROW_BYTES};
+use crate::pbs::{mirror_row, pack_row, Belief, Ctx, NSLOT, NTYPE, ROW_BYTES, ROW_TO_ACT};
 use warchest::rng::Rng;
 use warchest::rules::resolve_chance;
 use warchest::state::{mirror_hex, State, Z_FACEDOWN, Z_HAND, Z_INFLIGHT};
@@ -98,6 +98,32 @@ impl Query {
 
     pub fn actions(&self, i: usize) -> Range<usize> {
         self.off[i] as usize..self.off[i + 1] as usize
+    }
+
+    pub fn tiles(&self, rows: usize, acts: usize) -> Vec<Range<usize>> {
+        let (n, mut tiles) = (self.len(), Vec::new());
+        let mut r0 = 0;
+        while r0 < n {
+            let mut r1 = r0 + 1;
+            while r1 < n && r1 - r0 < rows && (self.off[r1 + 1] - self.off[r0]) as usize <= acts {
+                r1 += 1;
+            }
+            assert!((self.off[r1] - self.off[r0]) as usize <= acts, "one position offers more moves than a tile holds");
+            tiles.push(r0..r1);
+            r0 = r1;
+        }
+        tiles
+    }
+
+    pub fn face_movers(&mut self) {
+        for r in 0..self.len() {
+            let (at, acts) = (r * ROW_BYTES..(r + 1) * ROW_BYTES, self.actions(r));
+            if self.rows[at.start + ROW_TO_ACT] == 1 {
+                let src = <[u8; ROW_BYTES]>::try_from(&self.rows[at.clone()]).expect("a row is ROW_BYTES long");
+                mirror_row(&src, &mut self.rows[at]);
+                self.desc[acts.start * ACT_BYTES..acts.end * ACT_BYTES].chunks_exact_mut(ACT_BYTES).for_each(mirror_desc);
+            }
+        }
     }
 }
 

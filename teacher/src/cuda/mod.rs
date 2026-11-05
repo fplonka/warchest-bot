@@ -15,12 +15,12 @@ use warchest::board::{board, N_HEXES};
 use crate::memo::Memo;
 use crate::net::{Layout, Lin, Net, D, FFN, HEADS, STATE, TOKENS};
 use engine::pbs::{
-    mirror_row, HEX_BLOCK, HEX_CH, HEX_FACTS, LOOSE, MAX_COINS, NSLOT, NTYPE, OFF_CARDS, OFF_LOOSE, OFF_PILES,
+    HEX_BLOCK, HEX_CH, HEX_FACTS, LOOSE, MAX_COINS, NSLOT, NTYPE, OFF_CARDS, OFF_LOOSE, OFF_PILES,
     PILE_COUNTS, PLAYER_SCALARS, PUBFEAT, ROW_BAG_SIZE, ROW_BYTES, ROW_FD_SIZE, ROW_HAND_SIZE, ROW_HEX_HEIGHT,
     ROW_HEX_MARKER, ROW_HEX_OWNER, ROW_HEX_SLOT, ROW_IDS, ROW_INITIATIVE, ROW_INIT_MOVED, ROW_PILES, ROW_STACK_KIND,
     ROW_STACK_OWED, ROW_TO_ACT, ROW_WP,
 };
-use engine::search::{mirror_desc, Answer, Oracle, Query, ACT_BYTES, COIN_PICKS, HEX_PICKS};
+use engine::search::{Answer, Oracle, Query, ACT_BYTES, COIN_PICKS, HEX_PICKS};
 use warchest::state::{CONT_CAP, PENDING_KINDS};
 use warchest::units::{write_card_features, CARD_FEATS, N_UNITS};
 
@@ -303,17 +303,10 @@ impl Card {
         self.stream.context().bind_to_thread().map_err(err)?;
         let n = q.len();
         let (mut value, mut prior) = (Vec::with_capacity(n), Vec::with_capacity(q.off[n] as usize));
-        let mut r0 = 0;
-        while r0 < n {
-            let mut r1 = r0 + 1;
-            while r1 < n && r1 - r0 < TILE && (q.off[r1 + 1] - q.off[r0]) as usize <= ACT_TILE {
-                r1 += 1;
-            }
-            assert!((q.off[r1] - q.off[r0]) as usize <= ACT_TILE, "one position offers more moves than a tile holds");
-            let out = self.tile(q, r0, r1)?;
-            value.extend_from_slice(&out[..r1 - r0]);
-            prior.extend_from_slice(&out[r1 - r0..]);
-            r0 = r1;
+        for t in q.tiles(TILE, ACT_TILE) {
+            let out = self.tile(q, t.start, t.end)?;
+            value.extend_from_slice(&out[..t.len()]);
+            prior.extend_from_slice(&out[t.len()..]);
         }
         Ok((value, prior))
     }
@@ -629,21 +622,10 @@ impl Gpu {
     }
 }
 
-fn face_movers(q: &mut Query) {
-    for r in 0..q.len() {
-        let (at, acts) = (r * ROW_BYTES..(r + 1) * ROW_BYTES, q.actions(r));
-        if q.rows[at.start + ROW_TO_ACT] == 1 {
-            let src = <[u8; ROW_BYTES]>::try_from(&q.rows[at.clone()]).expect("a row is ROW_BYTES long");
-            mirror_row(&src, &mut q.rows[at]);
-            q.desc[acts.start * ACT_BYTES..acts.end * ACT_BYTES].chunks_exact_mut(ACT_BYTES).for_each(mirror_desc);
-        }
-    }
-}
-
 impl Oracle for Gpu {
     fn eval(&self, q: &Query) -> Answer {
         self.memo.eval(q, |mut q| {
-            face_movers(&mut q);
+            q.face_movers();
             let (back, answer) = mpsc::channel();
             self.queue.push((q, back));
             answer.recv().expect("a gpu lane failed; its driver printed why")

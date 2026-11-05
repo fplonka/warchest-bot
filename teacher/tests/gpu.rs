@@ -1,15 +1,11 @@
-#![cfg(feature = "gpu")]
+#![cfg(any(feature = "gpu", feature = "metal"))]
 
-use std::sync::Arc;
-
-use engine::bot::Brain;
-use teacher::cuda::Gpu;
-use teacher::net::Net;
 use engine::pbs::Ctx;
-use warchest::rng::Rng;
-use engine::search::{Oracle, Query, Search};
-use teacher::selfplay::{Farm, Playout};
+use engine::search::Query;
+use teacher::mind::accelerator;
+use teacher::net::Net;
 use warchest::arena::game;
+use warchest::rng::Rng;
 
 fn positions(games: u64) -> Query {
     let mut q = Query::default();
@@ -34,7 +30,7 @@ fn positions(games: u64) -> Query {
 #[test]
 fn priors_are_distributions_and_values_are_bounded() {
     let q = positions(40);
-    let a = Gpu::new(&[0], &Net::random(7)).unwrap().eval(&q);
+    let a = accelerator(&Net::random(7), &[0]).unwrap().eval(&q);
     assert_eq!(a.value.len(), q.len());
     assert_eq!(a.prior.len(), q.off[q.len()] as usize);
     assert!(a.value.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
@@ -50,22 +46,28 @@ fn priors_are_distributions_and_values_are_bounded() {
 fn a_position_evaluates_the_same_alone_or_in_a_crowd() {
     let q = positions(60);
     let net = Net::random(11);
-    let crowd = Gpu::new(&[0], &net).unwrap().eval(&q);
-    let gpu = Gpu::new(&[0], &net).unwrap();
+    let crowd = accelerator(&net, &[0]).unwrap().eval(&q);
+    let gpu = accelerator(&net, &[0]).unwrap();
     for i in (0..q.len()).step_by(97) {
         let mut one = Query::default();
         one.push_row(q.row(i));
         let r = q.actions(i);
         let alone = gpu.eval(&one);
-        assert!((alone.value[0] - crowd.value[i]).abs() < 1e-4, "row {i} value");
+        assert!((alone.value[0] - crowd.value[i]).abs() < 1e-4, "row {i} value {} vs {}", alone.value[0], crowd.value[i]);
         for (x, y) in alone.prior.iter().zip(&crowd.prior[r]) {
             assert!((x - y).abs() < 1e-4, "row {i} prior {x} vs {y}");
         }
     }
 }
 
+#[cfg(feature = "gpu")]
 #[test]
 fn a_farm_searches_on_the_card() {
+    use engine::bot::Brain;
+    use engine::search::Search;
+    use std::sync::Arc;
+    use teacher::cuda::Gpu;
+    use teacher::selfplay::{Farm, Playout};
     let gpu = Arc::new(Gpu::new(&[0], &Net::random(3)).unwrap());
     let search = |search| Brain::Search { search, oracle: gpu.clone() };
     let playout = Playout { full: search(Search::full(128)), fast: search(Search::fast(16)), p_full: 0.5 };
