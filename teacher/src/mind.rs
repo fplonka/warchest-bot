@@ -1,19 +1,21 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use engine::bot::Brain;
+use engine::bot::{Brain, Opponent};
 use engine::nnue::Nnue;
 use engine::packed::{Mind, Packed};
 use engine::search::{Answer, Oracle, Query};
 
 use crate::net::Net;
 
-pub fn load(packed: &Packed, devices: &[usize]) -> Result<Brain, String> {
+pub fn load(packed: &Packed, devices: &[usize]) -> Result<(Brain, Opponent), String> {
     let m: Mind = serde_json::from_value(packed.manifest.search.clone()).map_err(|e| e.to_string())?;
-    match m.mind.as_str() {
-        "greedy" => Ok(Brain::Greedy),
-        _ => Ok(Brain::Search { search: m.search, oracle: oracle(packed, devices)? }),
+    if m.mind == "greedy" {
+        return Ok((Brain::Greedy, Opponent::Counted));
     }
+    let oracle = oracle(packed, devices)?;
+    let opponent = m.human.map_or(Opponent::Counted, |h| Opponent::Human(h, oracle.clone()));
+    Ok((Brain::Search { search: m.search, oracle }, opponent))
 }
 
 fn oracle(packed: &Packed, devices: &[usize]) -> Result<Arc<dyn Oracle>, String> {

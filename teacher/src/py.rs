@@ -316,6 +316,55 @@ fn replay_snapshots(py: Python<'_>, snapshots: &str, log: &str) -> PyResult<PyOb
     Ok(out.into())
 }
 
+#[pyclass]
+struct Player {
+    search: engine::search::Search,
+    oracle: Arc<dyn Oracle>,
+    opponent: engine::bot::Opponent,
+    sessions: std::sync::Mutex<std::collections::HashMap<u32, engine::bot::Session>>,
+}
+
+#[pymethods]
+impl Player {
+    #[new]
+    fn new(bot: PathBuf) -> PyResult<Player> {
+        let packed = engine::packed::Packed::load(&bot).map_err(PyValueError::new_err)?;
+        match crate::mind::load(&packed, &[0]).map_err(PyRuntimeError::new_err)? {
+            (engine::bot::Brain::Search { search, oracle }, opponent) => Ok(Player { search, oracle, opponent, sessions: Default::default() }),
+            _ => Err(PyValueError::new_err("a player searches")),
+        }
+    }
+
+    fn decide(&self, py: Python<'_>, request: &str, sims: u32) -> PyResult<u32> {
+        let request: warchest::arena::Request = serde_json::from_str(request).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let ask = request.go.into_iter().next().ok_or_else(|| PyValueError::new_err("the request asks nothing"))?;
+        let brain = engine::bot::Brain::Search { search: engine::search::Search { sims, ..self.search }, oracle: self.oracle.clone() };
+        py.allow_threads(|| engine::bot::answer(ask, &self.sessions, &brain, &self.opponent)).map(|d| d.action).map_err(PyRuntimeError::new_err)
+    }
+
+    fn values(&self, py: Python<'_>, drafts: Vec<(Vec<u16>, Vec<u16>, u8)>, deals: u64) -> PyResult<Vec<f64>> {
+        py.allow_threads(|| {
+            let mut q = Query::default();
+            let mut sign = Vec::new();
+            for (white, black, first) in drafts.iter().cloned() {
+                let start = warchest::arena::Draft { white, black, first }.state()?;
+                for deal in 0..deals {
+                    let (mut s, mut rng) = (start, warchest::rng::Rng::new(deal));
+                    while s.is_chance() {
+                        let p = s.to_act();
+                        warchest::rules::resolve_chance(&mut s, p, &mut rng);
+                    }
+                    q.push(&s, &Ctx::new(&s), &s.legal_actions());
+                    sign.push(if s.to_act() == 0 { 1.0 } else { -1.0 });
+                }
+            }
+            let value = self.oracle.eval(&q).value;
+            Ok(value.chunks(deals as usize).zip(sign.chunks(deals as usize)).map(|(v, s)| v.iter().zip(s).map(|(&v, s)| v as f64 * s).sum::<f64>() / deals as f64).collect())
+        })
+        .map_err(|e: String| PyValueError::new_err(e))
+    }
+}
+
 #[pyclass(name = "Game")]
 struct Online(Game);
 
@@ -386,6 +435,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(opening, m)?)?;
     m.add_function(wrap_pyfunction!(replay_snapshots, m)?)?;
     m.add_class::<Online>()?;
+    m.add_class::<Player>()?;
     m.add("PUBFEAT", PUBFEAT)?;
     m.add("HORIZONS", crate::selfplay::HORIZONS.to_vec())?;
     m.add("ROW_BYTES", ROW_BYTES)?;

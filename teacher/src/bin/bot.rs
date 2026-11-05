@@ -3,27 +3,10 @@ use std::io::{BufRead, Write};
 use std::sync::Mutex;
 
 use rayon::prelude::*;
-use warchest::arena::{Ask, Done, Hello, Reply, Request, PROTOCOL};
-use engine::bot::{Brain, Session};
+use warchest::arena::{Hello, Reply, Request, PROTOCOL};
+use engine::bot::answer;
 use engine::packed::Packed;
 use warchest::arena::rules_table_hash;
-
-fn work(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain) -> Result<Done, String> {
-    let mut session = match ask.start {
-        Some(start) => Session::new(&start.draft, start.seat, start.seed)?,
-        None => sessions
-            .lock()
-            .unwrap()
-            .remove(&ask.id)
-            .ok_or_else(|| format!("game {} was never started", ask.id))?,
-    };
-    for obs in &ask.obs {
-        session.observe(obs)?;
-    }
-    let action = session.decide(brain)?;
-    sessions.lock().unwrap().insert(ask.id, session);
-    Ok(Done { id: ask.id, action })
-}
 
 const THINKERS: usize = 256;
 
@@ -44,7 +27,7 @@ fn run() -> Result<(), String> {
         .split(',')
         .map(|x| x.parse().map_err(|_| format!("invalid device {x}")))
         .collect::<Result<Vec<_>, _>>()?;
-    let brain = teacher::mind::load(&packed, &devices)?;
+    let (brain, opponent) = teacher::mind::load(&packed, &devices)?;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(THINKERS)
         .build()
@@ -73,7 +56,7 @@ fn run() -> Result<(), String> {
             continue;
         }
         let done: Result<Vec<_>, _> = pool.install(|| {
-            request.go.into_par_iter().map(|ask| work(ask, &sessions, &brain)).collect()
+            request.go.into_par_iter().map(|ask| answer(ask, &sessions, &brain, &opponent)).collect()
         });
         let reply = match done {
             Ok(done) => Reply { done, error: None },

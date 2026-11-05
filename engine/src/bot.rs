@@ -1,13 +1,46 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use warchest::actions::Action;
-use warchest::arena::{Draft, Obs};
+use warchest::arena::{Ask, Done, Draft, Obs};
 use warchest::actions::obs_key;
 use crate::pbs::{ways, Belief, Ctx};
 use crate::policy;
 use warchest::rng::{cumulative, Rng};
 use crate::search::{think, Choice, Oracle, Query, Search};
 use warchest::state::State;
+
+#[derive(Clone, Copy, serde::Deserialize)]
+pub struct Human {
+    pub temperature: f64,
+    pub epsilon: f64,
+}
+
+#[derive(Clone)]
+pub enum Opponent {
+    Counted,
+    Human(Human, Arc<dyn Oracle>),
+}
+
+impl Opponent {
+    fn likelihood(&self, ctx: &Ctx, worlds: &[(State, Vec<Action>)]) -> Vec<f64> {
+        let Opponent::Human(h, net) = self else {
+            return ways(worlds);
+        };
+        let mut q = Query::default();
+        for (s, acts) in worlds {
+            q.push(s, ctx, acts);
+        }
+        let prior = net.eval(&q).prior;
+        (0..q.len())
+            .flat_map(|i| {
+                let tempered: Vec<f64> = prior[q.actions(i)].iter().map(|&p| (p as f64).powf(1.0 / h.temperature)).collect();
+                let (total, n) = (tempered.iter().sum::<f64>(), tempered.len() as f64);
+                tempered.into_iter().map(move |p| (1.0 - h.epsilon) * p / total + h.epsilon / n)
+            })
+            .collect()
+    }
+}
 
 pub enum Brain {
     Random,
@@ -33,15 +66,17 @@ pub struct Session {
     ctx: Ctx,
     seat: u8,
     opp: Belief,
+    opponent: Opponent,
     rng: Rng,
 }
 
 impl Session {
-    pub fn new(draft: &Draft, seat: u8, seed: u64) -> Result<Session, String> {
+    pub fn new(draft: &Draft, seat: u8, seed: u64, opponent: Opponent) -> Result<Session, String> {
         let s = draft.state()?;
         Ok(Session {
             ctx: Ctx::new(&s),
             opp: Belief::new(&s, 1 - seat),
+            opponent,
             s,
             seat,
             rng: Rng::new(seed),
@@ -82,9 +117,10 @@ impl Session {
         if !self.to_move(player) {
             return Err(format!("player {} is not to act", player));
         }
+        let (ctx, opponent) = (&self.ctx, &self.opponent);
         self.s = self
             .opp
-            .update(&self.s, |a| obs_key(a) == key, ways)
+            .update(&self.s, |a| obs_key(a) == key, |worlds| opponent.likelihood(ctx, worlds))
             .ok_or_else(|| format!("observation {} is unreachable from this state", key))?;
         Ok(())
     }
@@ -117,6 +153,19 @@ impl Session {
     }
 }
 
+pub fn answer(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain, opponent: &Opponent) -> Result<Done, String> {
+    let mut session = match ask.start {
+        Some(start) => Session::new(&start.draft, start.seat, start.seed, opponent.clone())?,
+        None => sessions.lock().unwrap().remove(&ask.id).ok_or_else(|| format!("game {} was never started", ask.id))?,
+    };
+    for obs in &ask.obs {
+        session.observe(obs)?;
+    }
+    let action = session.decide(brain)?;
+    sessions.lock().unwrap().insert(ask.id, session);
+    Ok(Done { id: ask.id, action })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,13 +180,26 @@ mod tests {
     }
 
     #[test]
+    fn a_human_reading_of_a_flat_prior_is_uniform_in_every_world() {
+        let s = draft().state().unwrap();
+        let mut w = s;
+        while w.is_chance() {
+            w.apply_inplace(w.legal_actions()[0]);
+        }
+        let worlds = vec![(w, w.legal_actions()); 2];
+        let human = Opponent::Human(Human { temperature: 3.0, epsilon: 0.1 }, Arc::new(crate::search::Flat));
+        let n = worlds[0].1.len() as f64;
+        assert!(human.likelihood(&Ctx::new(&s), &worlds).iter().all(|&l| (l - 1.0 / n).abs() < 1e-6));
+    }
+
+    #[test]
     fn a_seat_is_told_nothing_private_and_follows_the_game() {
         let brain = Brain::Random;
         let mut table = Table::new();
         table.start(1, &draft(), [0, 1], 8191).unwrap();
         let mut seats = [
-            Session::new(&draft(), 0, 1).unwrap(),
-            Session::new(&draft(), 1, 2).unwrap(),
+            Session::new(&draft(), 0, 1, Opponent::Counted).unwrap(),
+            Session::new(&draft(), 1, 2, Opponent::Counted).unwrap(),
         ];
         let mut checked = 0;
         while table.live() > 0 {

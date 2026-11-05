@@ -6,7 +6,7 @@ use rayon::prelude::*;
 
 use warchest::actions::{Action, N_KINDS, N_PLAYS};
 use warchest::arena::{dealt, Obs};
-use engine::bot::{Brain, Session};
+use engine::bot::{Brain, Opponent, Session};
 use warchest::actions::obs_key;
 use warchest::rng::Rng;
 use engine::search::{Answer, Oracle, Query, Search};
@@ -97,7 +97,7 @@ pub struct Playout {
 pub fn play(playout: &Playout, rng: &mut Rng, open: impl Fn() -> bool) -> Option<Data> {
     let draft = dealt(rng);
     let mut s = draft.state().expect("a dealt draft is legal");
-    let mut seats = [WHITE, BLACK].map(|p| Session::new(&draft, p, rng.next_u64()).expect("a dealt draft is legal"));
+    let mut seats = [WHITE, BLACK].map(|p| Session::new(&draft, p, rng.next_u64(), Opponent::Counted).expect("a dealt draft is legal"));
     let (mut d, mut seen) = (Data::default(), Vec::new());
     loop {
         while s.is_chance() {

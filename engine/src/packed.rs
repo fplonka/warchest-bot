@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 #[derive(Deserialize)]
 pub struct Mind {
     pub mind: String,
+    pub human: Option<crate::bot::Human>,
     #[serde(flatten)]
     pub search: crate::search::Search,
 }
