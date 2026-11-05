@@ -1,36 +1,13 @@
-import sys
 from functools import lru_cache
 from itertools import combinations
-from pathlib import Path
 
 import numpy as np
-import torch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "train"))
-import warchest
-from export_weights import read_bin
 
 SNAKE = [0, 1, 1, 0, 0, 1, 1, 0]
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEALS = 8
 
 
-def load(path):
-    return read_bin(path).eval().to(DEVICE)
-
-
-def values(net, drafts):
-    rows = np.stack([np.frombuffer(bytes(warchest.opening(list(w), list(b), f)), np.uint8) for w, b, f in drafts])
-    x = np.asarray(warchest.expand_rows(rows.ravel()), np.float32).reshape(len(drafts), warchest.PUBFEAT)
-    with torch.no_grad():
-        v = net.value(net.evaluate(torch.from_numpy(x).to(DEVICE))[0]).cpu().numpy()
-    first = np.asarray([f for _, _, f in drafts])
-    out = np.zeros((len(drafts), 2))
-    out[np.arange(len(drafts)), first] = v
-    out[np.arange(len(drafts)), 1 - first] = -v
-    return out
-
-
-def plan(net, seat, pool, mine, theirs, eliminated, me_first_picker):
+def plan(player, seat, pool, mine, theirs, eliminated, me_first_picker):
     avail = frozenset(pool) - set(mine) - set(theirs) - set(eliminated)
     eliminations = len(pool) - 8 - len(eliminated)
     turns = [("elim", (k % 2 == 0) == me_first_picker) for k in range(len(eliminated), len(pool) - 8)]
@@ -46,7 +23,7 @@ def plan(net, seat, pool, mine, theirs, eliminated, me_first_picker):
     for m, t in leaves:
         w, b = (sorted(m), sorted(t)) if seat == 0 else (sorted(t), sorted(m))
         drafts += [(w, b, 0), (w, b, 1)]
-    vals = np.concatenate([values(net, drafts[i:i + 2048])[:, seat] for i in range(0, len(drafts), 2048)])
+    vals = np.asarray(player.values(drafts, DEALS)) * (1 if seat == 0 else -1)
     table = {leaf: (vals[2 * i] + vals[2 * i + 1]) / 2 for i, leaf in enumerate(leaves)}
 
     @lru_cache(maxsize=None)
