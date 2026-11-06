@@ -1,4 +1,5 @@
 pub mod bot;
+pub mod corpus;
 pub mod nnue;
 pub mod online;
 pub mod packed;
