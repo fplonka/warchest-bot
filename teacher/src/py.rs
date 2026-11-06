@@ -297,10 +297,11 @@ fn opening(white: Vec<u16>, black: Vec<u16>, first: u8) -> PyResult<Vec<u8>> {
 
 #[pyfunction]
 fn replay_snapshots(py: Python<'_>, snapshots: &str, log: &str) -> PyResult<PyObject> {
-    let (draft, decisions) = engine::online::decisions(snapshots, log).map_err(PyValueError::new_err)?;
-    let start = draft.state().map_err(PyValueError::new_err)?;
+    let replay = engine::online::decisions(snapshots, log).map_err(PyValueError::new_err)?;
+    let start = replay.draft.state().map_err(PyValueError::new_err)?;
+    let followup: Vec<Option<bool>> = replay.shown.iter().map(|s| s.map(|s| s.pending != warchest::state::Cont::MainPlay)).collect();
     let (ctx, mut q, mut chosen, mut mover) = (Ctx::new(&start), Query::default(), Vec::new(), Vec::new());
-    for (s, a) in decisions.into_iter().filter(|(s, _)| !s.is_chance()) {
+    for (s, a) in replay.steps.into_iter().filter(|(s, _)| !s.is_chance()) {
         let acts = s.legal_actions();
         if acts.len() > 1 {
             q.push(&s, &ctx, &acts);
@@ -314,6 +315,7 @@ fn replay_snapshots(py: Python<'_>, snapshots: &str, log: &str) -> PyResult<PyOb
     out.set_item("off", q.off.into_pyarray_bound(py))?;
     out.set_item("chosen", chosen.into_pyarray_bound(py))?;
     out.set_item("mover", mover.into_pyarray_bound(py))?;
+    out.set_item("followup", followup)?;
     Ok(out.into())
 }
 
@@ -349,10 +351,10 @@ impl Player {
         use warchest::arena::Obs;
         let opponent = human.map_or(Opponent::Counted, |(temperature, epsilon)| Opponent::Human(Human { temperature, epsilon }, self.oracle.clone()));
         py.allow_threads(|| {
-            let (draft, steps) = engine::online::decisions(snapshots, log)?;
-            let mut session = Session::new(&draft, seat, 0, opponent)?;
+            let replay = engine::online::decisions(snapshots, log)?;
+            let mut session = Session::new(&replay.draft, seat, 0, opponent)?;
             let mut out = Vec::new();
-            for (s, a) in steps {
+            for (s, a) in replay.steps {
                 let player = s.to_act();
                 if !s.is_chance() && player != seat {
                     out.push(session.belief(&s));
