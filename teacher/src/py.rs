@@ -383,26 +383,47 @@ impl Player {
         Ok(out)
     }
 
-    fn values(&self, py: Python<'_>, drafts: Vec<(Vec<u16>, Vec<u16>, u8)>, deals: u64) -> PyResult<Vec<f64>> {
+    fn values(&self, py: Python<'_>, drafts: Vec<(Vec<u16>, Vec<u16>, u8)>) -> PyResult<Vec<f64>> {
         py.allow_threads(|| {
-            let mut q = Query::default();
-            let mut sign = Vec::new();
+            let (mut q, mut weight, mut spans) = (Query::default(), Vec::new(), vec![0]);
             for (white, black, first) in drafts.iter().cloned() {
                 let start = warchest::arena::Draft { white, black, first }.state()?;
-                for deal in 0..deals {
-                    let (mut s, mut rng) = (start, warchest::rng::Rng::new(deal));
+                let mut hands = Vec::new();
+                opening_hands(&start.draw_pool(first), 0, 3, &mut Vec::new(), 1, &mut hands);
+                let total = hands.iter().map(|(_, ways)| ways).sum::<u32>() as f64;
+                for (hand, ways) in hands {
+                    let (mut s, mut rng, mut hand) = (start, warchest::rng::Rng::new(0), hand.into_iter());
                     while s.is_chance() {
                         let p = s.to_act();
-                        warchest::rules::resolve_chance(&mut s, p, &mut rng);
+                        match p == first {
+                            true => s.apply_inplace(Action::DrawCoin { unit: hand.next().expect("the first mover draws three coins") }),
+                            false => _ = warchest::rules::resolve_chance(&mut s, p, &mut rng),
+                        }
                     }
                     q.push(&s, &Ctx::new(&s), &s.legal_actions());
-                    sign.push(if s.to_act() == 0 { 1.0 } else { -1.0 });
+                    weight.push(ways as f64 / total * if s.to_act() == 0 { 1.0 } else { -1.0 });
                 }
+                spans.push(weight.len());
             }
             let value = self.oracle.eval(&q).value;
-            Ok(value.chunks(deals as usize).zip(sign.chunks(deals as usize)).map(|(v, s)| v.iter().zip(s).map(|(&v, s)| v as f64 * s).sum::<f64>() / deals as f64).collect())
+            Ok(spans.windows(2).map(|w| (w[0]..w[1]).map(|i| value[i] as f64 * weight[i]).sum()).collect())
         })
         .map_err(|e: String| PyValueError::new_err(e))
+    }
+}
+
+fn opening_hands(pool: &[u8], u: usize, left: u8, hand: &mut Vec<u8>, ways: u32, out: &mut Vec<(Vec<u8>, u32)>) {
+    if left == 0 {
+        return out.push((hand.clone(), ways));
+    }
+    if u == pool.len() {
+        return;
+    }
+    for k in 0..=left.min(pool[u]) {
+        hand.extend(std::iter::repeat_n(u as u8, k as usize));
+        let choose = (0..k as u32).fold(1, |c, i| c * (pool[u] as u32 - i) / (i + 1));
+        opening_hands(pool, u + 1, left - k, hand, ways * choose, out);
+        hand.truncate(hand.len() - k as usize);
     }
 }
 

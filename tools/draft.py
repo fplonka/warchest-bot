@@ -4,45 +4,59 @@ from itertools import combinations
 import numpy as np
 
 SNAKE = [0, 1, 1, 0, 0, 1, 1, 0]
-DEALS = 8
 
 
-def plan(player, seat, pool, mine, theirs, eliminated, me_first_picker):
-    avail = frozenset(pool) - set(mine) - set(theirs) - set(eliminated)
-    eliminations = len(pool) - 8 - len(eliminated)
-    turns = [("elim", (k % 2 == 0) == me_first_picker) for k in range(len(eliminated), len(pool) - 8)]
-    turns += [("pick", (SNAKE[k] == 0) == me_first_picker) for k in range(len(mine) + len(theirs), 8)]
+def key(first, other):
+    return sum(int(u) << (6 * i) for i, u in enumerate(sorted(first) + sorted(other)))
 
+
+class Table:
+    def __init__(self, path):
+        z = np.load(path)
+        self.keys, self.values = z["keys"], z["values"]
+
+    def __call__(self, pairs):
+        keys = np.array([key(a, b) for a, b in pairs], np.uint64)
+        at = np.searchsorted(self.keys, keys)
+        assert (self.keys[at] == keys).all(), "a draft is missing from the table"
+        return self.values[at]
+
+
+def turns(pool):
+    return [("elim", k % 2) for k in range(pool - 8)] + [("pick", k) for k in SNAKE]
+
+
+def value(table, pool, mine, theirs, gone, draft_first, play_first):
+    avail = frozenset(pool) - set(mine) - set(theirs) - set(gone)
+    todo = turns(len(pool))[len(gone) + len(mine) + len(theirs):]
     leaves = set()
-    for gone in combinations(sorted(avail), eliminations):
-        rest = sorted(avail - set(gone))
-        for extra in combinations(rest, 4 - len(mine)):
-            leaves.add((frozenset(mine) | set(extra), frozenset(theirs) | (set(rest) - set(extra))))
-    leaves = sorted(leaves, key=lambda x: (sorted(x[0]), sorted(x[1])))
-    drafts = []
-    for m, t in leaves:
-        w, b = (sorted(m), sorted(t)) if seat == 0 else (sorted(t), sorted(m))
-        drafts += [(w, b, 0), (w, b, 1)]
-    vals = np.asarray(player.values(drafts, DEALS)) * (1 if seat == 0 else -1)
-    table = {leaf: (vals[2 * i] + vals[2 * i + 1]) / 2 for i, leaf in enumerate(leaves)}
+    for out in combinations(sorted(avail), len(pool) - 8 - len(gone)):
+        rest = avail - set(out)
+        for extra in combinations(sorted(rest), 4 - len(mine)):
+            leaves.add((frozenset(mine) | set(extra), frozenset(theirs) | (rest - set(extra))))
+    leaves = list(leaves)
+    sign = 1 if play_first else -1
+    worth = dict(zip(leaves, sign * table([(m, t) if play_first else (t, m) for m, t in leaves])))
 
     @lru_cache(maxsize=None)
-    def value(avail, m, t, i):
-        if i == len(turns):
-            return table[(m, t)], None
-        kind, mine_turn = turns[i]
-        best = None
+    def best(avail, m, t, i):
+        if i == len(todo):
+            return worth[(m, t)], None
+        kind, actor = todo[i]
+        ours = (actor == 0) == draft_first
+        options = []
         for u in sorted(avail):
-            rest = avail - {u}
-            if kind == "elim":
-                v = value(rest, m, t, i + 1)[0]
-            elif mine_turn:
-                v = value(rest, m | {u}, t, i + 1)[0]
-            else:
-                v = value(rest, m, t | {u}, i + 1)[0]
-            if best is None or (v > best[0] if mine_turn else v < best[0]):
-                best = (v, u)
-        return best
+            m2, t2 = (m, t) if kind == "elim" else (m | {u}, t) if ours else (m, t | {u})
+            options.append((best(avail - {u}, m2, t2, i + 1)[0], u))
+        return max(options) if ours else min(options)
 
-    v, u = value(avail, frozenset(mine), frozenset(theirs), 0)
-    return u, v, turns[0]
+    return best(avail, frozenset(mine), frozenset(theirs), 0)
+
+
+def play_order(table, pool, draft_first):
+    return value(table, pool, [], [], [], draft_first, True)[0] >= value(table, pool, [], [], [], draft_first, False)[0]
+
+
+def draft_order(table, pool):
+    worst = lambda d: min(value(table, pool, [], [], [], d, f)[0] for f in (True, False))
+    return worst(True) >= worst(False)
