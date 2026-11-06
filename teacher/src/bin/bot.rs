@@ -56,7 +56,7 @@ fn run() -> Result<(), String> {
             continue;
         }
         let done: Result<Vec<_>, _> = pool.install(|| {
-            request.go.into_par_iter().map(|ask| answer(ask, &sessions, &brain, &opponent)).collect()
+            request.go.into_par_iter().map(|ask| answer(ask, &sessions, &brain, &opponent).map(|(done, _)| done)).collect()
         });
         let reply = match done {
             Ok(done) => Reply { done, error: None },

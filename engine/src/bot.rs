@@ -7,7 +7,7 @@ use warchest::actions::obs_key;
 use crate::pbs::{ways, Belief, Ctx};
 use crate::policy;
 use warchest::rng::{cumulative, Rng};
-use crate::search::{think, Choice, Oracle, Query, Search};
+use crate::search::{judge, think, Choice, Oracle, Query, Search};
 use warchest::state::State;
 
 #[derive(Clone, Copy, serde::Deserialize)]
@@ -148,6 +148,11 @@ impl Session {
         Ok(acts[c.pick].encode())
     }
 
+    pub fn judge(&mut self, search: Search, oracle: &dyn Oracle, played: Action) -> Result<(f32, f32), String> {
+        let i = self.s.legal_actions().iter().position(|&a| a == played).ok_or("the played move is not legal here")?;
+        Ok(judge(oracle, search, &self.s, &self.ctx, &self.opp, &mut self.rng, i))
+    }
+
     pub fn belief(&self, truth: &State) -> f64 {
         self.opp.weight(truth)
     }
@@ -157,7 +162,7 @@ impl Session {
     }
 }
 
-pub fn answer(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain, opponent: &Opponent) -> Result<Done, String> {
+pub fn answer(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain, opponent: &Opponent) -> Result<(Done, Option<f32>), String> {
     let mut session = match ask.start {
         Some(start) => Session::new(&start.draft, start.seat, start.seed, opponent.clone())?,
         None => sessions.lock().unwrap().remove(&ask.id).ok_or_else(|| format!("game {} was never started", ask.id))?,
@@ -165,9 +170,12 @@ pub fn answer(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain, 
     for obs in &ask.obs {
         session.observe(obs)?;
     }
-    let action = session.decide(brain)?;
+    let (acts, choice) = session.think(brain)?;
+    let action = acts[choice.pick];
+    let value = (acts.len() > 1).then_some(choice.value);
+    session.play(action);
     sessions.lock().unwrap().insert(ask.id, session);
-    Ok(Done { id: ask.id, action })
+    Ok((Done { id: ask.id, action: action.encode() }, value))
 }
 
 #[cfg(test)]

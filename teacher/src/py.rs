@@ -7,8 +7,12 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{IntoPyDict, PyDict};
 
+use warchest::actions::Action;
+use warchest::arena::Obs;
 use warchest::board::board;
+use warchest::state::State;
 use crate::net::Net;
+use engine::bot::{Human, Opponent, Session};
 use engine::online::{Game, Site};
 use engine::pbs::{expand_row, mirror_row, mover_row, pack_row, Ctx, PUBFEAT, ROW_BYTES};
 use engine::nnue::{self, Nnue};
@@ -338,36 +342,45 @@ impl Player {
         }
     }
 
-    fn decide(&self, py: Python<'_>, request: &str, sims: u32) -> PyResult<u32> {
+    fn decide(&self, py: Python<'_>, request: &str, sims: u32) -> PyResult<(u32, Option<f32>)> {
         let request: warchest::arena::Request = serde_json::from_str(request).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let ask = request.go.into_iter().next().ok_or_else(|| PyValueError::new_err("the request asks nothing"))?;
         let brain = engine::bot::Brain::Search { search: engine::search::Search { sims, ..self.search }, oracle: self.oracle.clone() };
-        py.allow_threads(|| engine::bot::answer(ask, &self.sessions, &brain, &self.opponent)).map(|d| d.action).map_err(PyRuntimeError::new_err)
+        py.allow_threads(|| engine::bot::answer(ask, &self.sessions, &brain, &self.opponent))
+            .map(|(done, value)| (done.action, value))
+            .map_err(PyRuntimeError::new_err)
     }
 
     #[pyo3(signature = (snapshots, log, seat, human=None))]
     fn trace(&self, py: Python<'_>, snapshots: &str, log: &str, seat: u8, human: Option<(f64, f64)>) -> PyResult<Vec<f64>> {
-        use engine::bot::{Human, Opponent, Session};
-        use warchest::arena::Obs;
         let opponent = human.map_or(Opponent::Counted, |(temperature, epsilon)| Opponent::Human(Human { temperature, epsilon }, self.oracle.clone()));
+        let mut out = Vec::new();
         py.allow_threads(|| {
-            let replay = engine::online::decisions(snapshots, log)?;
-            let mut session = Session::new(&replay.draft, seat, 0, opponent)?;
-            let mut out = Vec::new();
-            for (s, a) in replay.steps {
-                let player = s.to_act();
-                if !s.is_chance() && player != seat {
-                    out.push(session.belief(&s));
+            follow(snapshots, log, seat, opponent, |session, s, _| {
+                if s.to_act() != seat {
+                    out.push(session.belief(s));
                 }
-                session.observe(&match (s.is_chance(), player == seat) {
-                    (true, mine) => Obs::Draw { player, code: mine.then(|| a.encode()) },
-                    (false, true) => Obs::Act { player, key: a.encode() },
-                    (false, false) => Obs::Act { player, key: warchest::actions::obs_key(&a) },
-                })?;
-            }
-            Ok(out)
+                Ok(())
+            })
         })
-        .map_err(|e: String| PyValueError::new_err(e))
+        .map_err(PyValueError::new_err)?;
+        Ok(out)
+    }
+
+    fn judge(&self, py: Python<'_>, snapshots: &str, log: &str, seat: u8, sims: u32) -> PyResult<Vec<(f32, f32)>> {
+        let us = Opponent::Human(Human { temperature: 1.0, epsilon: 0.0 }, self.oracle.clone());
+        let search = engine::search::Search { sims, noise: false, ..self.search };
+        let mut out = Vec::new();
+        py.allow_threads(|| {
+            follow(snapshots, log, seat, us, |session, s, a| {
+                if s.to_act() == seat && s.legal_actions().len() > 1 {
+                    out.push(session.judge(search, self.oracle.as_ref(), a)?);
+                }
+                Ok(())
+            })
+        })
+        .map_err(PyValueError::new_err)?;
+        Ok(out)
     }
 
     fn values(&self, py: Python<'_>, drafts: Vec<(Vec<u16>, Vec<u16>, u8)>, deals: u64) -> PyResult<Vec<f64>> {
@@ -391,6 +404,23 @@ impl Player {
         })
         .map_err(|e: String| PyValueError::new_err(e))
     }
+}
+
+fn follow(snapshots: &str, log: &str, seat: u8, opponent: Opponent, mut at: impl FnMut(&mut Session, &State, Action) -> Result<(), String>) -> Result<(), String> {
+    let replay = engine::online::decisions(snapshots, log)?;
+    let mut session = Session::new(&replay.draft, seat, 0, opponent)?;
+    for (s, a) in replay.steps {
+        let player = s.to_act();
+        if !s.is_chance() {
+            at(&mut session, &s, a)?;
+        }
+        session.observe(&match (s.is_chance(), player == seat) {
+            (true, mine) => Obs::Draw { player, code: mine.then(|| a.encode()) },
+            (false, true) => Obs::Act { player, key: a.encode() },
+            (false, false) => Obs::Act { player, key: warchest::actions::obs_key(&a) },
+        })?;
+    }
+    Ok(())
 }
 
 #[pyclass(name = "Game")]

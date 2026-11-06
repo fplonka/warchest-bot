@@ -435,6 +435,21 @@ impl Search {
 }
 
 pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng) -> Choice {
+    let (mut tree, pick) = grow(oracle, search, root, ctx, opp, rng, None);
+    let q = tree.completed(0);
+    let edges = tree.improved(0);
+    let probs = edges.iter().map(|e| e.pi).collect();
+    let value = edges.iter().map(|e| e.pi * q(e)).sum();
+    Choice { probs, pick, value }
+}
+
+pub fn judge(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng, played: usize) -> (f32, f32) {
+    let (tree, pick) = grow(oracle, search, root, ctx, opp, rng, Some(played as u32));
+    let (q, edges) = (tree.completed(0), tree.edges(0));
+    (q(&edges[pick]), q(&edges[played]))
+}
+
+fn grow(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: &Belief, rng: &mut Rng, keep: Option<u32>) -> (Tree, usize) {
     let (acts, mut batch) = (root.legal_actions(), Batch::default());
     batch.q.push(root, ctx, &acts);
     let answer = oracle.eval(&batch.q);
@@ -449,7 +464,8 @@ pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: 
         let s = score(&tree);
         alive.sort_by(|&a, &b| s[b as usize].total_cmp(&s[a as usize]));
         alive.truncate(k);
-        let visits: Vec<u32> = (0..n as usize).map(|j| alive[j % k]).collect();
+        alive.extend(keep.filter(|p| !alive.contains(p)));
+        let visits: Vec<u32> = (0..n as usize).map(|j| alive[j % alive.len()]).collect();
         tree.simulate(&mut batch, oracle, root, ctx, opp, rng, &visits);
     }
     let (s, edges) = (score(&tree), tree.edges(0));
@@ -458,11 +474,7 @@ pub fn think(oracle: &dyn Oracle, search: Search, root: &State, ctx: &Ctx, opp: 
         .filter(|&i| edges[i].n == most)
         .max_by(|&a, &b| s[a].total_cmp(&s[b]))
         .expect("a most visited move exists");
-    let q = tree.completed(0);
-    let edges = tree.improved(0);
-    let probs = edges.iter().map(|e| e.pi).collect();
-    let value = edges.iter().map(|e| e.pi * q(e)).sum();
-    Choice { probs, pick, value }
+    (tree, pick)
 }
 
 pub struct Flat;
@@ -554,6 +566,9 @@ mod tests {
                     assert!(wins[c.pick], "the search missed the win");
                     assert!(c.probs[c.pick] > 0.9, "the target gives the win only {}", c.probs[c.pick]);
                     assert!(c.value > 0.5, "the root value of a won position is only {}", c.value);
+                    let other = wins.iter().position(|&w| !w).expect("a single win among several moves");
+                    let (best, played) = judge(&Flat, Search::full(32), &s, &ctx, &Belief::new(&s, 1 - me), &mut rng, other);
+                    assert!(best > played, "the judge rates a miss {played} against the win {best}");
                     found += 1;
                 }
                 s.apply_inplace(acts[rng.pick(&cumulative(greedy(&s, &acts).iter().map(|&p| p as f64)))]);
