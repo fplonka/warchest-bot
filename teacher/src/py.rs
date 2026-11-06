@@ -475,6 +475,14 @@ impl Online {
         self.0.act(code).map_err(PyValueError::new_err)
     }
 
+    fn unoffered(&self, json: &str) -> PyResult<Vec<String>> {
+        self.0.unoffered(&site(json)?).map_err(PyValueError::new_err)
+    }
+
+    fn legal(&self) -> Vec<(u32, String)> {
+        self.0.state().legal_actions().into_iter().map(|a| (a.encode(), format!("{a:?}"))).collect()
+    }
+
     fn ask(&self, told: usize) -> String {
         self.0.ask(told)
     }
