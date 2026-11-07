@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use warchest::actions::Action;
-use warchest::arena::{Ask, Done, Draft, Obs};
+use warchest::arena::{Ask, Draft, Obs};
 use warchest::actions::obs_key;
 use crate::pbs::{ways, Belief, Ctx};
 use crate::policy;
@@ -162,7 +162,7 @@ impl Session {
     }
 }
 
-pub fn answer(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain, opponent: &Opponent) -> Result<(Done, Option<f32>), String> {
+pub fn answer(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain, opponent: &Opponent) -> Result<(Vec<u32>, Option<f32>), String> {
     let mut session = match ask.start {
         Some(start) => Session::new(&start.draft, start.seat, start.seed, opponent.clone())?,
         None => sessions.lock().unwrap().remove(&ask.id).ok_or_else(|| format!("game {} was never started", ask.id))?,
@@ -171,11 +171,12 @@ pub fn answer(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain, 
         session.observe(obs)?;
     }
     let (acts, choice) = session.think(brain)?;
-    let action = acts[choice.pick];
     let value = (acts.len() > 1).then_some(choice.value);
-    session.play(action);
+    session.play(acts[choice.pick]);
     sessions.lock().unwrap().insert(ask.id, session);
-    Ok((Done { id: ask.id, action: action.encode() }, value))
+    let mut ranked: Vec<usize> = (0..acts.len()).collect();
+    ranked.sort_by(|&a, &b| (a != choice.pick).cmp(&(b != choice.pick)).then(choice.probs[b].total_cmp(&choice.probs[a])));
+    Ok((ranked.into_iter().map(|i| acts[i].encode()).collect(), value))
 }
 
 #[cfg(test)]

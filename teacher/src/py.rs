@@ -342,13 +342,11 @@ impl Player {
         }
     }
 
-    fn decide(&self, py: Python<'_>, request: &str, sims: u32) -> PyResult<(u32, Option<f32>)> {
+    fn decide(&self, py: Python<'_>, request: &str, sims: u32) -> PyResult<(Vec<u32>, Option<f32>)> {
         let request: warchest::arena::Request = serde_json::from_str(request).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let ask = request.go.into_iter().next().ok_or_else(|| PyValueError::new_err("the request asks nothing"))?;
         let brain = engine::bot::Brain::Search { search: engine::search::Search { sims, ..self.search }, oracle: self.oracle.clone() };
-        py.allow_threads(|| engine::bot::answer(ask, &self.sessions, &brain, &self.opponent))
-            .map(|(done, value)| (done.action, value))
-            .map_err(PyRuntimeError::new_err)
+        py.allow_threads(|| engine::bot::answer(ask, &self.sessions, &brain, &self.opponent)).map_err(PyRuntimeError::new_err)
     }
 
     #[pyo3(signature = (snapshots, log, seat, human=None))]
@@ -466,13 +464,9 @@ impl Online {
         self.0.rewind(lines).map_err(PyValueError::new_err)
     }
 
-    fn command(&self, json: &str) -> PyResult<Option<String>> {
-        let cmd = self.0.command(&site(json)?).map_err(PyValueError::new_err)?;
-        Ok(cmd.map(|c| serde_json::to_string(&c).expect("a command serializes")))
-    }
-
-    fn act(&mut self, code: u32) -> PyResult<()> {
-        self.0.act(code).map_err(PyValueError::new_err)
+    fn play(&mut self, json: &str, ranked: Vec<u32>) -> PyResult<(u32, String)> {
+        let (code, cmd) = self.0.play(&site(json)?, &ranked).map_err(PyValueError::new_err)?;
+        Ok((code, serde_json::to_string(&cmd).expect("a command serializes")))
     }
 
     fn unoffered(&self, json: &str) -> PyResult<Vec<String>> {

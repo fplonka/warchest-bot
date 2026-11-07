@@ -3,7 +3,7 @@ use std::io::{BufRead, Write};
 use std::sync::Mutex;
 
 use rayon::prelude::*;
-use warchest::arena::{Hello, Reply, Request, PROTOCOL};
+use warchest::arena::{Done, Hello, Reply, Request, PROTOCOL};
 use engine::bot::answer;
 use engine::packed::Packed;
 use warchest::arena::rules_table_hash;
@@ -56,7 +56,10 @@ fn run() -> Result<(), String> {
             continue;
         }
         let done: Result<Vec<_>, _> = pool.install(|| {
-            request.go.into_par_iter().map(|ask| answer(ask, &sessions, &brain, &opponent).map(|(done, _)| done)).collect()
+            request.go.into_par_iter().map(|ask| {
+                let id = ask.id;
+                answer(ask, &sessions, &brain, &opponent).map(|(ranked, _)| Done { id, action: ranked[0] })
+            }).collect()
         });
         let reply = match done {
             Ok(done) => Reply { done, error: None },
