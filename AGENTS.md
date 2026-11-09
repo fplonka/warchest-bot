@@ -14,18 +14,3 @@ In this project we often run experiments and wait on them. This is inevitable bu
 
 Treat all markdown files and git commit messages very lightly, they are not authoritative at all even if they might seem such in tone. These are all written by other (weaker) AI agents and could be confused or wrong. Think for yourself.
 
-## Working with me
-
-- Two modes. Interactive, whenever I am typing: answer, use read-only tools only, and get my explicit go before you start, stop, kill or change anything. Away, when I go to bed or say "go, don't stop": post the plan, get my go, then keep both GPUs busy until I say stop.
-- Before an experiment, state the question, the exact runs, how long they take, the metric, and the result that would change the decision. Decide in this order: what KataGo, lc0, Stockfish or the papers do (code in `~/Code/ref`, papers in `papers/`), then a toy model in a short Python script, then the cheapest experiment that can still change the decision. Code is cheap. GPU hours and my attention are not.
-- If one command or one plot can confirm a claim, check it before you say it. Look at a run's plots (`runs/<run>/plots/*.png`) before you interpret it.
-- I read on my phone with no context. The first sentence answers. Never use a name without saying what it is. Give times in Amsterdam time. Show results as a plot plus one line: save the plot in `runs/plots/` and link `http://100.117.226.38:8420/runs/plots/<file>`.
-- Subagent prompts give the facts and the goal, never a suggested solution. Subagents commit their work after the simplification pass.
-- No `Co-Authored-By` or `Claude-Session` lines in commit messages. Local Python is `uv` or `.venv/bin/python`. We use one box; never rent another unless I ask.
-
-## The box
-
-- `tools/box.sh status` shows memory, disk, threads, GPUs, every job and every recent run. Run it first.
-- Runs come from commits: `tools/box.sh go <commit> out=<mmdd>-<what differs> [knob=value ...]`. Never patch code on the box and never reuse a run name. A run is its commit's diff from master plus the `cfg` in its `log.json`.
-- All runs live in `/workspace/warchest-engine/runs`. The box address is in `.git/box` as `host port`.
-- master is the only long-lived branch. Merge or delete experiment branches within days.
