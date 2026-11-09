@@ -469,6 +469,11 @@ impl Online {
         Ok((code, serde_json::to_string(&cmd).expect("a command serializes")))
     }
 
+    fn owed(&self, json: &str) -> PyResult<Option<String>> {
+        let cmd = self.0.owed(&site(json)?).map_err(PyValueError::new_err)?;
+        Ok(cmd.map(|c| serde_json::to_string(&c).expect("a command serializes")))
+    }
+
     fn unoffered(&self, json: &str) -> PyResult<Vec<String>> {
         self.0.unoffered(&site(json)?).map_err(PyValueError::new_err)
     }
