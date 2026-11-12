@@ -110,8 +110,8 @@ fn drafts(seed: u64, count: usize) -> Vec<Draft> {
 
 const CONCURRENT: usize = 256;
 
-fn play(a: &Packed, b: &Packed, games: usize, seed: u64) -> Result<(Vec<[i8; 2]>, usize), String> {
-    let mut bots = [BotProcess::launch(a, "0")?, BotProcess::launch(b, "1")?];
+fn play(a: &Packed, b: &Packed, games: usize, seed: u64, devices: &str) -> Result<(Vec<[i8; 2]>, usize), String> {
+    let mut bots = [BotProcess::launch(a, devices)?, BotProcess::launch(b, devices)?];
     let mut table = Table::new();
     let (mut outcomes, mut moves) = (vec![[0; 2]; games / 2], 0);
     for (pair, draft) in drafts(seed, games / 2).into_iter().enumerate() {
@@ -157,8 +157,8 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [a, b, games, seed] = args.as_slice() else {
-        return Err("usage: ladder <bot-dir> <bot-dir> <games> <draft-seed>".into());
+    let [a, b, games, seed, devices] = args.as_slice() else {
+        return Err("usage: ladder <bot-dir> <bot-dir> <games> <draft-seed> <devices>".into());
     };
     let a = Packed::load(Path::new(a))?;
     let b = Packed::load(Path::new(b))?;
@@ -167,7 +167,7 @@ fn run() -> Result<(), String> {
     if games < 2 || games % 2 != 0 {
         return Err("games must be even and at least two".into());
     }
-    let (outcomes, moves) = play(&a, &b, games, seed)?;
+    let (outcomes, moves) = play(&a, &b, games, seed, devices)?;
     let record = Match {
         a: a.manifest.name,
         b: b.manifest.name,

@@ -30,6 +30,6 @@ curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null"
 "$here/tools/box.sh" "cargo build --release --bin ladder >/tmp/ladder.log 2>&1 || { tail -30 /tmp/ladder.log; exit 1; }"
 (cd "$here" && rsync -azR -e "ssh -i $key -p $port -o StrictHostKeyChecking=no" \
     $(cat "$campaign/bots") "root@$host:/workspace/warchest-engine/")
-"$here/tools/ladder.sh" "$campaign" "$hours"
+"$here/tools/ladder.sh" "$campaign" "$hours" 0,1
 "$here/tools/box.sh" "grep -hv '^{' /workspace/logs/m*.log | tail -30"
 "$here/.venv/bin/python" "$here/tools/ladder.py" "$campaign" report

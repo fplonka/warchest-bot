@@ -1,0 +1,1 @@
+[{"name": "roll.r0", "search": {"mind": "search", "sims": 1024}, "elo": 0.0, "se": 0.0}, {"name": "roll.r256", "search": {"mind": "search", "sims": 1024, "rollouts": 256}, "elo": 13.13059139251709, "se": 16.394550323486328}, {"name": "roll.r64", "search": {"mind": "search", "sims": 1024, "rollouts": 64}, "elo": -1.5447824001312256, "se": 16.389307022094727}]
