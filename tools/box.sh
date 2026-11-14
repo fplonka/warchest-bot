@@ -147,6 +147,6 @@ go)
     "$0" run "$commit" "$out" bash -c "python train/check_parity.py && exec bash tools/resume_train.sh $(printf '%q ' "$@")"
     "$0" follow "$out" "$out"
     ;;
-"")  sed -n '4,11p' "$0" ;;
+"")  echo "usage: box.sh setup | sync | build | status | pull [run] | go <commit> out=<run> [knob=value ...] | start <tag> <command...> | follow <tag> [run] | run <commit> <tag> <command...> | kill <tag> | <remote command>" ;;
 *)   run_remote "$*" ;;
 esac

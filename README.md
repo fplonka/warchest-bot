@@ -26,7 +26,16 @@ cd bot && maturin develop --release --features python,gpu
 python train/train.py out=runs/mine minutes=600
 ```
 
-This needs CUDA. With one GPU, add `device=cuda:0`. The knobs are in `train/config.py`. `tools/box.sh` sets up a rented box, syncs the tree and builds it.
+This needs CUDA. With one GPU, add `device=cuda:0`. The knobs are in `train/config.py`.
+
+To train on a rented box, write `host port` for its SSH into `.git/box`, then:
+
+```sh
+tools/box.sh setup
+tools/box.sh go HEAD out=mine minutes=600
+```
+
+`go` copies the commit to the box, builds it, checks that the Rust and PyTorch nets agree, trains and resumes after a crash.
 
 ## Draft table
 
