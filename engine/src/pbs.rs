@@ -72,11 +72,6 @@ impl Belief {
         }
     }
 
-    pub fn weight(&self, s: &State) -> f64 {
-        let k = self.layout(s);
-        self.layouts.iter().zip(&self.weights).find(|(l, _)| **l == k).map_or(0.0, |(_, &w)| w)
-    }
-
     pub fn deal(&self, s: &mut State, rng: &mut Rng) {
         self.put(s, &self.layouts[rng.pick(&self.cdf)]);
     }

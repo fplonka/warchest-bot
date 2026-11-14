@@ -1,0 +1,78 @@
+use std::collections::HashMap;
+use std::io::{BufRead, Write};
+use std::sync::Mutex;
+
+use rayon::prelude::*;
+use warchest::arena::{Done, Hello, Reply, Request, PROTOCOL};
+use engine::bot::answer;
+use engine::packed::Packed;
+use warchest::arena::rules_table_hash;
+
+const THINKERS: usize = 256;
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
+}
+
+fn run() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let path = args.first().ok_or("usage: bot BOT_DIR --devices 0,1")?;
+    let packed = Packed::load(path.as_ref())?;
+    let flag = |name: &str| args.iter().position(|x| x == name).and_then(|i| args.get(i + 1));
+    let device_text = flag("--devices").ok_or("packed bot needs --devices")?;
+    let devices = device_text
+        .split(',')
+        .map(|x| x.parse().map_err(|_| format!("invalid device {x}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (brain, opponent) = bot::mind::load(&packed, &devices)?;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(THINKERS)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut out = std::io::stdout().lock();
+    writeln!(
+        out,
+        "{}",
+        serde_json::to_string(&Hello {
+            name: packed.manifest.name,
+            protocol: PROTOCOL,
+            rules: rules_table_hash(),
+        })
+        .unwrap()
+    )
+    .map_err(|e| e.to_string())?;
+    out.flush().map_err(|e| e.to_string())?;
+    let sessions = Mutex::new(HashMap::new());
+    for line in std::io::stdin().lock().lines() {
+        let request: Request =
+            serde_json::from_str(&line.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        for id in request.drop {
+            sessions.lock().unwrap().remove(&id);
+        }
+        if request.go.is_empty() {
+            continue;
+        }
+        let done: Result<Vec<_>, _> = pool.install(|| {
+            request.go.into_par_iter().map(|ask| {
+                let id = ask.id;
+                answer(ask, &sessions, &brain, &opponent).map(|action| Done { id, action })
+            }).collect()
+        });
+        let reply = match done {
+            Ok(done) => Reply { done, error: None },
+            Err(error) => Reply {
+                done: Vec::new(),
+                error: Some(error),
+            },
+        };
+        writeln!(out, "{}", serde_json::to_string(&reply).unwrap()).map_err(|e| e.to_string())?;
+        out.flush().map_err(|e| e.to_string())?;
+        if reply.error.is_some() {
+            return Err("session failed".into());
+        }
+    }
+    Ok(())
+}

@@ -1,7 +1,6 @@
 # War Chest engine specification (source of truth)
 
-Everything here is verified against warchestonline.com data (snapshots/logs in
-`../data/`), the 2021 AEG rulebook, official card texts extracted from the
+Everything here is verified against warchestonline.com games, the 2021 AEG rulebook, official card texts extracted from the
 site client, and the official FAQ. Where any source disagrees with observed
 server behavior, the server wins.
 
@@ -176,8 +175,8 @@ FAQ rulings that bind the implementation:
 
 ## 7. Engine architecture requirements
 
-- Rust workspace: `core` (the rules, crate `warchest`), `engine` (CPU search and bots)
-  and `teacher` (GPU net, self-play, and the abi3 pyo3 module named `warchest`).
+- Rust workspace: `warchest` (the rules), `engine` (CPU search and bots)
+  and `bot` (GPU net, self-play, and the abi3 pyo3 module named `warchest`).
 - Flat state: 37 hexes indexed 0..36; per hex: occupant unit-type id, owner,
   stack height. Per player: multiset counts per zone per unit type (bag,
   hand, faceup discard, facedown discard, supply, eliminated), markers on

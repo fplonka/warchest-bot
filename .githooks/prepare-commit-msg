@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-waiver="$(git rev-parse --absolute-git-dir)/WHY-THIS-CHANGE-IS-DEFINITELY-ALREADY-AS-SIMPLE-AS-POSSIBLE.md"
-[ -s "$waiver" ] || exit 0
-{ echo; echo "Why this is already as simple as possible:"; echo; sed 's/^/  /' "$waiver"; } >>"$1"

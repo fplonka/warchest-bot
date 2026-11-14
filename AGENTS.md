@@ -6,7 +6,7 @@ Before touching code, read the full review standard you will be held to: `tools/
 
 Complexity is the enemy (Ousterhout). Don't complect (Hickey): no flags or modes where one path should exist, no compat shims, no dual paths, no clamps papering over a wrong producer, no half measures. Aim for Hoare's bar: so simple there are obviously no deficiencies. Perfection is when nothing is left to take away. For experiments, Karpathy's recipe: solid baseline, one change at a time, verify before believing.
 
-This repo has a commit hook prompting you to simplify before committing. Doing a proper simplification pass is NOT OPTIONAL. You MUST ALWAYS, before committing, take a step back and assess whether you can code-judo your implementation into something radically simpler.
+Doing a proper simplification pass before committing is NOT OPTIONAL. You MUST ALWAYS, take a step back and assess whether you can code-judo your implementation into something radically simpler.
 
 There's no need to try to be impressive or flashy. We're working on this project together to get something which works well, that's all.
 

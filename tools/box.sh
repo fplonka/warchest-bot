@@ -6,8 +6,8 @@ read -r host port < "$(git -C "$here" rev-parse --path-format=absolute --git-com
 host=${WARCHEST_BOX_HOST:-$host}
 port=${WARCHEST_BOX_PORT:-$port}
 key=${WARCHEST_BOX_KEY:-$HOME/.ssh/id_ed25519_warchest_vast}
-remote=${WARCHEST_BOX_DIR:-/workspace/warchest-engine}
-runs=/workspace/warchest-engine/runs
+remote=${WARCHEST_BOX_DIR:-/workspace/warchest}
+runs=/workspace/warchest/runs
 local_dir=${WARCHEST_BOX_LOCAL_DIR:-$here}
 
 ssh_opts=(-i "$key" -p "$port" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o LogLevel=ERROR)
@@ -23,11 +23,11 @@ $*"; }
 
 build_script="[ -d venv ] || python -m venv --system-site-packages venv
 source venv/bin/activate
-find core engine teacher -type f -exec touch {} +
-cd teacher
+find warchest engine bot -type f -exec touch {} +
+cd bot
 maturin develop --release --features python,gpu >maturin.log 2>&1 || { tail -40 maturin.log; exit 1; }
 tail -2 maturin.log
-cd .. && cargo build --release --features teacher/gpu --bin bot --bin ladder >cargo.log 2>&1 || { tail -40 cargo.log; exit 1; }
+cd .. && cargo build --release --features bot/gpu --bin bot --bin ladder >cargo.log 2>&1 || { tail -40 cargo.log; exit 1; }
 tail -1 cargo.log"
 
 case "${1:-}" in
@@ -43,7 +43,7 @@ sync)
         --exclude target --exclude .venv --exclude papers \
         --exclude __pycache__ --exclude .git --exclude data \
         "$here/" "root@$host:$remote/"
-    [ "$remote" = /workspace/warchest-engine ] ||
+    [ "$remote" = /workspace/warchest ] ||
         run_remote "[ -e runs ] || ln -s $runs runs"
     sha=$(git -C "$here" rev-parse --short=7 HEAD)
     git -C "$here" diff-index --quiet HEAD -- . ':!runs' || sha="${sha}+dirty"

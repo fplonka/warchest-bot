@@ -7,7 +7,7 @@ use warchest::actions::obs_key;
 use crate::pbs::{ways, Belief, Ctx};
 use crate::policy;
 use warchest::rng::{cumulative, Rng};
-use crate::search::{judge, think, Choice, Oracle, Query, Search};
+use crate::search::{think, Choice, Oracle, Query, Search};
 use warchest::state::State;
 
 #[derive(Clone, Copy, serde::Deserialize)]
@@ -43,7 +43,6 @@ impl Opponent {
 }
 
 pub enum Brain {
-    Random,
     Greedy,
     Search { search: Search, oracle: Arc<dyn Oracle> },
 }
@@ -52,7 +51,6 @@ impl Brain {
     fn policy(&self, s: &State, ctx: &Ctx, opp: &Belief, acts: &[Action], rng: &mut Rng) -> Choice {
         let probs = match self {
             _ if acts.len() == 1 => return Choice { probs: vec![1.0], pick: 0, value: 0.0 },
-            Brain::Random => vec![1.0 / acts.len() as f32; acts.len()],
             Brain::Greedy => policy::greedy(s, acts),
             Brain::Search { search, oracle } => return think(oracle.as_ref(), *search, s, ctx, opp, rng),
         };
@@ -148,21 +146,12 @@ impl Session {
         Ok(acts[c.pick].encode())
     }
 
-    pub fn judge(&mut self, search: Search, oracle: &dyn Oracle, played: Action) -> Result<(f32, f32), String> {
-        let i = self.s.legal_actions().iter().position(|&a| a == played).ok_or("the played move is not legal here")?;
-        Ok(judge(oracle, search, &self.s, &self.ctx, &self.opp, &mut self.rng, i))
-    }
-
-    pub fn belief(&self, truth: &State) -> f64 {
-        self.opp.weight(truth)
-    }
-
     pub fn query(&self, acts: &[Action], q: &mut Query) {
         q.push(&self.s, &self.ctx, acts);
     }
 }
 
-pub fn answer(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain, opponent: &Opponent) -> Result<(Vec<u32>, Option<f32>), String> {
+pub fn answer(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain, opponent: &Opponent) -> Result<u32, String> {
     let mut session = match ask.start {
         Some(start) => Session::new(&start.draft, start.seat, start.seed, opponent.clone())?,
         None => sessions.lock().unwrap().remove(&ask.id).ok_or_else(|| format!("game {} was never started", ask.id))?,
@@ -170,13 +159,9 @@ pub fn answer(ask: Ask, sessions: &Mutex<HashMap<u32, Session>>, brain: &Brain, 
     for obs in &ask.obs {
         session.observe(obs)?;
     }
-    let (acts, choice) = session.think(brain)?;
-    let value = (acts.len() > 1).then_some(choice.value);
-    session.play(acts[choice.pick]);
+    let action = session.decide(brain)?;
     sessions.lock().unwrap().insert(ask.id, session);
-    let mut ranked: Vec<usize> = (0..acts.len()).collect();
-    ranked.sort_by(|&a, &b| (a != choice.pick).cmp(&(b != choice.pick)).then(choice.probs[b].total_cmp(&choice.probs[a])));
-    Ok((ranked.into_iter().map(|i| acts[i].encode()).collect(), value))
+    Ok(action)
 }
 
 #[cfg(test)]
@@ -207,7 +192,7 @@ mod tests {
 
     #[test]
     fn a_seat_is_told_nothing_private_and_follows_the_game() {
-        let brain = Brain::Random;
+        let brain = Brain::Greedy;
         let mut table = Table::new();
         table.start(1, &draft(), [0, 1], 8191).unwrap();
         let mut seats = [
